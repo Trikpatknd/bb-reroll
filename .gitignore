@@ -12,3 +12,6 @@ log_*.html
 
 # Nexus page draft — lives in the repo locally as reference, not for distribution
 NEXUS_PAGE.md
+
+# Local context-handoff doc — used for resuming work in a new Claude chat
+CONTEXT.md
