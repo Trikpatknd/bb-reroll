@@ -120,16 +120,30 @@
 };
 
 ::BBReroll_FindTalents <- function (bro) {
-    local bg = bro.getBackground();
-    if (bg != null) {
-        if ("RawTalents" in bg.m && bg.m.RawTalents != null) return bg.m.RawTalents;
-        if ("Talents"    in bg.m && bg.m.Talents    != null) return bg.m.Talents;
-    }
-    if ("Talents"    in bro.m && bro.m.Talents    != null) return bro.m.Talents;
-    if ("RawTalents" in bro.m && bro.m.RawTalents != null) return bro.m.RawTalents;
+    // Per-bro talents first. fillTalentValues writes to bro.m.Talents, and
+    // scenarios may overwrite afterwards (e.g. Gladiators hardcodes
+    // bros[2].getTalents()[MeleeSkill] = 2 in onSpawnAssets). The bg.m.*
+    // arrays are the background-template rolling weights, NOT the bro's
+    // actual stars — falling back to them gives 0 stars at indices the
+    // background doesn't weight.
     if ("getTalents" in bro) {
         local t = bro.getTalents();
-        if (t != null) return t;
+        if (t != null && t.len() > 0) return t;
+    }
+    try {
+        if (bro.m.Talents != null && bro.m.Talents.len() > 0) return bro.m.Talents;
+    } catch (e) {}
+    try {
+        if (bro.m.RawTalents != null && bro.m.RawTalents.len() > 0) return bro.m.RawTalents;
+    } catch (e) {}
+    local bg = bro.getBackground();
+    if (bg != null) {
+        try {
+            if (bg.m.RawTalents != null && bg.m.RawTalents.len() > 0) return bg.m.RawTalents;
+        } catch (e) {}
+        try {
+            if (bg.m.Talents != null && bg.m.Talents.len() > 0) return bg.m.Talents;
+        } catch (e) {}
     }
     return null;
 };

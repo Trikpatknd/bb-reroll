@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import webbrowser
 import zipfile
 from pathlib import Path
 from tkinter import messagebox
@@ -47,6 +48,15 @@ try:
     from trait_names import TRAIT_NAMES
 except Exception:
     TRAIT_NAMES = {}
+
+# Per-origin hardcoded talent stars — drives the info label above the grid
+# and the auto-fill of the stars grid when an origin is picked.
+try:
+    from origin_hardcoded_stars import ORIGIN_HARDCODED_STARS, summarize as summarize_origin
+except Exception:
+    ORIGIN_HARDCODED_STARS = {}
+    def summarize_origin(_origin: str) -> str:
+        return ""
 
 
 # ─────────────────────── paths ───────────────────────
@@ -113,28 +123,26 @@ ORIGINS = [
     ("Oathtakers",                   2),
     ("Peasant Militia",             12),
     ("Trading Caravan",              2),
-    # Legends-added origins
-    ("Adventuring Party",            1),
+    # Legends-added origins (4 dropped: Build your own, Druid [Legacy], Horse Party,
+    # Mage — all hard-disabled via `function isValid() { return false; }` and
+    # therefore not selectable in BB's new-campaign picker)
+    ("Adventuring Party",            6),
     ("Assassin",                     1),
     ("Berserker",                    1),
-    ("Build your own",               1),
     ("Crusader",                     1),
-    ("Druid [Legacy]",               1),
-    ("Escaped Slaves",               1),
-    ("The Free Company",             1),
-    ("Horse Party",                  1),
-    ("The Inquisition",              1),
-    ("Mage",                         1),
-    ("Master Necromancer",           1),
-    ("Noble",                        1),
-    ("Nomad Tribe",                  1),
+    ("Escaped Slaves",               5),  # requires Blazing Deserts DLC
+    ("The Free Company",             5),
+    ("The Inquisition",              3),
+    ("Master Necromancer",           6),
+    ("Noble",                        6),
+    ("Nomad Tribe",                  5),
     ("Original Beggar Challenge",    1),
-    ("Ranger",                       1),
+    ("Ranger",                       2),
     ("Scaling Beggar Challenge",     1),
     ("Seer",                         1),
-    ("Sisterhood",                   1),
-    ("The Cabal",                    1),
-    ("The Troupe",                   1),
+    ("Sisterhood",                   6),
+    ("The Cabal",                    4),
+    ("The Troupe",                   4),
 ]
 
 STATS = ["hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf"]
@@ -503,13 +511,12 @@ class App(ctk.CTk):
         self._last_activity_ts = 0.0
         self._watch_state      = "idle"
 
-        self.stars_vars:     dict[tuple[str, str], ctk.StringVar] = {}
-        self.stars_widgets:  dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
-        # Baseline = whatever was loaded from the .nut (or zeros for new slots).
-        # On every change we compare current value to baseline; widget gets a
-        # highlighted text color when they differ, so "what did I just touch?"
-        # is obvious at a glance.
-        self.stars_baseline: dict[tuple[str, str], str] = {}
+        self.stars_vars:             dict[tuple[str, str], ctk.StringVar] = {}
+        self.stars_widgets:          dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
+        # Default CTk colors captured at widget construction so we can restore
+        # them when a cell's value returns to 0. Cells with value > 0 get the
+        # active highlight palette applied to fg_color/button_color/text_color.
+        self.stars_widget_defaults:  dict[tuple[str, str], dict] = {}
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
         self.required_vars: dict[str, ctk.BooleanVar] = {}
         self.banned_known   = list(DEFAULT_BANNED)
@@ -525,7 +532,11 @@ class App(ctk.CTk):
 
         self._build_ui()
         self._load_settings()
-        self._load_from_nut()
+        # Sync bro count + info label to the saved origin BEFORE pulling
+        # config from the .nut. The .nut load skips stars at startup so the
+        # grid stays at zero; user clicks "Reload .nut" to pull live stars.
+        self._on_origin_change(self.origin_var.get())
+        self._load_from_nut(load_stars=False)
         self._start_log_watcher()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -578,8 +589,18 @@ class App(ctk.CTk):
                      text=("STARS  (0 = don't care, 1-3 = minimum stars.  "
                            "A numeric slot row with all zeros falls back to the * default rule.)"),
                      font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2))
+        self.origin_info_var = ctk.StringVar(value=summarize_origin(self.origin_var.get()))
+        self.origin_info_label = ctk.CTkLabel(
+            stars_outer,
+            textvariable=self.origin_info_var,
+            justify="left",
+            anchor="w",
+            font=("Consolas", 11),
+            text_color="#9aa3b0",
+        )
+        self.origin_info_label.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
         self.stars_frame = ctk.CTkFrame(stars_outer, fg_color="transparent")
-        self.stars_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
+        self.stars_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
 
         # Traits — two scrollable columns
         traits_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -606,6 +627,9 @@ class App(ctk.CTk):
                       command=self._open_log).grid(row=0, column=3, padx=8, pady=8)
         ctk.CTkButton(actions, text="↻ Reload .nut", height=36,
                       command=self._load_from_nut).grid(row=0, column=4, padx=8, pady=8)
+        ctk.CTkButton(actions, text="↗ Check for updates", height=36,
+                      fg_color="transparent", border_width=1,
+                      command=self._open_github).grid(row=0, column=99, padx=8, pady=8, sticky="e")
 
         # Match history — scrollable list. Hidden until a match comes in.
         self.match_pane = ctk.CTkFrame(self)
@@ -801,17 +825,31 @@ class App(ctk.CTk):
             vars_dict[name].set(True)
 
     # ── stars grid (rebuilds when brother count changes) ──
-    _STAR_TEXT_DEFAULT = "white"   # matches CTk dark theme
-    _STAR_TEXT_DIRTY   = "#ffc857"  # amber when value != baseline
+    # Non-zero cells highlight the whole CTkOptionMenu box; zero cells use the
+    # widget's CTk-theme defaults captured at construction time.
+    _STAR_ACTIVE_FG   = "#ffc857"   # amber face
+    _STAR_ACTIVE_BTN  = "#d4a64a"   # darker amber for the dropdown chevron
+    _STAR_ACTIVE_TEXT = "#1a1a1a"   # near-black for contrast on amber
 
     def _on_star_changed(self, slot: str, stat: str, *_):
         widget = self.stars_widgets.get((slot, stat))
         if widget is None:
             return
-        cur = self.stars_vars[(slot, stat)].get()
-        base = self.stars_baseline.get((slot, stat), "0")
         try:
-            widget.configure(text_color=(self._STAR_TEXT_DIRTY if cur != base else self._STAR_TEXT_DEFAULT))
+            active = int(self.stars_vars[(slot, stat)].get() or "0") > 0
+        except ValueError:
+            active = False
+        try:
+            if active:
+                widget.configure(
+                    fg_color=self._STAR_ACTIVE_FG,
+                    button_color=self._STAR_ACTIVE_BTN,
+                    text_color=self._STAR_ACTIVE_TEXT,
+                )
+            else:
+                d = self.stars_widget_defaults.get((slot, stat))
+                if d:
+                    widget.configure(**d)
         except Exception:
             pass
 
@@ -822,6 +860,7 @@ class App(ctk.CTk):
             w.destroy()
         self.stars_vars.clear()
         self.stars_widgets.clear()
+        self.stars_widget_defaults.clear()
 
         try:
             n = max(1, min(20, int(self.bro_count_var.get() or "1")))
@@ -847,10 +886,12 @@ class App(ctk.CTk):
                                       variable=v, width=50)
                 w.grid(row=ri, column=j + 1, padx=2, pady=2)
                 self.stars_widgets[(slot, stat)] = w
-                # Trace value changes so we can re-color the widget when it
-                # differs from the baseline that was loaded from the .nut.
+                self.stars_widget_defaults[(slot, stat)] = {
+                    "fg_color":     w.cget("fg_color"),
+                    "button_color": w.cget("button_color"),
+                    "text_color":   w.cget("text_color"),
+                }
                 v.trace_add("write", lambda *_a, s=slot, t=stat: self._on_star_changed(s, t))
-                # Initial color (handles "loaded then user changed brother count").
                 self._on_star_changed(slot, stat)
 
     # ── origin dropdown ──
@@ -858,7 +899,33 @@ class App(ctk.CTk):
         for name, count in ORIGINS:
             if name == value and count is not None:
                 self.bro_count_var.set(str(count))
-                return
+                break
+        # Rebuild synchronously so we can pre-fill hardcoded stars right away.
+        # The bro_count_var trace also schedules a debounced rebuild in 120ms,
+        # but that one just preserves the values we set here — idempotent.
+        self._rebuild_stars_grid()
+        self._apply_hardcoded_stars(value)
+        self._refresh_origin_info()
+
+    def _apply_hardcoded_stars(self, origin: str):
+        """Reset numeric slots, then pre-fill the origin's hardcoded stars."""
+        slots = ORIGIN_HARDCODED_STARS.get(origin, [])
+        # Wipe any leftover values on numeric slots; preserve the "*" row,
+        # which is a user-defined universal default, not origin-specific.
+        for (slot, stat), var in self.stars_vars.items():
+            if slot != "*":
+                var.set("0")
+        for slot_idx, hardcoded in enumerate(slots, start=1):
+            for stat, value in hardcoded.items():
+                key = (str(slot_idx), stat)
+                if key in self.stars_vars:
+                    self.stars_vars[key].set(str(value))
+
+    def _refresh_origin_info(self):
+        try:
+            self.origin_info_var.set(summarize_origin(self.origin_var.get()))
+        except Exception:
+            self.origin_info_var.set("")
 
     # ── browse ──
     def _browse_bb(self):
@@ -869,7 +936,7 @@ class App(ctk.CTk):
             self.bb_path_var.set(path)
 
     # ── nut I/O ──
-    def _load_from_nut(self):
+    def _load_from_nut(self, load_stars: bool = True):
         try:
             if NUT_PATH.exists():
                 cfg = parse_existing_config(NUT_PATH.read_text(encoding="utf-8"))
@@ -901,25 +968,18 @@ class App(ctk.CTk):
         for t in self.required_known:
             self.required_vars[t].set(t in cfg["required"])
 
-        # set brother count from highest numeric slot key
-        numeric_slots = [int(k) for k in cfg["stars_by_slot"] if k.isdigit()]
-        if numeric_slots:
-            self.bro_count_var.set(str(max(max(numeric_slots), 1)))
-        elif not self.bro_count_var.get():
-            self.bro_count_var.set("5")
-        self._rebuild_stars_grid()
-        for slot, stats in cfg["stars_by_slot"].items():
-            for stat, n in stats.items():
-                if (slot, stat) in self.stars_vars:
-                    self.stars_vars[(slot, stat)].set(str(n))
-        # Snapshot the just-loaded values as the baseline. Every star cell
-        # currently displaying matches that baseline → all colors reset.
-        self._snapshot_stars_baseline()
-
-    def _snapshot_stars_baseline(self):
-        self.stars_baseline = {k: v.get() for k, v in self.stars_vars.items()}
-        for slot, stat in self.stars_vars.keys():
-            self._on_star_changed(slot, stat)
+        if load_stars:
+            # set brother count from highest numeric slot key
+            numeric_slots = [int(k) for k in cfg["stars_by_slot"] if k.isdigit()]
+            if numeric_slots:
+                self.bro_count_var.set(str(max(max(numeric_slots), 1)))
+            elif not self.bro_count_var.get():
+                self.bro_count_var.set("5")
+            self._rebuild_stars_grid()
+            for slot, stats in cfg["stars_by_slot"].items():
+                for stat, n in stats.items():
+                    if (slot, stat) in self.stars_vars:
+                        self.stars_vars[(slot, stat)].set(str(n))
 
     def _gather_cfg(self) -> dict:
         try:
@@ -973,9 +1033,6 @@ class App(ctk.CTk):
                 return
             dest = copy_to_bb(bb)
             self._save_settings()             # persist BB path + window state
-            # Deploy succeeded — the live .nut now matches what's on screen.
-            # Reset the baseline so star cells aren't all amber after save.
-            self._snapshot_stars_baseline()
             self.status_var.set(f"✓ Deployed → {dest}")
         except Exception as e:
             self.status_var.set(f"✗ {e}")
@@ -1024,6 +1081,9 @@ class App(ctk.CTk):
             os.startfile(str(BB_LOG))      # type: ignore[attr-defined]
         else:
             self.status_var.set(f"No log at {BB_LOG}")
+
+    def _open_github(self):
+        webbrowser.open("https://github.com/Trikpatknd/bb-reroll/releases")
 
     # ── log watching ──
     def _start_log_watcher(self):

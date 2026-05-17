@@ -11,6 +11,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
+python tools\embed_nut.py
+if errorlevel 1 (
+    echo Failed to regenerate mod_template.py.
+    exit /b 1
+)
+
+python tools\build_zip.py
+if errorlevel 1 (
+    echo Failed to build mod_bb_reroll_dump.zip.
+    exit /b 1
+)
+
 pyinstaller --noconfirm gui.spec
 if errorlevel 1 (
     echo PyInstaller build failed.

@@ -27,7 +27,7 @@ No Python needed for end users.
 ## Use
 
 1. **Origin** dropdown — pick yours. Brother count auto-fills.
-2. **Stars grid** — 0 = don't care, 1-3 = minimum stars. Row `*` is the default; numeric rows override per-slot. Numeric rows of all zeros fall back to `*`. Cells you've edited from baseline highlight amber.
+2. **Stars grid** — 0 = don't care, 1-3 = minimum stars. Row `*` is the default; numeric rows override per-slot. Numeric rows of all zeros fall back to `*`. Cells with non-zero star requirements (your active criteria) highlight amber. The info panel above the grid shows which stars are hardcoded by the chosen origin — those pre-fill when you pick an origin so the brute-force baseline is visible at a glance.
 3. **Banned / Required traits** — tick the trait IDs you care about. `🔍 Scan log` picks up any new trait IDs from your last play sessions.
 4. **💾 Save & Deploy** — writes the mod and copies it into BB.
 5. Launch BB → New Campaign → pick your origin → type **`REROLL`** as the seed → Start.
