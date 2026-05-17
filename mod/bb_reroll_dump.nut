@@ -14,7 +14,7 @@
 // to a hardcoded Davkul Awaits roster if dynamic origin lookup fails.
 
 ::BBReroll <- {
-    Version = "3.4.3",
+    Version = "3.4.4",
     Tag     = "[BBREROLL]",
     Tag2    = "[BBREROLL2]",
 };

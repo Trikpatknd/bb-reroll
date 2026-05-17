@@ -16,11 +16,14 @@ Brute-force seed finder for **Battle Brothers + Legends mod**. Search thousands 
 
 ## Install
 
-1. Get **`bb_reroll_gui.exe`** from Releases (or build from source).
-2. Drop it anywhere. Double-click. The GUI opens.
-3. **Save & Deploy** copies `mod_bb_reroll_dump.zip` into your BB `data/` folder (auto-detected on Steam installs; otherwise click Browse…).
+Build from source — keeps you off deprecated prebuilt binaries.
 
-No Python needed for end users.
+1. Install Python 3.10+ and clone the repo.
+2. Run `build_exe.bat` (Windows) or `pip install -r requirements.txt && pyinstaller --noconfirm gui.spec`. Output: `dist/bb_reroll_gui.exe`.
+3. Double-click the .exe. The GUI opens.
+4. **Save & Deploy** copies `mod_bb_reroll_dump.zip` into your BB `data/` folder (auto-detected on Steam installs; otherwise click Browse…).
+
+For dev mode (no build), `python gui.py` runs the GUI directly.
 
 ---
 
