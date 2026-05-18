@@ -650,8 +650,19 @@ class App(ctk.CTk):
                            "would change the world the seed produces."),
                      font=("Segoe UI", 11), text_color="#c89500", anchor="w"
                      ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 2))
+        # After a match BB is in a half-initialised state. Depending on BB
+        # build / mods / RNG, it may pop a "critical exception" dialog OR
+        # silently return to the main menu — neither outcome leaves a usable
+        # world. User MUST restart BB regardless before the real campaign.
+        ctk.CTkLabel(self.match_pane,
+                     text=("ℹ After a match, BB may pop a \"critical exception\" dialog OR may just return to the main menu — both are expected. "
+                           "BB's world state is half-initialised either way; do NOT try to continue from there. "
+                           "Quit BB completely (Alt+F4 if needed), relaunch, and start a new campaign with the matched seed."),
+                     font=("Segoe UI", 11), text_color="#e85a3c", anchor="w", justify="left",
+                     wraplength=820,
+                     ).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 4))
         self.match_list = ctk.CTkScrollableFrame(self.match_pane, height=140, fg_color="transparent")
-        self.match_list.grid(row=2, column=0, sticky="ew", padx=8, pady=(2, 8))
+        self.match_list.grid(row=3, column=0, sticky="ew", padx=8, pady=(2, 8))
         self.match_pane.grid_remove()
 
         status = ctk.CTkFrame(self)
@@ -1193,9 +1204,11 @@ class App(ctk.CTk):
         self.match_pane.grid()
         if notification:
             try:
-                notification.notify(title="BB Reroll: MATCH",
-                                    message=f"Seed {seed} at iter {iter_num}",
-                                    timeout=10)
+                notification.notify(title="BB Reroll: MATCH — restart BB",
+                                    message=(f"Seed {seed} at iter {iter_num}. "
+                                             "BB may crash or return to menu — restart it either way, "
+                                             "then enter the seed for a real campaign."),
+                                    timeout=15)
             except Exception:
                 pass
 

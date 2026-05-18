@@ -731,13 +731,16 @@
             if (userSeed.tolower() == ::BBReroll_BF.TriggerSeed.tolower()) {
                 try { ::BBReroll_BF_Run(this); }
                 catch (e) {
-                    // Log the message (GUI surfaces this via log tail) then
-                    // re-throw so BB's top-level handler kills the process
-                    // immediately at our line, instead of returning to BB's
-                    // main loop where onRender() would crash on the
-                    // never-initialised Player.
+                    // Log the message (GUI surfaces this via log tail) and
+                    // SWALLOW the exception. We deliberately do NOT re-throw:
+                    // BB catches exceptions thrown out of startNewCampaign and
+                    // gracefully returns to the main menu, leaving the world
+                    // in a half-init state the user can still click around in
+                    // — worse UX than the crash. Returning normally instead
+                    // lets BB resume its main loop, call world_state.onRender
+                    // on the never-initialised Player, and crash there —
+                    // which is what the GUI's match pane is warning about.
                     ::logError(::BBReroll.Tag2 + " brute force finish: " + e);
-                    throw e;
                 }
                 return;
             }
