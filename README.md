@@ -26,7 +26,7 @@ Brute-force seed finder for **Battle Brothers + Legends mod**. Search thousands 
 
 If any of these are missing or a substantially different version of Legends is installed, BB will start but our mod's queued init never fires (no `[BBREROLL] mod queued (vX.Y.Z)` line in `log.html`). Grab the latest matching versions from the Legends Nexus page.
 
-### Build side (only if building the .exe yourself)
+### Build side
 
 - Python 3.10+
 - See `requirements.txt`
