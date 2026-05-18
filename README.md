@@ -14,14 +14,32 @@ Brute-force seed finder for **Battle Brothers + Legends mod**. Search thousands 
 
 ---
 
+## Requirements
+
+### Battle Brothers side (must be installed in `Battle Brothers/data/` before BB Reroll will do anything)
+
+- **Battle Brothers 1.5.1.8** (vanilla)
+- **Legends mod 19.3.24** — pinned version; other versions may have renamed scenario classes that break our hooks
+- **MSU** (Modular Squirrel Utilities) — Legends dependency
+- **mod_hooks** — class-hooking framework used by Legends and BB Reroll
+- **modern_hooks** — newer hook framework, also a Legends dependency
+
+If any of these are missing or a substantially different version of Legends is installed, BB will start but our mod's queued init never fires (no `[BBREROLL] mod queued (vX.Y.Z)` line in `log.html`). Grab the latest matching versions from the Legends Nexus page.
+
+### Build side (only if building the .exe yourself)
+
+- Python 3.10+
+- See `requirements.txt`
+
 ## Install
 
 Build from source — keeps you off deprecated prebuilt binaries.
 
-1. Install Python 3.10+ and clone the repo.
-2. Run `build_exe.bat` (Windows) or `pip install -r requirements.txt && pyinstaller --noconfirm gui.spec`. Output: `dist/bb_reroll_gui.exe`.
-3. Double-click the .exe. The GUI opens.
-4. **Save & Deploy** copies `mod_bb_reroll_dump.zip` into your BB `data/` folder (auto-detected on Steam installs; otherwise click Browse…).
+1. Install the BB-side mods listed above into `Battle Brothers/data/`. **This is the step most often forgotten** — without Legends + MSU + the hook frameworks, the rest does nothing.
+2. Install Python 3.10+ and clone this repo.
+3. Run `build_exe.bat` (Windows) or `pip install -r requirements.txt && pyinstaller --noconfirm gui.spec`. Output: `dist/bb_reroll_gui.exe`.
+4. Double-click the .exe. The GUI opens.
+5. **Save & Deploy** copies `mod_bb_reroll_dump.zip` into your BB `data/` folder (auto-detected on Steam installs; otherwise click Browse…).
 
 For dev mode (no build), `python gui.py` runs the GUI directly.
 
@@ -38,7 +56,8 @@ For dev mode (no build), `python gui.py` runs the GUI directly.
    - Green LED = fast pass running
    - Blue LED = slow verify (a candidate seed found, double-checking traits)
    - On match: green banner with seed + 📋 Copy. Desktop notification fires.
-7. **Quit BB completely (Alt+F4), relaunch**, type the matched seed for a real campaign with the same origin. The bros will match the verified fingerprint.
+7. **After a match, BB is in a half-initialized state.** It may pop a "critical exception" dialog, OR it may silently return to the main menu — both outcomes are expected and depend on BB build / mod stack / RNG. Don't try to continue from there.
+8. **Quit BB completely** (Alt+F4 if needed), relaunch, start a new campaign with the same origin, paste the matched seed → Start. The bros will match the verified fingerprint.
 
 ⚠ Don't change Mod → Map Options between the brute force run and starting the real campaign. World gen reads those settings, so different settings = different world = different trait roll for the same seed.
 
@@ -94,16 +113,23 @@ bb_reroll/
 ├── README.md
 ├── gui.py                      # GUI source
 ├── gui.spec                    # PyInstaller spec
-├── build_exe.bat               # one-click build
+├── build_exe.bat               # one-click build (regenerates artefacts + runs PyInstaller)
 ├── requirements.txt
-├── mod_template.py             # embedded copy of the .nut (auto-generated)
 ├── trait_names.py              # trait ID → display name (130 entries)
-├── tools/embed_nut.py          # regenerate mod_template.py after .nut edits
+├── origin_hardcoded_stars.py   # per-origin hardcoded talent stars (drives the GUI info panel + auto-fill)
+├── tools/
+│   ├── embed_nut.py            # regenerate mod_template.py from the .nut
+│   └── build_zip.py            # regenerate mod/mod_bb_reroll_dump.zip from the .nut
 └── mod/
-    ├── bb_reroll_dump.nut      # Squirrel mod source
-    ├── mod_bb_reroll_dump.zip  # packaged mod (auto-rebuilt by the GUI)
-    └── _backup_v3.3.0-stable/  # last known-good snapshot
+    └── bb_reroll_dump.nut      # Squirrel mod source
+
+# generated at build time (gitignored):
+#   mod_template.py
+#   mod/mod_bb_reroll_dump.zip
+#   dist/bb_reroll_gui.exe
 ```
+
+The v3.3.0-stable rollback target lives in the `v3.3.0-stable` git tag rather than a checked-in backup directory.
 
 ---
 
