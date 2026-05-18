@@ -14,7 +14,7 @@
 // to a hardcoded Davkul Awaits roster if dynamic origin lookup fails.
 
 ::BBReroll <- {
-    Version = "3.4.4",
+    Version = "3.4.5",
     Tag     = "[BBREROLL]",
     Tag2    = "[BBREROLL2]",
 };
@@ -505,6 +505,12 @@
         worldmap.fill({X=0, Y=0, W=minX, H=minY}, worldState.m.CampaignSettings);
     };
 
+    // Set inside the match block; checked after the for loop. Lets us escape
+    // the per-iter try/catch via `break` and then throw cleanly post-loop so
+    // BB's top-level handler ends the process at our line instead of in
+    // world_state.onRender() (where the half-init Player would crash anyway).
+    local match_seed = null;
+
     for (local x = 0; x < ::BBReroll_BF.MaxIters; x++) {
 
         local seed = "";
@@ -591,9 +597,9 @@
                 if (vpass) {
                     ::logWarning(Tag + " *** MATCH at iter " + x + " seed=" + seed + " (verified) ***");
                     foreach (fp in fps) ::logWarning(Tag + "   " + fp);
-                    ::logWarning(Tag + " >>> RESTART BB, then enter seed '" + seed + "' to play this run.");
                     doCleanup();
-                    return;
+                    match_seed = seed;
+                    break;
                 }
                 // Verify failed. The world is now in candidate's state —
                 // subsequent fast iters reuse it; that's fine (we only care
@@ -611,8 +617,15 @@
                 + " last_fail=" + last_fail + " skipped=" + skipped);
         }
     }
-    ::logWarning(Tag + " no match in " + ::BBReroll_BF.MaxIters + " attempts. last_fail=" + last_fail);
-    ::logWarning(Tag + " restart BB before starting a real campaign.");
+    // Both exits throw so BB's top-level exception handler kills the process
+    // here, in our code, instead of returning to onRender() which would
+    // dereference a never-initialised Player and crash anyway.
+    if (match_seed != null) {
+        throw "BBReroll done: match found at seed=" + match_seed + ". Restart BB and enter this seed for a real campaign.";
+    } else {
+        ::logWarning(Tag + " no match in " + ::BBReroll_BF.MaxIters + " attempts. last_fail=" + last_fail);
+        throw "BBReroll done: no seed matched in " + ::BBReroll_BF.MaxIters + " iters. Restart BB.";
+    }
 };
 
 
@@ -717,7 +730,15 @@
             } catch (e) {}
             if (userSeed.tolower() == ::BBReroll_BF.TriggerSeed.tolower()) {
                 try { ::BBReroll_BF_Run(this); }
-                catch (e) { ::logError(::BBReroll.Tag2 + " brute force error: " + e); }
+                catch (e) {
+                    // Log the message (GUI surfaces this via log tail) then
+                    // re-throw so BB's top-level handler kills the process
+                    // immediately at our line, instead of returning to BB's
+                    // main loop where onRender() would crash on the
+                    // never-initialised Player.
+                    ::logError(::BBReroll.Tag2 + " brute force finish: " + e);
+                    throw e;
+                }
                 return;
             }
             oldStart();
