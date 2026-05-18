@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.idea/
+
+# PyInstaller output
+build/
+dist/
+*.spec.bak
+log_*.html
+
+# Nexus page draft — lives in the repo locally as reference, not for distribution
+NEXUS_PAGE.md
