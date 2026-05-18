@@ -19,7 +19,7 @@ Brute-force seed finder for **Battle Brothers + Legends mod**. Search thousands 
 ### Battle Brothers side (must be installed in `Battle Brothers/data/` before BB Reroll will do anything)
 
 - **Battle Brothers 1.5.1.8** (vanilla)
-- **Legends mod 19.3.24** — pinned version; other versions may have renamed scenario classes that break our hooks
+- **Legends mod 19.3.24 or later** — tested through 19.3.27. Patch-version updates within 19.3.x don't touch the scenario `onSpawnAssets` paths or hardcoded talents that BB Reroll depends on; if Legends ever renames scenario classes in a future release our hooks would silently no-op, so pin if you want to be safe.
 - **MSU** (Modular Squirrel Utilities) — Legends dependency
 - **mod_hooks** — class-hooking framework used by Legends and BB Reroll
 - **modern_hooks** — newer hook framework, also a Legends dependency
