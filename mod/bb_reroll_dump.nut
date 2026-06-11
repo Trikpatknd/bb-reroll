@@ -802,6 +802,12 @@
                         // and rethrow so normal BB error handling still fires
                         // instead of being silently swallowed.
                         ::logError(::BBReroll.Tag2 + " UNEXPECTED exception in startNewCampaign (NOT a BB Reroll finish — passing it through): " + e);
+                        // In-game popup too (modern_hooks): the rethrow may kill
+                        // BB before the log line above is flushed to disk, in
+                        // which case the popup is the only visible trace.
+                        if ("Hooks" in ::getroottable()) {
+                            try { ::Hooks.error("BB Reroll: unexpected error during the run (not from this mod — passing it to the game): " + e); } catch (e2) {}
+                        }
                         throw e;
                     }
                 }
