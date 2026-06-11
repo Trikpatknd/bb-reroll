@@ -647,6 +647,41 @@
 // brothers produced by either path are identical for the same seed.
 ::BBReroll_RESEED_SUFFIX <- "::BBR";
 
+// ---------- dependency self-check ----------
+// Queued with a NULL expression (no dependency), so it runs even when Legends
+// is absent — unlike the main hook below, which is ordered after >mod_legends.
+// Queued functions run after every mod has registered, so ::Hooks.hasMod and
+// the ::Legends / ::MSU globals are reliable here. Reports missing deps both
+// to the log (GUI surfaces it) and as an in-game popup via ::Hooks.error.
+// (Explicit if/else, not ?: — this build's ternary evaluates BOTH branches,
+//  which would call ::Hooks.hasMod even when ::Hooks is absent. See gotcha #2.)
+::mods_queue("bb_reroll_dump", null, function () {
+    local hasHooks = ("Hooks" in ::getroottable());
+    local legendsOk = false;
+    local msuOk = false;
+    if (hasHooks) {
+        try { legendsOk = ::Hooks.hasMod("mod_legends"); } catch (e) {}
+        try { msuOk     = ::Hooks.hasMod("mod_msu"); } catch (e) {}
+    } else {
+        legendsOk = ("Legends" in ::getroottable());
+        msuOk     = ("MSU" in ::getroottable());
+    }
+    local missing = [];
+    if (!legendsOk) missing.append("Legends (mod_legends)");
+    if (!msuOk)     missing.append("MSU (mod_msu)");
+    if (missing.len() > 0) {
+        local names = "";
+        foreach (i, m in missing) { if (i > 0) names += ", "; names += m; }
+        local msg = "BB Reroll: missing required mod(s): " + names
+            + ". BB Reroll needs Legends + MSU plus the hooks framework (mod_hooks / "
+            + "modern_hooks). Install them and restart Battle Brothers.";
+        ::logError(::BBReroll.Tag2 + " " + msg);
+        if (hasHooks) { try { ::Hooks.error(msg); } catch (e) {} }  // in-game popup
+    } else {
+        ::logInfo(::BBReroll.Tag + " dependency check OK: Legends + MSU present");
+    }
+});
+
 ::mods_queue("bb_reroll_dump", ">mod_legends", function () {
     ::logInfo(::BBReroll.Tag + " mod queued (v" + ::BBReroll.Version + ")");
 
