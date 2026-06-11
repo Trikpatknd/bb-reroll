@@ -1,0 +1,4 @@
+{
+  "_comment": "Copy this to deploy_config.json (gitignored) and set bb_data_dir to your Battle Brothers data folder. Used by tools/deploy.py.",
+  "bb_data_dir": "G:\\SteamLibrary\\steamapps\\common\\Battle Brothers\\data"
+}

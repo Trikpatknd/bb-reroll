@@ -647,6 +647,14 @@
 // brothers produced by either path are identical for the same seed.
 ::BBReroll_RESEED_SUFFIX <- "::BBR";
 
+// The per-scenario reseed hook fires on every spawn — i.e. every brute-force
+// iteration. Logging it each time produced multi-MB log.html files on long
+// runs (BB's engine log can't be rotated from the sandboxed mod, so we cap our
+// own output instead). Log only the first few to confirm the mechanism, then
+// go quiet. A real campaign start spawns once, so it always logs.
+::BBReroll_ReseedLogN <- 0;
+::BBReroll_ReseedLogMax <- 3;
+
 // ---------- dependency self-check ----------
 // Queued with a NULL expression (no dependency), so it runs even when Legends
 // is absent — unlike the main hook below, which is ordered after >mod_legends.
@@ -743,9 +751,14 @@
                     try { s = this.World.State.m.CampaignSettings.Seed; } catch (e) {}
                     if (s != null && s != "") {
                         ::Math.seedRandomString(s + ::BBReroll_RESEED_SUFFIX);
-                        local sid = "?";
-                        try { sid = this.m.ID; } catch (e) {}
-                        ::logInfo(::BBReroll.Tag + " reseed before spawn (id=" + sid + ", seed=" + s + ")");
+                        // Throttled — see ::BBReroll_ReseedLogN. Keeps long
+                        // brute-force runs from bloating log.html.
+                        if (::BBReroll_ReseedLogN < ::BBReroll_ReseedLogMax) {
+                            local sid = "?";
+                            try { sid = this.m.ID; } catch (e) {}
+                            ::logInfo(::BBReroll.Tag + " reseed before spawn (id=" + sid + ", seed=" + s + ")");
+                            ::BBReroll_ReseedLogN++;
+                        }
                     } else {
                         ::logWarning(::BBReroll.Tag + " spawn hook fired but no seed found");
                     }

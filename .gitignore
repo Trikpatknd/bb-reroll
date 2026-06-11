@@ -23,3 +23,6 @@ mod/build/
 
 # Superseded by the v3.3.0-stable git tag; listed in case it gets recreated.
 mod/_backup_v3.3.0-stable/
+
+# Local deploy target (machine-specific BB data path). Copy from the example.
+deploy_config.json

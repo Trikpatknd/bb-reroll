@@ -1218,6 +1218,18 @@ class App(ctk.CTk):
         self._set_watch_state("idle")
         self.watch_var.set("connected — waiting for brute force")
         self._tick_watch_state()
+        # Heads-up if BB's engine log has grown large. We can't rotate it from
+        # the sandboxed mod (and the mod now throttles its own per-iter output),
+        # but the user can delete it while BB is closed; it regenerates on next
+        # launch. Advisory only.
+        try:
+            mb = BB_LOG.stat().st_size / (1024 * 1024)
+            if mb >= 50:
+                self._show_notice(
+                    f"Battle Brothers' log.html is large ({mb:.0f} MB). With BB closed you can "
+                    "delete it to reclaim space — it regenerates on next launch.", kind="info")
+        except Exception:
+            pass
 
     def _on_verify_start(self, iter_num, seed):
         """Mod just entered slow-verify for a stars-pass candidate. Distinguish

@@ -17,21 +17,29 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC  = ROOT / "mod" / "bb_reroll_dump.nut"
 DST  = ROOT / "mod" / "mod_bb_reroll_dump.zip"
 
-version = read_version()
-if stamp_nut_file(version):
-    print(f"Stamped .nut version -> {version}")
 
-branch = git_branch()
-manifest = {
-    "mod": "bb_reroll_dump",
-    "version": version,
-    "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-    "branch": branch,
-}
+def build_zip() -> dict:
+    """Stamp the .nut, build the deploy zip, return the manifest dict."""
+    version = read_version()
+    if stamp_nut_file(version):
+        print(f"Stamped .nut version -> {version}")
 
-DST.parent.mkdir(parents=True, exist_ok=True)
-with zipfile.ZipFile(DST, "w", zipfile.ZIP_DEFLATED) as z:
-    z.write(SRC, arcname="scripts/!mods_preload/bb_reroll_dump.nut")
-    z.writestr("BBRR_MANIFEST.json", json.dumps(manifest, indent=2))
+    branch = git_branch()
+    manifest = {
+        "mod": "bb_reroll_dump",
+        "version": version,
+        "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "branch": branch,
+    }
 
-print(f"Built {DST.relative_to(ROOT)} (v{version}, branch={branch}, {DST.stat().st_size} bytes)")
+    DST.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(DST, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(SRC, arcname="scripts/!mods_preload/bb_reroll_dump.nut")
+        z.writestr("BBRR_MANIFEST.json", json.dumps(manifest, indent=2))
+
+    print(f"Built {DST.relative_to(ROOT)} (v{version}, branch={branch}, {DST.stat().st_size} bytes)")
+    return manifest
+
+
+if __name__ == "__main__":
+    build_zip()
