@@ -26,3 +26,8 @@ mod/_backup_v3.3.0-stable/
 
 # Local deploy target (machine-specific BB data path). Copy from the example.
 deploy_config.json
+
+# Maintainer-internal docs — keep out of the end-user repo. Put any future
+# internal notes/checklists/drafts here (or in drafts/) so they stay local.
+RELEASE.md
+drafts/
