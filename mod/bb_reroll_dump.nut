@@ -17,6 +17,12 @@
     Version = "3.4.5",
     Tag     = "[BBREROLL]",
     Tag2    = "[BBREROLL2]",
+    // Sentinel values thrown by the brute-force loop on a clean finish. The
+    // startNewCampaign catch recognises these and swallows them (the loop has
+    // already done its job); any OTHER exception is unexpected and is rethrown
+    // so vanilla / Legends / other-mod error handling still fires. Keep unique.
+    FinishMatch    = "BBRR_FINISH:match",
+    FinishMaxIters = "BBRR_FINISH:maxiters",
 };
 
 // Short name → Const.Attributes name. (Const.Attributes.Fatigue, NOT Stamina —
@@ -617,14 +623,17 @@
                 + " last_fail=" + last_fail + " skipped=" + skipped);
         }
     }
-    // Both exits throw so BB's top-level exception handler kills the process
-    // here, in our code, instead of returning to onRender() which would
-    // dereference a never-initialised Player and crash anyway.
+    // Both exits log a human-readable FINISH line (the GUI tails these) and
+    // then throw a unique sentinel. The startNewCampaign catch swallows the
+    // sentinel; it does NOT rethrow (rethrow was tried — BB recovers to a
+    // half-initialised main menu, worse than letting BB resume into the
+    // onRender crash). Throwing also unwinds us cleanly out of the loop.
     if (match_seed != null) {
-        throw "BBReroll done: match found at seed=" + match_seed + ". Restart BB and enter this seed for a real campaign.";
+        ::logWarning(Tag + " *** FINISH: match found at seed=" + match_seed + ". Restart BB, then enter this seed for a real campaign. ***");
+        throw ::BBReroll.FinishMatch;
     } else {
-        ::logWarning(Tag + " no match in " + ::BBReroll_BF.MaxIters + " attempts. last_fail=" + last_fail);
-        throw "BBReroll done: no seed matched in " + ::BBReroll_BF.MaxIters + " iters. Restart BB.";
+        ::logWarning(Tag + " *** FINISH: no seed matched in " + ::BBReroll_BF.MaxIters + " iters. last_fail=" + last_fail + ". Restart BB. ***");
+        throw ::BBReroll.FinishMaxIters;
     }
 };
 
@@ -731,16 +740,22 @@
             if (userSeed.tolower() == ::BBReroll_BF.TriggerSeed.tolower()) {
                 try { ::BBReroll_BF_Run(this); }
                 catch (e) {
-                    // Log the message (GUI surfaces this via log tail) and
-                    // SWALLOW the exception. We deliberately do NOT re-throw:
-                    // BB catches exceptions thrown out of startNewCampaign and
-                    // gracefully returns to the main menu, leaving the world
-                    // in a half-init state the user can still click around in
-                    // — worse UX than the crash. Returning normally instead
-                    // lets BB resume its main loop, call world_state.onRender
-                    // on the never-initialised Player, and crash there —
-                    // which is what the GUI's match pane is warning about.
-                    ::logError(::BBReroll.Tag2 + " brute force finish: " + e);
+                    if (e == ::BBReroll.FinishMatch || e == ::BBReroll.FinishMaxIters) {
+                        // Expected clean-finish sentinel. SWALLOW it — do NOT
+                        // rethrow (rethrow makes BB recover to a half-init main
+                        // menu). Returning normally lets BB resume into the
+                        // onRender crash, which the GUI's match pane warns
+                        // about ("BB may crash OR return to menu — restart").
+                        ::logWarning(::BBReroll.Tag2 + " brute force finished (" + e + "). BB is now in a half-initialised state — restart it before playing.");
+                    } else {
+                        // Unexpected exception from inside the hooked region —
+                        // NOT one of our finish sentinels. Could originate in
+                        // vanilla, Legends, or another mod. Log it unmistakably
+                        // and rethrow so normal BB error handling still fires
+                        // instead of being silently swallowed.
+                        ::logError(::BBReroll.Tag2 + " UNEXPECTED exception in startNewCampaign (NOT a BB Reroll finish — passing it through): " + e);
+                        throw e;
+                    }
                 }
                 return;
             }
