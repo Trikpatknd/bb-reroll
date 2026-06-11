@@ -3,7 +3,7 @@ agreement with the GUI's ORIGINS dropdown list."""
 import ast
 from pathlib import Path
 
-import origin_hardcoded_stars as ohs
+from bbreroll import origin_hardcoded_stars as ohs
 
 ROOT = Path(__file__).resolve().parent.parent
 

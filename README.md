@@ -111,20 +111,27 @@ python tools\embed_nut.py
 ```
 bb_reroll/
 ├── README.md
-├── gui.py                      # GUI source
-├── gui.spec                    # PyInstaller spec
-├── build_exe.bat               # one-click build (regenerates artefacts + runs PyInstaller)
-├── requirements.txt
-├── trait_names.py              # trait ID → display name (130 entries)
-├── origin_hardcoded_stars.py   # per-origin hardcoded talent stars (drives the GUI info panel + auto-fill)
+├── VERSION                       # single source of truth for the version
+├── gui.py                        # GUI entry point
+├── gui.spec                      # PyInstaller spec
+├── build_exe.bat                 # one-click build (regenerates artefacts + runs PyInstaller)
+├── requirements.txt              # runtime deps (requirements-dev.txt for tests)
+├── deploy_config.example.json    # copy to deploy_config.json for tools/deploy.py
+├── bbreroll/                     # helper package
+│   ├── logscan.py                #   log-line recognition (watcher + tail scan)
+│   ├── origin_hardcoded_stars.py #   per-origin hardcoded talent stars
+│   └── trait_names.py            #   trait ID → display name (130 entries)
 ├── tools/
-│   ├── embed_nut.py            # regenerate mod_template.py from the .nut
-│   └── build_zip.py            # regenerate mod/mod_bb_reroll_dump.zip from the .nut
+│   ├── buildutil.py              #   shared version-stamping helpers
+│   ├── embed_nut.py              #   regenerate bbreroll/mod_template.py from the .nut
+│   ├── build_zip.py              #   regenerate mod/mod_bb_reroll_dump.zip (+ manifest)
+│   └── deploy.py                 #   build + copy the zip into BB (refuses on main)
+├── tests/                        # pytest suite (python -m pytest)
 └── mod/
-    └── bb_reroll_dump.nut      # Squirrel mod source
+    └── bb_reroll_dump.nut        # Squirrel mod source
 
 # generated at build time (gitignored):
-#   mod_template.py
+#   bbreroll/mod_template.py
 #   mod/mod_bb_reroll_dump.zip
 #   dist/bb_reroll_gui.exe
 ```

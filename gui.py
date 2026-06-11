@@ -39,20 +39,20 @@ except Exception:
 # Embedded copy of mod/bb_reroll_dump.nut so the GUI/exe can write a fresh .nut
 # from scratch when none exists yet.
 try:
-    from mod_template import NUT_TEMPLATE
+    from bbreroll.mod_template import NUT_TEMPLATE
 except Exception:
     NUT_TEMPLATE = ""
 
 # Trait ID → display-name map (Lumbering / legend_heavy, etc.).
 try:
-    from trait_names import TRAIT_NAMES
+    from bbreroll.trait_names import TRAIT_NAMES
 except Exception:
     TRAIT_NAMES = {}
 
 # Per-origin hardcoded talent stars — drives the info label above the grid
 # and the auto-fill of the stars grid when an origin is picked.
 try:
-    from origin_hardcoded_stars import (
+    from bbreroll.origin_hardcoded_stars import (
         ORIGIN_HARDCODED_STARS,
         summarize as summarize_origin,
         conflicts as origin_conflicts,
@@ -102,7 +102,7 @@ def _read_app_version() -> str:
         except Exception:
             pass
     try:
-        from mod_template import NUT_VERSION
+        from bbreroll.mod_template import NUT_VERSION
         return NUT_VERSION
     except Exception:
         return "unknown"
@@ -445,7 +445,7 @@ def copy_to_bb(bb_data_dir: Path):
 
 # Patterns + tail classification live in logscan.py (unit-tested against the
 # exact strings the .nut emits — see tests/test_logscan.py).
-from logscan import (
+from bbreroll.logscan import (
     MATCH_RE, PROGRESS_RE, START_RE, VERIFY_RE, INIT_RE, FINISH_RE,
     DEPCHECK_RE, UNEXPECTED_RE, strip_html, analyze_tail,
 )

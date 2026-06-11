@@ -1,4 +1,4 @@
-"""Regenerate mod_template.py from mod/bb_reroll_dump.nut.
+"""Regenerate bbreroll/mod_template.py from mod/bb_reroll_dump.nut.
 
 Run this whenever you edit the .nut source so the embedded copy stays in
 sync with the on-disk version. Also stamps the repo-root VERSION into the
@@ -12,7 +12,7 @@ from buildutil import read_version, stamp_nut_file
 
 ROOT = Path(__file__).resolve().parent.parent
 NUT  = ROOT / "mod" / "bb_reroll_dump.nut"
-OUT  = ROOT / "mod_template.py"
+OUT  = ROOT / "bbreroll" / "mod_template.py"
 
 version = read_version()
 if stamp_nut_file(version):

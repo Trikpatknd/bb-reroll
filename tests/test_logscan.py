@@ -6,7 +6,7 @@ reworded log line can't silently drift away from the regex that must match it.
 import re
 from pathlib import Path
 
-from logscan import (
+from bbreroll.logscan import (
     INIT_RE, FINISH_RE, DEPCHECK_RE, UNEXPECTED_RE, MATCH_RE,
     strip_html, analyze_tail,
 )

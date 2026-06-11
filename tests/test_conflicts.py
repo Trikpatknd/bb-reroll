@@ -1,5 +1,5 @@
 """origin_hardcoded_stars.conflicts() — the pre-flight unsatisfiability check."""
-import origin_hardcoded_stars as ohs
+from bbreroll import origin_hardcoded_stars as ohs
 
 
 def test_gladiators_bear_msk_is_unsatisfiable():

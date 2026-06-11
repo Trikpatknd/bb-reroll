@@ -1,7 +1,7 @@
 """Snapshot tests for origin_hardcoded_stars.summarize() (drives the GUI info
 panel). Dict insertion order is preserved (Python 3.7+), so the rendered token
 order is stable."""
-import origin_hardcoded_stars as ohs
+from bbreroll import origin_hardcoded_stars as ohs
 
 
 def test_gladiators_snapshot():

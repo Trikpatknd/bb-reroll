@@ -51,7 +51,7 @@ def test_build_zip_contents_and_manifest():
 def test_embed_template_has_matching_version():
     # mod_template.py is generated; regenerate-and-import would be heavier, so
     # just assert that if it exists, its NUT_VERSION matches VERSION.
-    tmpl = ROOT / "mod_template.py"
+    tmpl = ROOT / "bbreroll" / "mod_template.py"
     if not tmpl.exists():
         return
     ns = {}

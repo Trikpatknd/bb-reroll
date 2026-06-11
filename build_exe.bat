@@ -13,7 +13,7 @@ if errorlevel 1 (
 
 python tools\embed_nut.py
 if errorlevel 1 (
-    echo Failed to regenerate mod_template.py.
+    echo Failed to regenerate bbreroll/mod_template.py.
     exit /b 1
 )
 
