@@ -1,15 +1,22 @@
 """Regenerate mod_template.py from mod/bb_reroll_dump.nut.
 
 Run this whenever you edit the .nut source so the embedded copy stays in
-sync with the on-disk version.
+sync with the on-disk version. Also stamps the repo-root VERSION into the
+.nut first, so VERSION remains the single source of truth.
 
 Usage:  python tools/embed_nut.py
 """
 from pathlib import Path
 
+from buildutil import read_version, stamp_nut_file
+
 ROOT = Path(__file__).resolve().parent.parent
 NUT  = ROOT / "mod" / "bb_reroll_dump.nut"
 OUT  = ROOT / "mod_template.py"
+
+version = read_version()
+if stamp_nut_file(version):
+    print(f"Stamped .nut version -> {version}")
 
 nut = NUT.read_text(encoding="utf-8").replace("\r\n", "\n")
 assert "'''" not in nut, ".nut contains triple single quotes — change embed quote style"
@@ -21,7 +28,9 @@ OUT.write_text(
     'so the GUI ships with the latest mod source baked in.\n'
     '"""\n'
     '\n'
+    f'NUT_VERSION = "{version}"\n'
+    '\n'
     "NUT_TEMPLATE = r'''" + nut + "'''\n",
     encoding="utf-8",
 )
-print(f"Wrote {OUT.relative_to(ROOT)} ({len(nut)} chars of .nut)")
+print(f"Wrote {OUT.relative_to(ROOT)} (v{version}, {len(nut)} chars of .nut)")

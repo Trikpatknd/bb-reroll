@@ -174,7 +174,7 @@
     if (!("World" in ::getroottable()) || ::World == null) return;
     local roster = ::World.getPlayerRoster().getAll();
     if (roster == null || roster.len() == 0) return;
-    ::logInfo(::BBReroll.Tag + " START");
+    ::logInfo(::BBReroll.Tag + " START v" + ::BBReroll.Version);
     foreach (i, bro in roster) {
         local bg = bro.getBackground();
         local talents = ::BBReroll_FindTalents(bro);

@@ -84,6 +84,27 @@ BB_LOG        = BB_DIR / "log.html"
 SETTINGS_PATH = APP_DIR / "bb_reroll_gui.json"
 
 
+def _read_app_version() -> str:
+    """Version string from the repo-root VERSION file (the single source of
+    truth). Bundled into the .exe via gui.spec; falls back to the version
+    baked into the embedded template, then 'unknown'."""
+    for base in (BUNDLE_DIR, APP_DIR):
+        try:
+            p = base / "VERSION"
+            if p.exists():
+                return p.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    try:
+        from mod_template import NUT_VERSION
+        return NUT_VERSION
+    except Exception:
+        return "unknown"
+
+
+APP_VERSION = _read_app_version()
+
+
 def _sanitize_trait(name: str) -> str:
     """Strip a user-typed trait name to a Squirrel-safe identifier ([a-z0-9_]).
     Spaces and hyphens become underscores so 'Iron Lungs' → 'iron_lungs'."""
@@ -383,6 +404,11 @@ START_RE    = re.compile(r"\[BBREROLL2\]\s+brute force start")
 # Mod logs this line every time a fast-pass star check passes and a slow
 # verify (full world rebuild + trait eval) kicks in.
 VERIFY_RE   = re.compile(r"\[BBREROLL2\]\s+iter\s+(\d+)\s+stars-pass\s+seed=(\S+)")
+# Init line, written once at BB launch (after Legends loads). Doubles as the
+# "mod is loaded" signal and the source of the installed mod version.
+INIT_RE     = re.compile(r"\[BBREROLL\]\s+mod queued \(v([0-9][0-9A-Za-z.\-]*)\)")
+# Clean-finish marker emitted just before the loop throws its sentinel.
+FINISH_RE   = re.compile(r"\[BBREROLL2\]\s+\*\*\*\s+FINISH:\s+(.+?)\s+\*\*\*")
 
 
 def _strip_html(s: str) -> str:
@@ -390,13 +416,16 @@ def _strip_html(s: str) -> str:
 
 
 class LogWatcher(threading.Thread):
-    def __init__(self, log_path: Path, on_match, on_progress, on_brute_start, on_verify_start, poll=1.0):
+    def __init__(self, log_path: Path, on_match, on_progress, on_brute_start, on_verify_start,
+                 on_mod_init=None, on_finish=None, poll=1.0):
         super().__init__(daemon=True)
         self.log_path        = log_path
         self.on_match        = on_match
         self.on_progress     = on_progress
         self.on_brute_start  = on_brute_start
         self.on_verify_start = on_verify_start
+        self.on_mod_init     = on_mod_init
+        self.on_finish       = on_finish
         self.poll = poll
         self._stop = threading.Event()
         self._pos = log_path.stat().st_size if log_path.exists() else 0
@@ -414,9 +443,19 @@ class LogWatcher(threading.Thread):
                             chunk = f.read()
                             self._pos = f.tell()
                         text = _strip_html(chunk)
+                        # Mod init line (fires once at BB launch after Legends).
+                        if self.on_mod_init:
+                            mi = INIT_RE.search(text)
+                            if mi:
+                                self.on_mod_init(mi.group(1))
                         # Brute force just started → consume any stale STOP request.
                         if START_RE.search(text):
                             self.on_brute_start()
+                        # Clean-finish marker → loop done, BB now half-initialised.
+                        if self.on_finish:
+                            mf = FINISH_RE.search(text)
+                            if mf:
+                                self.on_finish(mf.group(1))
                         for m in MATCH_RE.finditer(text):
                             self.on_match(int(m.group(1)), m.group(2))
                         # If both verify and progress fire in the same chunk,
@@ -494,9 +533,13 @@ class App(ctk.CTk):
         super().__init__()
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
-        self.title("BB Reroll Control Panel")
+        self.title(f"BB Reroll Control Panel — v{APP_VERSION}")
         self.geometry("960x900")
         self.minsize(880, 760)
+
+        # Installed-mod version, learned from the dump log's init line.
+        self.mod_version = None
+        self._mod_seen = False
 
         self.origin_var       = ctk.StringVar(value="Custom")
         self.bro_count_var    = ctk.StringVar(value="5")
@@ -665,8 +708,20 @@ class App(ctk.CTk):
         self.match_list.grid(row=3, column=0, sticky="ew", padx=8, pady=(2, 8))
         self.match_pane.grid_remove()
 
+        # Reusable notice banner — hidden until something needs attention
+        # (version mismatch, brute-force finish, mod-not-loaded). One strip,
+        # recolored per severity. See _show_notice / _clear_notice.
+        self.notice_var = ctk.StringVar(value="")
+        self.notice_banner = ctk.CTkLabel(self, textvariable=self.notice_var,
+                                          font=("Segoe UI", 12, "bold"),
+                                          anchor="w", justify="left", wraplength=900,
+                                          fg_color="#3a2a00", text_color="#ffcf66",
+                                          corner_radius=6)
+        self.notice_banner.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.notice_banner.grid_remove()
+
         status = ctk.CTkFrame(self)
-        status.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 10))
+        status.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 10))
         status.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(status, textvariable=self.status_var, anchor="w").grid(row=0, column=0, sticky="ew", padx=10, pady=4)
 
@@ -1104,7 +1159,8 @@ class App(ctk.CTk):
             self.after(3000, self._start_log_watcher)   # poll until BB writes log.html
             return
         self.watcher = LogWatcher(BB_LOG, self._on_match, self._on_progress,
-                                  self._on_brute_start, self._on_verify_start)
+                                  self._on_brute_start, self._on_verify_start,
+                                  on_mod_init=self._on_mod_init)
         self.watcher.start()
         self._set_watch_state("idle")
         self.watch_var.set("connected — waiting for brute force")
@@ -1122,6 +1178,45 @@ class App(ctk.CTk):
         self._last_activity_ts = time.time()
         self.after(0, lambda: (self._set_watch_state("running"),
                                self.status_var.set("Brute force started.")))
+
+    def _on_mod_init(self, mod_version):
+        """Watcher saw '[BBREROLL] mod queued (vX)'. Confirms the mod loaded and
+        tells us its version; warn if it doesn't match this GUI."""
+        self._mod_seen = True
+        self.mod_version = mod_version
+        self.after(0, lambda: self._apply_version_check(mod_version))
+
+    def _apply_version_check(self, mod_version):
+        if APP_VERSION != "unknown" and mod_version != APP_VERSION:
+            self._show_notice(
+                f"⚠ Version mismatch — this GUI is v{APP_VERSION} but the installed mod is v{mod_version}. "
+                "Rebuild and redeploy (Save & Deploy, or run build_exe.bat) so they match.",
+                kind="warn")
+        elif self.notice_var.get().startswith("⚠ Version mismatch"):
+            self._clear_notice()  # versions agree now — drop a stale mismatch notice
+
+    # ── notice banner (version mismatch / finish / mod-not-loaded) ──
+    _NOTICE_COLORS = {
+        "warn":  ("#3a2a00", "#ffcf66"),   # amber
+        "error": ("#3a1410", "#ff8a6e"),   # red
+        "info":  ("#10263a", "#79b8e0"),   # blue
+    }
+
+    def _show_notice(self, text: str, kind: str = "warn"):
+        fg, tc = self._NOTICE_COLORS.get(kind, self._NOTICE_COLORS["warn"])
+        self.notice_var.set(text)
+        try:
+            self.notice_banner.configure(fg_color=fg, text_color=tc)
+            self.notice_banner.grid()
+        except Exception:
+            pass
+
+    def _clear_notice(self):
+        self.notice_var.set("")
+        try:
+            self.notice_banner.grid_remove()
+        except Exception:
+            pass
 
     def _on_match(self, iter_num, seed):
         self._last_activity_ts = time.time()
