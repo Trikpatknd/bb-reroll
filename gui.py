@@ -370,12 +370,36 @@ f'    RequiredMode = "{required_mode}",  // "any" = at least one match; "all" = 
 
 # ─────────────────────── deploy ───────────────────────
 
+_NUT_VER_RE = re.compile(r'Version\s*=\s*"([^"]*)"')
+
+
+def nut_version(text: str):
+    """The Version string inside .nut source, or None."""
+    m = _NUT_VER_RE.search(text)
+    return m.group(1) if m else None
+
+
 def rewrite_nut(cfg: dict):
     """Write a fresh .nut with the GUI's config. Creates the file (and parent
-    directory) from the embedded template if it doesn't exist yet."""
+    directory) from the embedded template if it doesn't exist yet.
+
+    Stale-base guard: a frozen exe carries its mod source next to itself
+    (<exe dir>/mod/bb_reroll_dump.nut). If that on-disk copy is from an OLDER
+    GUI version, reusing it would silently deploy outdated mod code — exactly
+    how a v3.4.3 zip once overwrote a v3.4.5 deploy. When the on-disk version
+    disagrees with this GUI's version, the embedded template (which always
+    matches the GUI) wins. Returns a notice string when that happens, else None.
+    """
+    notice = None
     NUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     if NUT_PATH.exists():
         text = NUT_PATH.read_text(encoding="utf-8")
+        disk_ver = nut_version(text)
+        if (NUT_TEMPLATE and APP_VERSION != "unknown"
+                and disk_ver is not None and disk_ver != APP_VERSION):
+            notice = (f"Mod source next to the GUI was v{disk_ver} (stale) — replaced with "
+                      f"this GUI's embedded v{APP_VERSION} before deploying.")
+            text = NUT_TEMPLATE
     elif NUT_TEMPLATE:
         text = NUT_TEMPLATE
     else:
@@ -388,12 +412,27 @@ def rewrite_nut(cfg: dict):
         raise RuntimeError("Couldn't find ::BBReroll_BF block in the .nut/template.")
     new = text[:block[0]] + render_config_block(cfg) + text[block[1]:]
     NUT_PATH.write_text(new, encoding="utf-8")
+    return notice
 
 
 def rebuild_zip():
     NUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    manifest = json.dumps({
+        "mod": "bb_reroll_dump",
+        "version": APP_VERSION,
+        "built": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "via": "gui",
+    }, indent=2)
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as z:
         z.write(NUT_PATH, arcname="scripts/!mods_preload/bb_reroll_dump.nut")
+        z.writestr("BBRR_MANIFEST.json", manifest)
+
+
+def deployed_nut_version(zip_path: Path):
+    """Read the mod version back out of a deployed zip (verification step)."""
+    with zipfile.ZipFile(zip_path) as z:
+        return nut_version(
+            z.read("scripts/!mods_preload/bb_reroll_dump.nut").decode("utf-8", "ignore"))
 
 
 def copy_to_bb(bb_data_dir: Path):
@@ -404,26 +443,20 @@ def copy_to_bb(bb_data_dir: Path):
 
 # ─────────────────────── log watcher ───────────────────────
 
-MATCH_RE    = re.compile(r"\[BBREROLL2\]\s+\*\*\*\s+MATCH\s+at\s+iter\s+(\d+)\s+seed=(\S+?)(?:\s+\(verified\))?\s+\*\*\*")
-PROGRESS_RE = re.compile(r"\[BBREROLL2\]\s+iter\s+(\d+)/(\d+)")
-START_RE    = re.compile(r"\[BBREROLL2\]\s+brute force start")
-# Mod logs this line every time a fast-pass star check passes and a slow
-# verify (full world rebuild + trait eval) kicks in.
-VERIFY_RE   = re.compile(r"\[BBREROLL2\]\s+iter\s+(\d+)\s+stars-pass\s+seed=(\S+)")
-# Init line, written once at BB launch (after Legends loads). Doubles as the
-# "mod is loaded" signal and the source of the installed mod version.
-INIT_RE     = re.compile(r"\[BBREROLL\]\s+mod queued \(v([0-9][0-9A-Za-z.\-]*)\)")
-# Clean-finish marker emitted just before the loop throws its sentinel.
-FINISH_RE   = re.compile(r"\[BBREROLL2\]\s+\*\*\*\s+FINISH:\s+(.+?)\s+\*\*\*")
+# Patterns + tail classification live in logscan.py (unit-tested against the
+# exact strings the .nut emits — see tests/test_logscan.py).
+from logscan import (
+    MATCH_RE, PROGRESS_RE, START_RE, VERIFY_RE, INIT_RE, FINISH_RE,
+    DEPCHECK_RE, UNEXPECTED_RE, strip_html, analyze_tail,
+)
 
-
-def _strip_html(s: str) -> str:
-    return re.sub(r"<[^>]+>", "", s)
+_strip_html = strip_html   # legacy alias for older call sites in this file
 
 
 class LogWatcher(threading.Thread):
     def __init__(self, log_path: Path, on_match, on_progress, on_brute_start, on_verify_start,
-                 on_mod_init=None, on_finish=None, on_activity=None, poll=1.0):
+                 on_mod_init=None, on_finish=None, on_activity=None,
+                 on_depcheck=None, on_unexpected=None, poll=1.0):
         super().__init__(daemon=True)
         self.log_path        = log_path
         self.on_match        = on_match
@@ -433,25 +466,43 @@ class LogWatcher(threading.Thread):
         self.on_mod_init     = on_mod_init
         self.on_finish       = on_finish
         self.on_activity     = on_activity
+        self.on_depcheck     = on_depcheck
+        self.on_unexpected   = on_unexpected
         self.poll = poll
         self._stop = threading.Event()
         self._pos = log_path.stat().st_size if log_path.exists() else 0
 
     def _initial_scan(self):
-        """Scan the tail of any pre-existing log once, so we catch a 'mod
-        queued' init line that was written before the GUI connected (mod
-        loaded in a session that started before we began watching)."""
-        if not self.on_mod_init:
-            return
+        """Classify any pre-existing log once, so events written BEFORE the GUI
+        connected still surface: the mod's init line (and its version), a
+        finished run (BB sitting in a half-init state right now), or a
+        dependency-check failure.
+
+        Two hard-won details:
+        - Binary read; text-mode seek() with an arbitrary byte offset is
+          undefined behaviour in Python 3 and silently broke this scan.
+        - The init line is written at BB LAUNCH, i.e. near the HEAD of the log
+          — a long brute-force run pushes it megabytes away from the tail (in
+          one real log it sat at 1.2% of 4.3 MB). A tail-only window misses it,
+          so read the whole file (one-time cost at connect); for pathological
+          sizes fall back to head + tail windows.
+        """
         try:
             size = self.log_path.stat().st_size
-            with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
-                if size > 2_000_000:
-                    f.seek(size - 2_000_000)   # last ~2MB is plenty for a recent init line
-                tail = _strip_html(f.read())
-            ms = list(INIT_RE.finditer(tail))
-            if ms:
-                self.on_mod_init(ms[-1].group(1))
+            with open(self.log_path, "rb") as f:
+                if size <= 64_000_000:
+                    raw = f.read()
+                else:
+                    head = f.read(1_000_000)
+                    f.seek(size - 8_000_000)
+                    raw = head + b"\n" + f.read()
+            found = analyze_tail(strip_html(raw.decode("utf-8", errors="ignore")))
+            if found["mod_version"] and self.on_mod_init:
+                self.on_mod_init(found["mod_version"])
+            if found["missing_deps"] and self.on_depcheck:
+                self.on_depcheck(found["missing_deps"])
+            if found["finished"] and self.on_finish:
+                self.on_finish(found["finished"])
         except Exception:
             pass
 
@@ -487,6 +538,16 @@ class LogWatcher(threading.Thread):
                             mf = FINISH_RE.search(text)
                             if mf:
                                 self.on_finish(mf.group(1))
+                        # Dependency-check failure (missing Legends/MSU).
+                        if self.on_depcheck:
+                            md = DEPCHECK_RE.search(text)
+                            if md:
+                                self.on_depcheck(md.group(1))
+                        # Non-sentinel exception passed through by our hook.
+                        if self.on_unexpected:
+                            mu = UNEXPECTED_RE.search(text)
+                            if mu:
+                                self.on_unexpected(mu.group(1))
                         for m in MATCH_RE.finditer(text):
                             self.on_match(int(m.group(1)), m.group(2))
                         # If both verify and progress fire in the same chunk,
@@ -1143,7 +1204,9 @@ class App(ctk.CTk):
                 ):
                     self.status_var.set("Deploy cancelled — unsatisfiable criteria.")
                     return
-            rewrite_nut(cfg)
+            stale_note = rewrite_nut(cfg)
+            if stale_note:
+                self._show_notice("⚠ " + stale_note, kind="warn")
             rebuild_zip()
             bb = Path(self.bb_path_var.get())
             if not bb.exists():
@@ -1151,7 +1214,22 @@ class App(ctk.CTk):
                 return
             dest = copy_to_bb(bb)
             self._save_settings()             # persist BB path + window state
-            self.status_var.set(f"✓ Deployed → {dest}")
+            # Verify by reading the deployed zip back — catches a stale source
+            # silently winning (the exact failure that wasted a smoke-test run).
+            deployed_ver = None
+            try:
+                deployed_ver = deployed_nut_version(dest)
+            except Exception:
+                pass
+            if deployed_ver and APP_VERSION != "unknown" and deployed_ver != APP_VERSION:
+                self._show_notice(
+                    f"⚠ Deploy verification FAILED — the zip now in BB's data folder is "
+                    f"v{deployed_ver}, but this GUI is v{APP_VERSION}. Something stale "
+                    "overwrote the deploy; check for old copies of the GUI/mod.", kind="error")
+                self.status_var.set(f"✗ Deployed v{deployed_ver} ≠ GUI v{APP_VERSION} — see banner")
+                return
+            ver_txt = f" (v{deployed_ver}, verified)" if deployed_ver else ""
+            self.status_var.set(f"✓ Deployed{ver_txt} → {dest}")
         except Exception as e:
             self.status_var.set(f"✗ {e}")
 
@@ -1213,11 +1291,22 @@ class App(ctk.CTk):
         self.watcher = LogWatcher(BB_LOG, self._on_match, self._on_progress,
                                   self._on_brute_start, self._on_verify_start,
                                   on_mod_init=self._on_mod_init, on_finish=self._on_finish,
-                                  on_activity=self._on_log_activity)
+                                  on_activity=self._on_log_activity,
+                                  on_depcheck=self._on_depcheck,
+                                  on_unexpected=self._on_unexpected)
         self.watcher.start()
         self._set_watch_state("idle")
         self.watch_var.set("connected — waiting for brute force")
         self._tick_watch_state()
+        # If the log was written to recently, BB is plausibly running RIGHT NOW
+        # — arm the mod-not-loaded timer immediately instead of waiting for new
+        # log activity (a BB session idling at the menu writes nothing more, so
+        # the activity-driven path alone never trips the warning).
+        try:
+            if time.time() - BB_LOG.stat().st_mtime < 300 and self._first_activity_ts is None:
+                self._first_activity_ts = time.time()
+        except Exception:
+            pass
         # Heads-up if BB's engine log has grown large. We can't rotate it from
         # the sandboxed mod (and the mod now throttles its own per-iter output),
         # but the user can delete it while BB is closed; it regenerates on next
@@ -1259,6 +1348,22 @@ class App(ctk.CTk):
             + detail + "). Close BB and restart it before playing — it may show a "
             "crash dialog or return to the menu; either way, do not continue from there.",
             kind="error"))
+
+    def _on_depcheck(self, missing):
+        """Mod's dependency self-check reported missing required mods."""
+        self._mod_seen = True   # our .nut ran — the problem is its dependencies
+        self.after(0, lambda: self._show_notice(
+            f"The mod reports missing required mod(s): {missing}. Install Legends + MSU "
+            "(plus mod_hooks / modern_hooks) into your BB data folder, then restart BB.",
+            kind="error"))
+
+    def _on_unexpected(self, detail):
+        """A non-BBReroll exception surfaced during the run and was passed
+        through to BB's normal error handling (Phase 2 sentinel logic)."""
+        self.after(0, lambda: self._show_notice(
+            "An unexpected error occurred during the run (NOT a BB Reroll finish — "
+            f"likely vanilla/Legends/another mod): {detail[:200]}. BB's normal error "
+            "handling applies; check log.html for details.", kind="error"))
 
     def _on_mod_init(self, mod_version):
         """Watcher saw '[BBREROLL] mod queued (vX)'. Confirms the mod loaded and
