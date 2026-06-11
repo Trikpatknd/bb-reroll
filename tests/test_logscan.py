@@ -93,6 +93,15 @@ def test_analyze_tail_no_init_reports_events_anyway():
     assert out["missing_deps"] == "Legends (mod_legends), MSU (mod_msu)"
 
 
+def test_analyze_tail_unexpected_scoped_like_others():
+    # Caught from current-session content…
+    out = analyze_tail("\n".join([INIT_LINE, UNEXPECTED_L]))
+    assert out["unexpected"] == "the index 'x' does not exist"
+    # …but a stale one from before a fresh launch's init line is ignored.
+    out = analyze_tail("\n".join([UNEXPECTED_L, INIT_LINE]))
+    assert out["unexpected"] is None
+
+
 def test_analyze_tail_init_far_from_tail():
     # Init at the head, megabytes of run output after — the real-log shape
     # that broke the original tail-window scan.

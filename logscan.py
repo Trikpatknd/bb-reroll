@@ -40,7 +40,7 @@ def analyze_tail(text: str) -> dict:
     anything before it belongs to an older session that survived in the same
     file. Without an init line, the whole text is considered.
 
-    Returns {mod_version, finished, missing_deps} (each None when absent).
+    Returns {mod_version, finished, missing_deps, unexpected} (None when absent).
     """
     inits = list(INIT_RE.finditer(text))
     version = inits[-1].group(1) if inits else None
@@ -48,8 +48,10 @@ def analyze_tail(text: str) -> dict:
 
     finishes = list(FINISH_RE.finditer(scope))
     depchecks = list(DEPCHECK_RE.finditer(scope))
+    unexpecteds = list(UNEXPECTED_RE.finditer(scope))
     return {
         "mod_version": version,
         "finished": finishes[-1].group(1) if finishes else None,
         "missing_deps": depchecks[-1].group(1) if depchecks else None,
+        "unexpected": unexpecteds[-1].group(1) if unexpecteds else None,
     }

@@ -503,6 +503,8 @@ class LogWatcher(threading.Thread):
                 self.on_depcheck(found["missing_deps"])
             if found["finished"] and self.on_finish:
                 self.on_finish(found["finished"])
+            if found["unexpected"] and self.on_unexpected:
+                self.on_unexpected(found["unexpected"])
         except Exception:
             pass
 
@@ -635,6 +637,8 @@ class App(ctk.CTk):
         # Mod-not-loaded heuristic state (GitHub issue #1).
         self._first_activity_ts = None
         self._not_loaded_warned = False
+        # Banner texts the user has ✕'d this session (sticky dismissal).
+        self._dismissed_notices: set[str] = set()
 
         self.origin_var       = ctk.StringVar(value="Custom")
         self.bro_count_var    = ctk.StringVar(value="5")
@@ -805,14 +809,23 @@ class App(ctk.CTk):
 
         # Reusable notice banner — hidden until something needs attention
         # (version mismatch, brute-force finish, mod-not-loaded). One strip,
-        # recolored per severity. See _show_notice / _clear_notice.
+        # recolored per severity, with a ✕ to dismiss. Dismissal is sticky per
+        # message text for this GUI session: the connect-time tail scan re-fires
+        # events that are still in the log, and without stickiness the same
+        # banner would resurrect immediately after being dismissed.
         self.notice_var = ctk.StringVar(value="")
-        self.notice_banner = ctk.CTkLabel(self, textvariable=self.notice_var,
-                                          font=("Segoe UI", 12, "bold"),
-                                          anchor="w", justify="left", wraplength=900,
-                                          fg_color="#3a2a00", text_color="#ffcf66",
-                                          corner_radius=6)
+        self.notice_banner = ctk.CTkFrame(self, fg_color="#3a2a00", corner_radius=6)
         self.notice_banner.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.notice_banner.grid_columnconfigure(0, weight=1)
+        self.notice_label = ctk.CTkLabel(self.notice_banner, textvariable=self.notice_var,
+                                         font=("Segoe UI", 12, "bold"),
+                                         anchor="w", justify="left", wraplength=860,
+                                         text_color="#ffcf66")
+        self.notice_label.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=6)
+        self.notice_close = ctk.CTkButton(self.notice_banner, text="✕", width=28, height=24,
+                                          fg_color="transparent", border_width=1,
+                                          command=self._dismiss_notice)
+        self.notice_close.grid(row=0, column=1, sticky="ne", padx=(0, 8), pady=6)
         self.notice_banner.grid_remove()
 
         status = ctk.CTkFrame(self)
@@ -1389,13 +1402,25 @@ class App(ctk.CTk):
     }
 
     def _show_notice(self, text: str, kind: str = "warn"):
+        if text in self._dismissed_notices:
+            return   # user already ✕'d this exact message this session
         fg, tc = self._NOTICE_COLORS.get(kind, self._NOTICE_COLORS["warn"])
         self.notice_var.set(text)
         try:
-            self.notice_banner.configure(fg_color=fg, text_color=tc)
+            self.notice_banner.configure(fg_color=fg)
+            self.notice_label.configure(text_color=tc)
             self.notice_banner.grid()
         except Exception:
             pass
+
+    def _dismiss_notice(self):
+        """✕ on the banner (also wired to the match pane's Clear). Sticky: the
+        same text won't re-show this session, so connect-time re-scans of log
+        content that's still on disk can't resurrect a dismissed banner."""
+        txt = self.notice_var.get()
+        if txt:
+            self._dismissed_notices.add(txt)
+        self._clear_notice()
 
     def _clear_notice(self):
         self.notice_var.set("")
@@ -1533,6 +1558,7 @@ class App(ctk.CTk):
     def _clear_matches(self):
         self._matches.clear()
         self._render_match_list()
+        self._dismiss_notice()   # users reach for Clear to dismiss banners too
 
     def _copy_to_clipboard(self, text: str):
         try:
