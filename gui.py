@@ -52,11 +52,17 @@ except Exception:
 # Per-origin hardcoded talent stars — drives the info label above the grid
 # and the auto-fill of the stars grid when an origin is picked.
 try:
-    from origin_hardcoded_stars import ORIGIN_HARDCODED_STARS, summarize as summarize_origin
+    from origin_hardcoded_stars import (
+        ORIGIN_HARDCODED_STARS,
+        summarize as summarize_origin,
+        conflicts as origin_conflicts,
+    )
 except Exception:
     ORIGIN_HARDCODED_STARS = {}
     def summarize_origin(_origin: str) -> str:
         return ""
+    def origin_conflicts(_origin, _stars_by_slot):
+        return []
 
 
 # ─────────────────────── paths ───────────────────────
@@ -417,7 +423,7 @@ def _strip_html(s: str) -> str:
 
 class LogWatcher(threading.Thread):
     def __init__(self, log_path: Path, on_match, on_progress, on_brute_start, on_verify_start,
-                 on_mod_init=None, on_finish=None, poll=1.0):
+                 on_mod_init=None, on_finish=None, on_activity=None, poll=1.0):
         super().__init__(daemon=True)
         self.log_path        = log_path
         self.on_match        = on_match
@@ -426,11 +432,32 @@ class LogWatcher(threading.Thread):
         self.on_verify_start = on_verify_start
         self.on_mod_init     = on_mod_init
         self.on_finish       = on_finish
+        self.on_activity     = on_activity
         self.poll = poll
         self._stop = threading.Event()
         self._pos = log_path.stat().st_size if log_path.exists() else 0
 
+    def _initial_scan(self):
+        """Scan the tail of any pre-existing log once, so we catch a 'mod
+        queued' init line that was written before the GUI connected (mod
+        loaded in a session that started before we began watching)."""
+        if not self.on_mod_init:
+            return
+        try:
+            size = self.log_path.stat().st_size
+            with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
+                if size > 2_000_000:
+                    f.seek(size - 2_000_000)   # last ~2MB is plenty for a recent init line
+                tail = _strip_html(f.read())
+            ms = list(INIT_RE.finditer(tail))
+            if ms:
+                self.on_mod_init(ms[-1].group(1))
+        except Exception:
+            pass
+
     def run(self):
+        if self.log_path.exists():
+            self._initial_scan()
         while not self._stop.is_set():
             try:
                 if self.log_path.exists():
@@ -443,6 +470,10 @@ class LogWatcher(threading.Thread):
                             chunk = f.read()
                             self._pos = f.tell()
                         text = _strip_html(chunk)
+                        # Any non-empty new content = BB is actively writing
+                        # its log (used for the mod-not-loaded heuristic).
+                        if self.on_activity and text.strip():
+                            self.on_activity()
                         # Mod init line (fires once at BB launch after Legends).
                         if self.on_mod_init:
                             mi = INIT_RE.search(text)
@@ -540,6 +571,9 @@ class App(ctk.CTk):
         # Installed-mod version, learned from the dump log's init line.
         self.mod_version = None
         self._mod_seen = False
+        # Mod-not-loaded heuristic state (GitHub issue #1).
+        self._first_activity_ts = None
+        self._not_loaded_warned = False
 
         self.origin_var       = ctk.StringVar(value="Custom")
         self.bro_count_var    = ctk.StringVar(value="5")
@@ -1091,6 +1125,24 @@ class App(ctk.CTk):
                 ):
                     self.status_var.set("Deploy cancelled.")
                     return
+            # Pre-flight: hardcoded-stars unsatisfiability (the Gladiators-bear
+            # case). If a slot's stars are fixed by the scenario below a required
+            # minimum, no seed can ever match — warn and require confirmation.
+            conflicts = origin_conflicts(self.origin_var.get(), cfg["stars_by_slot"])
+            if conflicts:
+                lines = "\n".join(
+                    f"  • Slot {slot}: needs {stat.upper()} ≥ {need}, but the scenario fixes it at {have}"
+                    for slot, stat, need, have in conflicts
+                )
+                if not messagebox.askyesno(
+                    "Unsatisfiable criteria",
+                    f"\"{self.origin_var.get()}\" hardcodes some starting stars, and your "
+                    "criteria ask for more than the scenario can ever produce:\n\n"
+                    f"{lines}\n\n"
+                    "No seed will ever match these. Deploy anyway?",
+                ):
+                    self.status_var.set("Deploy cancelled — unsatisfiable criteria.")
+                    return
             rewrite_nut(cfg)
             rebuild_zip()
             bb = Path(self.bb_path_var.get())
@@ -1160,7 +1212,8 @@ class App(ctk.CTk):
             return
         self.watcher = LogWatcher(BB_LOG, self._on_match, self._on_progress,
                                   self._on_brute_start, self._on_verify_start,
-                                  on_mod_init=self._on_mod_init)
+                                  on_mod_init=self._on_mod_init, on_finish=self._on_finish,
+                                  on_activity=self._on_log_activity)
         self.watcher.start()
         self._set_watch_state("idle")
         self.watch_var.set("connected — waiting for brute force")
@@ -1176,8 +1229,24 @@ class App(ctk.CTk):
     def _on_brute_start(self):
         """Watcher saw '[BBREROLL2] brute force start'."""
         self._last_activity_ts = time.time()
+        self._mod_seen = True   # a running loop proves the mod is loaded
         self.after(0, lambda: (self._set_watch_state("running"),
                                self.status_var.set("Brute force started.")))
+
+    def _on_log_activity(self):
+        """Any new BB log content. Used only to time the mod-not-loaded check."""
+        if self._first_activity_ts is None:
+            self._first_activity_ts = time.time()
+
+    def _on_finish(self, detail):
+        """Watcher saw the clean-finish marker. The loop is done and BB is now
+        in a half-initialised state — make that prominent."""
+        self._mod_seen = True
+        self.after(0, lambda: self._show_notice(
+            "Battle Brothers is now in an UNSTABLE state (brute force finished: "
+            + detail + "). Close BB and restart it before playing — it may show a "
+            "crash dialog or return to the menu; either way, do not continue from there.",
+            kind="error"))
 
     def _on_mod_init(self, mod_version):
         """Watcher saw '[BBREROLL] mod queued (vX)'. Confirms the mod loaded and
@@ -1276,6 +1345,18 @@ class App(ctk.CTk):
                 if time.time() - self._last_activity_ts > self._idle_threshold():
                     self._set_watch_state("idle")
                     self.watch_var.set("idle (no recent activity)")
+            # Mod-not-loaded heuristic (GitHub issue #1): BB has been writing
+            # its log for a while but our init line never appeared → the mod
+            # most likely didn't load (missing Legends / MSU / hooks).
+            if (not self._mod_seen and not self._not_loaded_warned
+                    and self._first_activity_ts
+                    and time.time() - self._first_activity_ts > 60):
+                self._not_loaded_warned = True
+                self._show_notice(
+                    "The mod doesn't appear to be loaded — Battle Brothers is writing its log "
+                    "but no BB Reroll init line has appeared. Check that Legends, MSU and the "
+                    "hooks framework (mod_hooks / modern_hooks) are installed in your BB data "
+                    "folder, then restart BB.", kind="error")
         finally:
             self.after(2000, self._tick_watch_state)
 

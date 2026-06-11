@@ -68,3 +68,39 @@ def summarize(origin: str) -> str:
         label = "Slots" if len(rolled) > 1 else "Slot"
         lines.append(f"{label} {joined}: fully rolled.")
     return "\n".join(lines)
+
+
+def conflicts(origin: str, stars_by_slot: dict) -> list:
+    """Return user criteria that the origin's hardcoded stars make impossible.
+
+    `stars_by_slot` is the shape the GUI/.nut use:
+        {"*": {stat: min, ...}, "1": {stat: min, ...}, ...}
+    A numeric slot key overrides "*" entirely for that slot (it is NOT merged),
+    matching BBReroll_BF_StarsFor in the .nut.
+
+    A slot with a non-empty hardcoded dict is fully determined: the scenario
+    zeroes all talents (resize(COUNT, 0)) before assigning the listed stats, so
+    listed stats take their value and every other stat is 0. A required minimum
+    above the fixed value on such a slot can therefore never be met by any seed.
+
+    Returns a list of (slot_number, stat, needed, have) tuples; empty = no
+    provable conflict. Rolled slots (empty dict) are skipped — any stat is
+    reachable there.
+    """
+    slots = ORIGIN_HARDCODED_STARS.get(origin) or []
+    out = []
+    for idx, hardcoded in enumerate(slots, start=1):
+        if not hardcoded:
+            continue  # rolled slot — anything is possible
+        crit = stars_by_slot.get(str(idx))
+        if crit is None:
+            crit = stars_by_slot.get("*", {})
+        for stat, need in crit.items():
+            try:
+                need = int(need)
+            except (TypeError, ValueError):
+                continue
+            have = hardcoded.get(stat, 0)
+            if need > have:
+                out.append((idx, stat, need, have))
+    return out
