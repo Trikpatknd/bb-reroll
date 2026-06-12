@@ -104,6 +104,29 @@
     },
 };
 
+// These live OUTSIDE ::BBReroll_BF because the GUI's Save & Deploy rewrites
+// that whole table and would drop unknown fields.
+//
+// Fixed master seed for reproducible benchmark / A-B runs: when non-null, the
+// loop seeds its per-iter seed generator with this instead of wall-clock time,
+// so two runs produce the identical seed sequence. Leave null for normal use.
+::BBReroll_BF_FixedMasterSeed <- null;
+
+// ---- fast-pass skip machinery (perf) ----
+// FastIter is true only while the loop performs a fast-pass spawn; InSSVE is
+// true while inside player.setStartValuesEx. The player hook skips
+// fillAttributeLevelUpValues only when FastIter && !InSSVE — i.e. only the
+// scenarios' explicit post-roster re-fills, which run after EVERY bro's talent
+// roll and therefore cannot change which seeds pass the star filter. The
+// internal call (inside setStartValuesEx) executes between bro N's and bro
+// N+1's talent rolls in multi-bro rosters and must never be skipped.
+::BBReroll_FastIter <- false;
+::BBReroll_InSSVE   <- false;
+// Master enable — keep false until the A/B determinism check passes (two runs
+// with the same FixedMasterSeed, flag off vs on, must log identical per-iter
+// seeds and stars-pass results).
+::BBReroll_SkipPostStarWork <- false;
+
 
 // ---------- shared helpers ----------
 
@@ -264,19 +287,47 @@
     return {};
 };
 
+// Hot-path criteria: resolve everything ONCE per run. Returns an array indexed
+// by 1-based slot (index 0 unused); each entry is an array of [attrIdx, min,
+// statName] triples with the "*" fallback already applied. The per-iter eval
+// then does pure integer indexing — no string conversion, no table lookups,
+// no Const.Attributes resolution per bro per iteration.
+::BBReroll_BF_BuildFastChecks <- function (parsed, maxSlots = 20) {
+    local out = [[]];   // index 0 placeholder
+    for (local slot = 1; slot <= maxSlots; slot++) {
+        local spec = ::BBReroll_BF_StarsFor(parsed, slot);
+        local checks = [];
+        foreach (key, minStars in spec) {
+            local idx = ::BBReroll_AttrIdx(key);   // logs once on unknown stat
+            if (idx == null) continue;
+            checks.append([idx, minStars, key]);
+        }
+        out.append(checks);
+    }
+    return out;
+};
+
 // Stars-only check. Used by the fast pre-filter in the brute-force loop.
-// Returns [pass, fail_reason] just like EvalBro, but skips trait/banned/
-// required checks since they aren't world-faithful in the fast (world-reused)
-// pass and would force a slow verify even when stars alone don't pass.
-::BBReroll_BF_EvalStarsOnly <- function (bro, slot1based, parsed_stars) {
+// Returns [pass, fail_reason] like EvalBro but skips trait/banned/required
+// checks (not world-faithful in the fast pass). Takes the pre-resolved
+// fast_checks structure; slots with no criteria return before the talent
+// lookup (hot path: this runs per bro per iteration).
+::BBReroll_BF_EvalStarsOnly <- function (bro, slot1based, fast_checks) {
+    // Explicit if/else, not ?: — this build's ternary evaluates BOTH branches
+    // (gotcha #2), which would index out of bounds for slots past the table.
+    local checks;
+    if (slot1based < fast_checks.len()) {
+        checks = fast_checks[slot1based];
+    } else {
+        checks = [];
+    }
+    if (checks.len() == 0) return [true, "ok"];
     local talents = ::BBReroll_FindTalents(bro);
     if (talents == null) return [false, "no_talents"];
-    local stars = ::BBReroll_BF_StarsFor(parsed_stars, slot1based);
-    foreach (key, minStars in stars) {
-        local idx = ::BBReroll_AttrIdx(key);
-        if (idx == null) continue;
-        local got = talents[idx];
-        if (got < minStars) return [false, key + "*" + got + "<" + minStars];
+    for (local i = 0; i < checks.len(); i++) {
+        local c = checks[i];
+        local got = talents[c[0]];
+        if (got < c[1]) return [false, c[2] + "*" + got + "<" + c[1]];
     }
     return [true, "ok"];
 };
@@ -342,8 +393,26 @@
     ::logInfo(::BBReroll.Tag2 + " CampaignSettings: " + keys);
 };
 
-::BBReroll_BF_TryScenarioSpawn <- function (worldState, roster) {
-    // Find the chosen origin and call its onSpawnAssets. Returns true on success.
+::BBReroll_BF_TryScenarioSpawn <- function (worldState, roster, scenario = null) {
+    // Call the chosen origin's onSpawnAssets. Returns true on success. The
+    // scenario object can be pre-resolved with BBReroll_BF_FindScenario and
+    // passed in — the brute-force loop does that once per run instead of
+    // re-resolving it every iteration.
+    if (scenario == null) scenario = ::BBReroll_BF_FindScenario(worldState);
+    if (scenario == null) return false;
+    try {
+        scenario.onSpawnAssets();
+        return true;
+    } catch (e) {
+        ::logWarning(::BBReroll.Tag2 + " scenario.onSpawnAssets failed: " + e + " (falling back)");
+        return false;
+    }
+};
+
+::BBReroll_BF_FindScenario <- function (worldState) {
+    // Resolve the chosen origin's scenario object, or null. The object lives
+    // on CampaignSettings for the whole campaign-setup session (world rebuilds
+    // don't touch it), so one resolve per run is safe.
     local scenario = null;
     // Primary: CampaignSettings.StartingScenario (confirmed via diagnostic log).
     if ("CampaignSettings" in worldState.m
@@ -359,14 +428,8 @@
     if (scenario == null && ::World.Assets != null && "getOrigin" in ::World.Assets) {
         try { scenario = ::World.Assets.getOrigin(); } catch (e) {}
     }
-    if (scenario == null || !("onSpawnAssets" in scenario)) return false;
-    try {
-        scenario.onSpawnAssets();
-        return true;
-    } catch (e) {
-        ::logWarning(::BBReroll.Tag2 + " scenario.onSpawnAssets failed: " + e + " (falling back)");
-        return false;
-    }
+    if (scenario == null || !("onSpawnAssets" in scenario)) return null;
+    return scenario;
 };
 
 ::BBReroll_BF_FallbackSpawn <- function (worldState, roster) {
@@ -439,7 +502,14 @@
     local minY = worldmap.getMinY();
     ::logInfo(Tag + " setup: map dims " + minX + "x" + minY);
 
-    ::Math.seedRandom(::Math.floor(::Time.getRealTime()));
+    if (::BBReroll_BF_FixedMasterSeed != null) {
+        // Reproducible run (benchmark / A-B): identical seed sequence each time.
+        ::Math.seedRandom(::BBReroll_BF_FixedMasterSeed);
+        ::logWarning(Tag + " FIXED master seed " + ::BBReroll_BF_FixedMasterSeed
+            + " — reproducible run (benchmark mode)");
+    } else {
+        ::Math.seedRandom(::Math.floor(::Time.getRealTime()));
+    }
 
     // One-time world build. The scenarios' onSpawnAssets needs roster + entity
     // machinery initialized, but never queries map tiles or world entities
@@ -465,6 +535,19 @@
         spec_summary += "} ";
     }
     ::logInfo(Tag + " parsed stars: " + spec_summary);
+    // Hot-path criteria, fully resolved once (per-slot [attrIdx, min, name]).
+    local fast_checks = ::BBReroll_BF_BuildFastChecks(parsed_stars, 20);
+
+    // Resolve the scenario object once — it lives on CampaignSettings and
+    // survives world rebuilds, so per-iter re-resolution is wasted work.
+    local scenario_obj = ::BBReroll_BF_FindScenario(worldState);
+
+    // Phase timing (Tier-0 instrumentation). getExactTime() deltas accumulate
+    // per phase; the LogEvery line reports rolling averages + iters/s.
+    local t_spawn = 0.0;
+    local t_eval = 0.0;
+    local t_cleanup = 0.0;
+    local run_t0 = ::Time.getExactTime();
 
     local last_fail = "";
     local spawn_mode = "unknown";
@@ -537,8 +620,10 @@
             worldState.m.CampaignSettings.Seed = seed;
             ::Math.seedRandomString(seed + ::BBReroll_RESEED_SUFFIX);
 
+            local pt0 = ::Time.getExactTime();
+            ::BBReroll_FastIter = true;   // fast-pass spawn: post-star skip may apply
             if (x == 0) {
-                if (::BBReroll_BF_TryScenarioSpawn(worldState, roster)) {
+                if (scenario_obj != null && ::BBReroll_BF_TryScenarioSpawn(worldState, roster, scenario_obj)) {
                     spawn_mode = "scenario";
                 } else {
                     ::BBReroll_BF_FallbackSpawn(worldState, roster);
@@ -546,10 +631,13 @@
                 }
                 ::logInfo(Tag + " spawn_mode=" + spawn_mode);
             } else if (spawn_mode == "scenario") {
-                ::BBReroll_BF_TryScenarioSpawn(worldState, roster);
+                ::BBReroll_BF_TryScenarioSpawn(worldState, roster, scenario_obj);
             } else {
                 ::BBReroll_BF_FallbackSpawn(worldState, roster);
             }
+            ::BBReroll_FastIter = false;
+            local pt1 = ::Time.getExactTime();
+            t_spawn += pt1 - pt0;
 
             local bros = roster.getAll();
             if (x == 0) {
@@ -558,13 +646,14 @@
 
             local stars_pass = true;
             foreach (i, bro in bros) {
-                local res = ::BBReroll_BF_EvalStarsOnly(bro, i + 1, parsed_stars);
+                local res = ::BBReroll_BF_EvalStarsOnly(bro, i + 1, fast_checks);
                 if (!res[0]) {
                     stars_pass = false;
                     last_fail = "bro" + (i+1) + " " + res[1];
                     break;
                 }
             }
+            t_eval += ::Time.getExactTime() - pt1;
 
             if (stars_pass) {
                 // ===== SLOW VERIFY: rebuild world with candidate seed =====
@@ -576,8 +665,10 @@
                 destroyAndRebuildWorld(seed);
                 ::Math.seedRandomString(seed + ::BBReroll_RESEED_SUFFIX);
 
+                // FastIter stays false here — the verify spawn must be
+                // byte-identical to a real campaign start (traits included).
                 if (spawn_mode == "scenario") {
-                    ::BBReroll_BF_TryScenarioSpawn(worldState, roster);
+                    ::BBReroll_BF_TryScenarioSpawn(worldState, roster, scenario_obj);
                 } else {
                     ::BBReroll_BF_FallbackSpawn(worldState, roster);
                 }
@@ -612,17 +703,29 @@
                 // about stars in fast pass, which depend purely on the reseed).
             }
         } catch (e) {
+            ::BBReroll_FastIter = false;   // spawn may have thrown mid-toggle
             skipped++;
             ::logWarning(Tag + " iter " + x + " threw: " + e + " — skipping");
         }
 
+        local ct0 = ::Time.getExactTime();
         doCleanup();
+        t_cleanup += ::Time.getExactTime() - ct0;
 
         if ((x + 1) % ::BBReroll_BF.LogEvery == 0) {
+            local n = (x + 1).tofloat();
+            local elapsed = ::Time.getExactTime() - run_t0;
+            local rate = "?";
+            if (elapsed > 0) rate = "" + (::Math.floor((n / elapsed) * 10.0) / 10.0);
             ::logInfo(Tag + " iter " + (x + 1) + "/" + ::BBReroll_BF.MaxIters
-                + " last_fail=" + last_fail + " skipped=" + skipped);
+                + " last_fail=" + last_fail + " skipped=" + skipped
+                + " | avg ms: spawn=" + ::Math.floor(t_spawn / n * 1000.0)
+                + " eval=" + ::Math.floor(t_eval / n * 1000.0)
+                + " cleanup=" + ::Math.floor(t_cleanup / n * 1000.0)
+                + " (" + rate + " iters/s)");
         }
     }
+    ::BBReroll_FastIter = false;   // belt-and-braces before leaving the loop
     // Both exits log a human-readable FINISH line (the GUI tails these) and
     // then throw a unique sentinel. The startNewCampaign catch swallows the
     // sentinel; it does NOT rethrow (rethrow was tried — BB recovers to a
@@ -771,6 +874,40 @@
         }
     }
     ::logInfo(::BBReroll.Tag + " hooked " + hookedCount + "/" + scenarios.len() + " scenarios for deterministic spawn RNG");
+
+    // Fast-pass speedup hooks (see the ::BBReroll_FastIter globals for the
+    // safety argument). setStartValuesEx is wrapped only to maintain the
+    // InSSVE flag; fillAttributeLevelUpValues is skipped during fast iters
+    // when called from OUTSIDE setStartValuesEx (the scenarios' explicit
+    // post-roster re-fills — pure post-star work). Real campaigns and the
+    // slow verify never have FastIter set, so they are unaffected.
+    try {
+        ::mods_hookExactClass("entity/tactical/player", function (o) {
+            local oldSSVE = o.setStartValuesEx;
+            o.setStartValuesEx = function (_backgrounds, _addTraits = true, _gender = -1, _addEquipment = true) {
+                ::BBReroll_InSSVE = true;
+                try {
+                    oldSSVE(_backgrounds, _addTraits, _gender, _addEquipment);
+                } catch (e) {
+                    ::BBReroll_InSSVE = false;
+                    throw e;
+                }
+                ::BBReroll_InSSVE = false;
+            };
+            local oldFill = o.fillAttributeLevelUpValues;
+            o.fillAttributeLevelUpValues = function (...) {
+                if (::BBReroll_SkipPostStarWork && ::BBReroll_FastIter && !::BBReroll_InSSVE) return;
+                // Pass varargs through untouched — the vanilla signature is
+                // compiled, so don't assume its arity.
+                local args = [this];
+                for (local i = 0; i < vargv.len(); i++) args.append(vargv[i]);
+                return oldFill.acall(args);
+            };
+        });
+        ::logInfo(::BBReroll.Tag + " player perf hooks installed (SkipPostStarWork=" + ::BBReroll_SkipPostStarWork + ")");
+    } catch (e) {
+        ::logWarning(::BBReroll.Tag + " player perf hooks failed (" + e + ") — running without fast-pass skip");
+    }
 
     ::mods_hookExactClass("states/world_state", function (o) {
         local oldStart = o.startNewCampaign;
