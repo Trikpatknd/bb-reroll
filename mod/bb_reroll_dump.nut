@@ -112,21 +112,6 @@
 // so two runs produce the identical seed sequence. Leave null for normal use.
 ::BBReroll_BF_FixedMasterSeed <- null;
 
-// ---- fast-pass skip machinery (perf) ----
-// FastIter is true only while the loop performs a fast-pass spawn; InSSVE is
-// true while inside player.setStartValuesEx. The player hook skips
-// fillAttributeLevelUpValues only when FastIter && !InSSVE — i.e. only the
-// scenarios' explicit post-roster re-fills, which run after EVERY bro's talent
-// roll and therefore cannot change which seeds pass the star filter. The
-// internal call (inside setStartValuesEx) executes between bro N's and bro
-// N+1's talent rolls in multi-bro rosters and must never be skipped.
-::BBReroll_FastIter <- false;
-::BBReroll_InSSVE   <- false;
-// Master enable — keep false until the A/B determinism check passes (two runs
-// with the same FixedMasterSeed, flag off vs on, must log identical per-iter
-// seeds and stars-pass results).
-::BBReroll_SkipPostStarWork <- false;
-
 
 // ---------- shared helpers ----------
 
@@ -623,7 +608,6 @@
             ::Math.seedRandomString(seed + ::BBReroll_RESEED_SUFFIX);
 
             local pt0 = ::Time.getExactTime();
-            ::BBReroll_FastIter = true;   // fast-pass spawn: post-star skip may apply
             if (x == 0) {
                 if (scenario_obj != null && ::BBReroll_BF_TryScenarioSpawn(worldState, roster, scenario_obj)) {
                     spawn_mode = "scenario";
@@ -637,7 +621,6 @@
             } else {
                 ::BBReroll_BF_FallbackSpawn(worldState, roster);
             }
-            ::BBReroll_FastIter = false;
             local pt1 = ::Time.getExactTime();
             t_spawn += pt1 - pt0;
 
@@ -669,8 +652,8 @@
                 destroyAndRebuildWorld(seed);
                 ::Math.seedRandomString(seed + ::BBReroll_RESEED_SUFFIX);
 
-                // FastIter stays false here — the verify spawn must be
-                // byte-identical to a real campaign start (traits included).
+                // The verify spawn must be byte-identical to a real campaign
+                // start (traits included) — full fidelity, nothing skipped.
                 if (spawn_mode == "scenario") {
                     ::BBReroll_BF_TryScenarioSpawn(worldState, roster, scenario_obj);
                 } else {
@@ -708,7 +691,6 @@
                 t_verify += ::Time.getExactTime() - vt0;
             }
         } catch (e) {
-            ::BBReroll_FastIter = false;   // spawn may have thrown mid-toggle
             skipped++;
             ::logWarning(Tag + " iter " + x + " threw: " + e + " — skipping");
         }
@@ -735,7 +717,6 @@
                 + " (" + rate + " iters/s)");
         }
     }
-    ::BBReroll_FastIter = false;   // belt-and-braces before leaving the loop
     // Both exits log a human-readable FINISH line (the GUI tails these) and
     // then throw a unique sentinel. The startNewCampaign catch swallows the
     // sentinel; it does NOT rethrow (rethrow was tried — BB recovers to a
@@ -884,40 +865,6 @@
         }
     }
     ::logInfo(::BBReroll.Tag + " hooked " + hookedCount + "/" + scenarios.len() + " scenarios for deterministic spawn RNG");
-
-    // Fast-pass speedup hooks (see the ::BBReroll_FastIter globals for the
-    // safety argument). setStartValuesEx is wrapped only to maintain the
-    // InSSVE flag; fillAttributeLevelUpValues is skipped during fast iters
-    // when called from OUTSIDE setStartValuesEx (the scenarios' explicit
-    // post-roster re-fills — pure post-star work). Real campaigns and the
-    // slow verify never have FastIter set, so they are unaffected.
-    try {
-        ::mods_hookExactClass("entity/tactical/player", function (o) {
-            local oldSSVE = o.setStartValuesEx;
-            o.setStartValuesEx = function (_backgrounds, _addTraits = true, _gender = -1, _addEquipment = true) {
-                ::BBReroll_InSSVE = true;
-                try {
-                    oldSSVE(_backgrounds, _addTraits, _gender, _addEquipment);
-                } catch (e) {
-                    ::BBReroll_InSSVE = false;
-                    throw e;
-                }
-                ::BBReroll_InSSVE = false;
-            };
-            local oldFill = o.fillAttributeLevelUpValues;
-            o.fillAttributeLevelUpValues = function (...) {
-                if (::BBReroll_SkipPostStarWork && ::BBReroll_FastIter && !::BBReroll_InSSVE) return;
-                // Pass varargs through untouched — the vanilla signature is
-                // compiled, so don't assume its arity.
-                local args = [this];
-                for (local i = 0; i < vargv.len(); i++) args.append(vargv[i]);
-                return oldFill.acall(args);
-            };
-        });
-        ::logInfo(::BBReroll.Tag + " player perf hooks installed (SkipPostStarWork=" + ::BBReroll_SkipPostStarWork + ")");
-    } catch (e) {
-        ::logWarning(::BBReroll.Tag + " player perf hooks failed (" + e + ") — running without fast-pass skip");
-    }
 
     ::mods_hookExactClass("states/world_state", function (o) {
         local oldStart = o.startNewCampaign;
