@@ -547,6 +547,8 @@
     local t_spawn = 0.0;
     local t_eval = 0.0;
     local t_cleanup = 0.0;
+    local t_verify = 0.0;      // slow-verify world rebuild + verify spawn + EvalBro
+    local verify_count = 0;    // how many iters hit the slow path
     local run_t0 = ::Time.getExactTime();
 
     local last_fail = "";
@@ -656,6 +658,8 @@
             t_eval += ::Time.getExactTime() - pt1;
 
             if (stars_pass) {
+                local vt0 = ::Time.getExactTime();
+                verify_count++;
                 // ===== SLOW VERIFY: rebuild world with candidate seed =====
                 // The world's seed affects RNG state by the time scenarios get
                 // around to rolling traits, so the only way to guarantee that
@@ -701,6 +705,7 @@
                 // Verify failed. The world is now in candidate's state —
                 // subsequent fast iters reuse it; that's fine (we only care
                 // about stars in fast pass, which depend purely on the reseed).
+                t_verify += ::Time.getExactTime() - vt0;
             }
         } catch (e) {
             ::BBReroll_FastIter = false;   // spawn may have thrown mid-toggle
@@ -717,11 +722,16 @@
             local elapsed = ::Time.getExactTime() - run_t0;
             local rate = "?";
             if (elapsed > 0) rate = "" + (::Math.floor((n / elapsed) * 10.0) / 10.0);
+            // verify avg is per-verify (not per-iter) since it only fires on
+            // stars-pass; verify_count shows how often that is.
+            local v_avg = 0;
+            if (verify_count > 0) v_avg = ::Math.floor(t_verify / verify_count.tofloat() * 1000.0);
             ::logInfo(Tag + " iter " + (x + 1) + "/" + ::BBReroll_BF.MaxIters
                 + " last_fail=" + last_fail + " skipped=" + skipped
                 + " | avg ms: spawn=" + ::Math.floor(t_spawn / n * 1000.0)
                 + " eval=" + ::Math.floor(t_eval / n * 1000.0)
                 + " cleanup=" + ::Math.floor(t_cleanup / n * 1000.0)
+                + " verify=" + v_avg + "x" + verify_count
                 + " (" + rate + " iters/s)");
         }
     }
