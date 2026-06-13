@@ -112,6 +112,24 @@
 // so two runs produce the identical seed sequence. Leave null for normal use.
 ::BBReroll_BF_FixedMasterSeed <- null;
 
+// Diagnostic (perf research): when true, every stars-pass candidate is
+// trait-evaluated on BOTH the cached fast-pass world AND the rebuilt
+// candidate world, and any divergence is logged. Measures whether the
+// expensive per-candidate world rebuild actually changes the trait outcome
+// (i.e. whether it can be skipped). The authoritative match decision is
+// unaffected — it always uses the post-rebuild result. Default off.
+::BBReroll_BF_DiagVerify <- false;
+
+// One sorted, comma-joined trait list for a bro — stable fingerprint for
+// comparing the same bro across two worlds.
+::BBReroll_BF_TraitFingerprint <- function (bro) {
+    local traits = ::BBReroll_DumpTraits(bro);
+    traits.sort();
+    local out = "";
+    foreach (j, t in traits) { if (j > 0) out += ","; out += t; }
+    return out;
+};
+
 
 // ---------- shared helpers ----------
 
@@ -534,6 +552,8 @@
     local t_cleanup = 0.0;
     local t_verify = 0.0;      // slow-verify world rebuild + verify spawn + EvalBro
     local verify_count = 0;    // how many iters hit the slow path
+    local diag_total = 0;      // DiagVerify: candidates compared cached-vs-rebuilt
+    local diag_agree = 0;      // DiagVerify: of those, how many had identical traits
     local run_t0 = ::Time.getExactTime();
 
     local last_fail = "";
@@ -649,6 +669,23 @@
                 // brute-force traits match what the player sees in-game is to
                 // build the world with the candidate seed first.
                 ::logInfo(Tag + " iter " + x + " stars-pass seed=" + seed + " — verifying with full world rebuild…");
+
+                // DIAGNOSTIC (perf research, no behavior change): capture the
+                // FULL criteria result + per-bro trait fingerprints on the
+                // CACHED fast-pass world (these bros are still spawned) so we
+                // can compare against the rebuilt world below. Answers "does the
+                // rebuild change traits?". The cached eval reads only (no RNG).
+                local diag_on = ::BBReroll_BF_DiagVerify;
+                local diag_cached_pass = true;
+                local diag_cached_fp = [];
+                if (diag_on) {
+                    foreach (i, bro in bros) {
+                        local r = ::BBReroll_BF_EvalBro(bro, i + 1, parsed_stars);
+                        if (!r[0]) diag_cached_pass = false;
+                        diag_cached_fp.append(::BBReroll_BF_TraitFingerprint(bro));
+                    }
+                }
+
                 destroyAndRebuildWorld(seed);
                 ::Math.seedRandomString(seed + ::BBReroll_RESEED_SUFFIX);
 
@@ -676,6 +713,41 @@
                     foreach (j, t in traits) { if (j > 0) traitsCsv += ","; traitsCsv += t; }
                     fps.append("bro" + (i+1) + "(" + bro.getName() + "/" + bro.getBackground().getID()
                         + "): [" + stars + "] " + traitsCsv);
+                }
+
+                // DIAGNOSTIC: compare cached-world vs rebuilt-world outcome +
+                // per-bro trait fingerprints. (vbros are still spawned here; the
+                // rebuilt fingerprint pass is full — the verify loop above may
+                // have broken early on first fail.)
+                if (diag_on) {
+                    diag_total++;
+                    local rebuilt_fp = [];
+                    foreach (i, bro in vbros) rebuilt_fp.append(::BBReroll_BF_TraitFingerprint(bro));
+                    local traits_match = (diag_cached_fp.len() == rebuilt_fp.len());
+                    if (traits_match) {
+                        for (local i = 0; i < rebuilt_fp.len(); i++) {
+                            if (diag_cached_fp[i] != rebuilt_fp[i]) { traits_match = false; break; }
+                        }
+                    }
+                    if (traits_match && diag_cached_pass == vpass) diag_agree++;
+                    if (traits_match && diag_cached_pass == vpass) {
+                        ::logInfo(Tag + " DIAGVERIFY seed=" + seed + " cached_pass=" + diag_cached_pass
+                            + " rebuilt_pass=" + vpass + " traits=MATCH");
+                    } else {
+                        ::logWarning(Tag + " DIAGVERIFY seed=" + seed + " cached_pass=" + diag_cached_pass
+                            + " rebuilt_pass=" + vpass + " traits=DIFFER");
+                        local nmax = rebuilt_fp.len();
+                        if (diag_cached_fp.len() > nmax) nmax = diag_cached_fp.len();
+                        for (local i = 0; i < nmax; i++) {
+                            // Explicit if/else — this build's ?: evaluates both
+                            // branches and would index out of bounds (gotcha #2).
+                            local c = "(none)";
+                            if (i < diag_cached_fp.len()) c = diag_cached_fp[i];
+                            local r = "(none)";
+                            if (i < rebuilt_fp.len()) r = rebuilt_fp[i];
+                            if (c != r) ::logWarning(Tag + "   bro" + (i+1) + " cached=[" + c + "] rebuilt=[" + r + "]");
+                        }
+                    }
                 }
 
                 if (vpass) {
@@ -708,13 +780,15 @@
             // stars-pass; verify_count shows how often that is.
             local v_avg = 0;
             if (verify_count > 0) v_avg = ::Math.floor(t_verify / verify_count.tofloat() * 1000.0);
+            local diag_txt = "";
+            if (diag_total > 0) diag_txt = " diag:" + diag_agree + "/" + diag_total + " agree";
             ::logInfo(Tag + " iter " + (x + 1) + "/" + ::BBReroll_BF.MaxIters
                 + " last_fail=" + last_fail + " skipped=" + skipped
                 + " | avg ms: spawn=" + ::Math.floor(t_spawn / n * 1000.0)
                 + " eval=" + ::Math.floor(t_eval / n * 1000.0)
                 + " cleanup=" + ::Math.floor(t_cleanup / n * 1000.0)
                 + " verify=" + v_avg + "x" + verify_count
-                + " (" + rate + " iters/s)");
+                + " (" + rate + " iters/s)" + diag_txt);
         }
     }
     // Both exits log a human-readable FINISH line (the GUI tails these) and
