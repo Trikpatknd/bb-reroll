@@ -11,9 +11,10 @@ import re
 MATCH_RE    = re.compile(r"\[BBREROLL2\]\s+\*\*\*\s+MATCH\s+at\s+iter\s+(\d+)\s+seed=(\S+?)(?:\s+\(verified\))?\s+\*\*\*")
 PROGRESS_RE = re.compile(r"\[BBREROLL2\]\s+iter\s+(\d+)/(\d+)")
 START_RE    = re.compile(r"\[BBREROLL2\]\s+brute force start")
-# Mod logs this line every time a fast-pass star check passes and a slow
-# verify (full world rebuild + trait eval) kicks in.
-VERIFY_RE   = re.compile(r"\[BBREROLL2\]\s+iter\s+(\d+)\s+stars-pass\s+seed=(\S+)")
+# Mod logs this when a candidate triggers the authoritative world rebuild.
+# v3.4.6+ wording is "candidate ... — confirming"; older builds said
+# "stars-pass ... — verifying". Match both so the verify LED works either way.
+VERIFY_RE   = re.compile(r"\[BBREROLL2\]\s+iter\s+(\d+)\s+(?:candidate|stars-pass)\s+seed=(\S+)")
 # Init line, written once at BB launch (after Legends loads). Doubles as the
 # "mod is loaded" signal and the source of the installed mod version.
 INIT_RE     = re.compile(r"\[BBREROLL\]\s+mod queued \(v([0-9][0-9A-Za-z.\-]*)\)")

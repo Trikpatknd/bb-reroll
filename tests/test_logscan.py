@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from bbreroll.logscan import (
-    INIT_RE, FINISH_RE, DEPCHECK_RE, UNEXPECTED_RE, MATCH_RE,
+    INIT_RE, FINISH_RE, DEPCHECK_RE, UNEXPECTED_RE, MATCH_RE, VERIFY_RE,
     strip_html, analyze_tail,
 )
 
@@ -115,3 +115,14 @@ def test_match_re_still_matches_verified_form():
     line = "[BBREROLL2] *** MATCH at iter 51 seed=ABCDEFGH12 (verified) ***"
     m = MATCH_RE.search(line)
     assert m and m.group(1) == "51" and m.group(2) == "ABCDEFGH12"
+
+
+def test_verify_re_matches_both_wordings():
+    # v3.4.6 wording
+    m = VERIFY_RE.search("[BBREROLL2] iter 7 candidate seed=ABCDEFGH12 — confirming with full world rebuild…")
+    assert m and m.group(1) == "7" and m.group(2) == "ABCDEFGH12"
+    # older wording
+    m = VERIFY_RE.search("[BBREROLL2] iter 7 stars-pass seed=ABCDEFGH12 — verifying with full world rebuild…")
+    assert m and m.group(1) == "7" and m.group(2) == "ABCDEFGH12"
+    # the progress line must NOT be mistaken for a verify line
+    assert VERIFY_RE.search("[BBREROLL2] iter 10/10000 last_fail=x skipped=0") is None

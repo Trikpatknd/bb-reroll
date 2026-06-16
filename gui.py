@@ -516,7 +516,11 @@ class LogWatcher(threading.Thread):
                 if self.log_path.exists():
                     size = self.log_path.stat().st_size
                     if size < self._pos:
-                        self._pos = 0   # log rotated/truncated
+                        # Log rotated/truncated (BB does this on some launches).
+                        # Resume tailing from the NEW end — do NOT reset to 0,
+                        # which would replay a previous run's progress lines and
+                        # show a stale iter count when the game (re)starts.
+                        self._pos = size
                     if size > self._pos:
                         with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
                             f.seek(self._pos)
@@ -1345,9 +1349,10 @@ class App(ctk.CTk):
                                self.watch_var.set(f"verifying seed {seed} (iter {iter_num})")))
 
     def _on_brute_start(self):
-        """Watcher saw '[BBREROLL2] brute force start'."""
+        """Watcher saw '[BBREROLL2] brute force start' — a fresh run begins."""
         self._last_activity_ts = time.time()
         self._mod_seen = True   # a running loop proves the mod is loaded
+        self._progress_history = []   # don't blend ETA/iter count across runs
         self.after(0, lambda: (self._set_watch_state("running"),
                                self.status_var.set("Brute force started.")))
 
