@@ -14,7 +14,7 @@
 // to a hardcoded Davkul Awaits roster if dynamic origin lookup fails.
 
 ::BBReroll <- {
-    Version = "3.4.5",
+    Version = "3.4.6",
     Tag     = "[BBREROLL]",
     Tag2    = "[BBREROLL2]",
     // Sentinel values thrown by the brute-force loop on a clean finish. The
@@ -111,24 +111,6 @@
 // loop seeds its per-iter seed generator with this instead of wall-clock time,
 // so two runs produce the identical seed sequence. Leave null for normal use.
 ::BBReroll_BF_FixedMasterSeed <- null;
-
-// Diagnostic (perf research): when true, every stars-pass candidate is
-// trait-evaluated on BOTH the cached fast-pass world AND the rebuilt
-// candidate world, and any divergence is logged. Measures whether the
-// expensive per-candidate world rebuild actually changes the trait outcome
-// (i.e. whether it can be skipped). The authoritative match decision is
-// unaffected — it always uses the post-rebuild result. Default off.
-::BBReroll_BF_DiagVerify <- false;
-
-// One sorted, comma-joined trait list for a bro — stable fingerprint for
-// comparing the same bro across two worlds.
-::BBReroll_BF_TraitFingerprint <- function (bro) {
-    local traits = ::BBReroll_DumpTraits(bro);
-    traits.sort();
-    local out = "";
-    foreach (j, t in traits) { if (j > 0) out += ","; out += t; }
-    return out;
-};
 
 
 // ---------- shared helpers ----------
@@ -290,51 +272,11 @@
     return {};
 };
 
-// Hot-path criteria: resolve everything ONCE per run. Returns an array indexed
-// by 1-based slot (index 0 unused); each entry is an array of [attrIdx, min,
-// statName] triples with the "*" fallback already applied. The per-iter eval
-// then does pure integer indexing — no string conversion, no table lookups,
-// no Const.Attributes resolution per bro per iteration.
-::BBReroll_BF_BuildFastChecks <- function (parsed, maxSlots = 20) {
-    local out = [[]];   // index 0 placeholder
-    for (local slot = 1; slot <= maxSlots; slot++) {
-        local spec = ::BBReroll_BF_StarsFor(parsed, slot);
-        local checks = [];
-        foreach (key, minStars in spec) {
-            local idx = ::BBReroll_AttrIdx(key);   // logs once on unknown stat
-            if (idx == null) continue;
-            checks.append([idx, minStars, key]);
-        }
-        out.append(checks);
-    }
-    return out;
-};
-
-// Stars-only check. Used by the fast pre-filter in the brute-force loop.
-// Returns [pass, fail_reason] like EvalBro but skips trait/banned/required
-// checks (not world-faithful in the fast pass). Takes the pre-resolved
-// fast_checks structure; slots with no criteria return before the talent
-// lookup (hot path: this runs per bro per iteration).
-::BBReroll_BF_EvalStarsOnly <- function (bro, slot1based, fast_checks) {
-    // Explicit if/else, not ?: — this build's ternary evaluates BOTH branches
-    // (gotcha #2), which would index out of bounds for slots past the table.
-    local checks;
-    if (slot1based < fast_checks.len()) {
-        checks = fast_checks[slot1based];
-    } else {
-        checks = [];
-    }
-    if (checks.len() == 0) return [true, "ok"];
-    local talents = ::BBReroll_FindTalents(bro);
-    if (talents == null) return [false, "no_talents"];
-    for (local i = 0; i < checks.len(); i++) {
-        local c = checks[i];
-        local got = talents[c[0]];
-        if (got < c[1]) return [false, c[2] + "*" + got + "<" + c[1]];
-    }
-    return [true, "ok"];
-};
-
+// Full per-bro criteria check (stars + banned + required). Phase B runs this
+// every iteration on the cached world (Phase A proved the rebuild doesn't
+// change the outcome); a candidate that passes is then confirmed with one
+// authoritative rebuild. Returns [pass, fail_reason]. Stars are checked first
+// and short-circuit before any trait work, so a star-reject is cheap.
 ::BBReroll_BF_EvalBro <- function (bro, slot1based, parsed_stars) {
     local talents = ::BBReroll_FindTalents(bro);
     if (talents == null) return [false, "no_talents"];
@@ -538,8 +480,6 @@
         spec_summary += "} ";
     }
     ::logInfo(Tag + " parsed stars: " + spec_summary);
-    // Hot-path criteria, fully resolved once (per-slot [attrIdx, min, name]).
-    local fast_checks = ::BBReroll_BF_BuildFastChecks(parsed_stars, 20);
 
     // Resolve the scenario object once — it lives on CampaignSettings and
     // survives world rebuilds, so per-iter re-resolution is wasted work.
@@ -550,10 +490,8 @@
     local t_spawn = 0.0;
     local t_eval = 0.0;
     local t_cleanup = 0.0;
-    local t_verify = 0.0;      // slow-verify world rebuild + verify spawn + EvalBro
-    local verify_count = 0;    // how many iters hit the slow path
-    local diag_total = 0;      // DiagVerify: candidates compared cached-vs-rebuilt
-    local diag_agree = 0;      // DiagVerify: of those, how many had identical traits
+    local t_verify = 0.0;      // confirm rebuild + respawn + EvalBro (only on candidates)
+    local verify_count = 0;    // how many candidates triggered a confirm rebuild
     local run_t0 = ::Time.getExactTime();
 
     local last_fail = "";
@@ -649,48 +587,33 @@
                 ::logInfo(Tag + " iter 0 roster size after spawn: " + (bros == null ? -1 : bros.len()));
             }
 
-            local stars_pass = true;
+            // Full criteria check (stars + traits) on the cached fast-pass
+            // world. Phase A proved 106/106 (Gladiators hardcoded + Cultists
+            // fully-rolled) that the rebuilt world yields byte-identical traits,
+            // so this cheap eval is a faithful filter — no per-candidate rebuild.
+            local cand_pass = true;
             foreach (i, bro in bros) {
-                local res = ::BBReroll_BF_EvalStarsOnly(bro, i + 1, fast_checks);
+                local res = ::BBReroll_BF_EvalBro(bro, i + 1, parsed_stars);
                 if (!res[0]) {
-                    stars_pass = false;
+                    cand_pass = false;
                     last_fail = "bro" + (i+1) + " " + res[1];
                     break;
                 }
             }
             t_eval += ::Time.getExactTime() - pt1;
 
-            if (stars_pass) {
+            if (cand_pass) {
+                // Candidate passed full criteria on the cached world. CONFIRM
+                // authoritatively by rebuilding the world with this seed and
+                // re-evaluating, so a declared match is always rebuild-verified
+                // (no false matches). This rebuild now fires ONLY on candidates,
+                // not every iteration — the speedup.
                 local vt0 = ::Time.getExactTime();
                 verify_count++;
-                // ===== SLOW VERIFY: rebuild world with candidate seed =====
-                // The world's seed affects RNG state by the time scenarios get
-                // around to rolling traits, so the only way to guarantee that
-                // brute-force traits match what the player sees in-game is to
-                // build the world with the candidate seed first.
-                ::logInfo(Tag + " iter " + x + " stars-pass seed=" + seed + " — verifying with full world rebuild…");
-
-                // DIAGNOSTIC (perf research, no behavior change): capture the
-                // FULL criteria result + per-bro trait fingerprints on the
-                // CACHED fast-pass world (these bros are still spawned) so we
-                // can compare against the rebuilt world below. Answers "does the
-                // rebuild change traits?". The cached eval reads only (no RNG).
-                local diag_on = ::BBReroll_BF_DiagVerify;
-                local diag_cached_pass = true;
-                local diag_cached_fp = [];
-                if (diag_on) {
-                    foreach (i, bro in bros) {
-                        local r = ::BBReroll_BF_EvalBro(bro, i + 1, parsed_stars);
-                        if (!r[0]) diag_cached_pass = false;
-                        diag_cached_fp.append(::BBReroll_BF_TraitFingerprint(bro));
-                    }
-                }
-
+                ::logInfo(Tag + " iter " + x + " candidate seed=" + seed + " — confirming with full world rebuild…");
                 destroyAndRebuildWorld(seed);
                 ::Math.seedRandomString(seed + ::BBReroll_RESEED_SUFFIX);
 
-                // The verify spawn must be byte-identical to a real campaign
-                // start (traits included) — full fidelity, nothing skipped.
                 if (spawn_mode == "scenario") {
                     ::BBReroll_BF_TryScenarioSpawn(worldState, roster, scenario_obj);
                 } else {
@@ -704,7 +627,7 @@
                     local res = ::BBReroll_BF_EvalBro(bro, i + 1, parsed_stars);
                     if (!res[0]) {
                         vpass = false;
-                        last_fail = "verify:bro" + (i+1) + " " + res[1];
+                        last_fail = "confirm:bro" + (i+1) + " " + res[1];
                         break;
                     }
                     local stars = ::BBReroll_BroStarsCsv(bro);
@@ -714,41 +637,7 @@
                     fps.append("bro" + (i+1) + "(" + bro.getName() + "/" + bro.getBackground().getID()
                         + "): [" + stars + "] " + traitsCsv);
                 }
-
-                // DIAGNOSTIC: compare cached-world vs rebuilt-world outcome +
-                // per-bro trait fingerprints. (vbros are still spawned here; the
-                // rebuilt fingerprint pass is full — the verify loop above may
-                // have broken early on first fail.)
-                if (diag_on) {
-                    diag_total++;
-                    local rebuilt_fp = [];
-                    foreach (i, bro in vbros) rebuilt_fp.append(::BBReroll_BF_TraitFingerprint(bro));
-                    local traits_match = (diag_cached_fp.len() == rebuilt_fp.len());
-                    if (traits_match) {
-                        for (local i = 0; i < rebuilt_fp.len(); i++) {
-                            if (diag_cached_fp[i] != rebuilt_fp[i]) { traits_match = false; break; }
-                        }
-                    }
-                    if (traits_match && diag_cached_pass == vpass) diag_agree++;
-                    if (traits_match && diag_cached_pass == vpass) {
-                        ::logInfo(Tag + " DIAGVERIFY seed=" + seed + " cached_pass=" + diag_cached_pass
-                            + " rebuilt_pass=" + vpass + " traits=MATCH");
-                    } else {
-                        ::logWarning(Tag + " DIAGVERIFY seed=" + seed + " cached_pass=" + diag_cached_pass
-                            + " rebuilt_pass=" + vpass + " traits=DIFFER");
-                        local nmax = rebuilt_fp.len();
-                        if (diag_cached_fp.len() > nmax) nmax = diag_cached_fp.len();
-                        for (local i = 0; i < nmax; i++) {
-                            // Explicit if/else — this build's ?: evaluates both
-                            // branches and would index out of bounds (gotcha #2).
-                            local c = "(none)";
-                            if (i < diag_cached_fp.len()) c = diag_cached_fp[i];
-                            local r = "(none)";
-                            if (i < rebuilt_fp.len()) r = rebuilt_fp[i];
-                            if (c != r) ::logWarning(Tag + "   bro" + (i+1) + " cached=[" + c + "] rebuilt=[" + r + "]");
-                        }
-                    }
-                }
+                t_verify += ::Time.getExactTime() - vt0;
 
                 if (vpass) {
                     ::logWarning(Tag + " *** MATCH at iter " + x + " seed=" + seed + " (verified) ***");
@@ -757,10 +646,14 @@
                     match_seed = seed;
                     break;
                 }
-                // Verify failed. The world is now in candidate's state —
-                // subsequent fast iters reuse it; that's fine (we only care
-                // about stars in fast pass, which depend purely on the reseed).
-                t_verify += ::Time.getExactTime() - vt0;
+                // Cached eval passed but the authoritative rebuild rejected it.
+                // Phase A never observed this (106/106 agreement). If it ever
+                // fires, the cached filter diverged from a real campaign for
+                // this seed — we correctly do NOT declare a match, and log it
+                // loudly so the divergence can be investigated.
+                ::logWarning(Tag + " iter " + x + " seed=" + seed
+                    + " passed cached eval but confirm-rebuild REJECTED it ("
+                    + last_fail + ") — not a match (cached/rebuilt divergence).");
             }
         } catch (e) {
             skipped++;
@@ -780,15 +673,13 @@
             // stars-pass; verify_count shows how often that is.
             local v_avg = 0;
             if (verify_count > 0) v_avg = ::Math.floor(t_verify / verify_count.tofloat() * 1000.0);
-            local diag_txt = "";
-            if (diag_total > 0) diag_txt = " diag:" + diag_agree + "/" + diag_total + " agree";
             ::logInfo(Tag + " iter " + (x + 1) + "/" + ::BBReroll_BF.MaxIters
                 + " last_fail=" + last_fail + " skipped=" + skipped
                 + " | avg ms: spawn=" + ::Math.floor(t_spawn / n * 1000.0)
                 + " eval=" + ::Math.floor(t_eval / n * 1000.0)
                 + " cleanup=" + ::Math.floor(t_cleanup / n * 1000.0)
-                + " verify=" + v_avg + "x" + verify_count
-                + " (" + rate + " iters/s)" + diag_txt);
+                + " confirm=" + v_avg + "x" + verify_count
+                + " (" + rate + " iters/s)");
         }
     }
     // Both exits log a human-readable FINISH line (the GUI tails these) and
