@@ -681,6 +681,10 @@ class App(ctk.CTk):
         self._load_from_nut(load_stars=False)
         self._start_log_watcher()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # CustomTkinter 5.2.x on Windows can leave a backgrounded window blank/
+        # transparent until it regains focus. Force a repaint when focus returns
+        # so a match/banner that arrived while BB was focused becomes visible.
+        self.bind("<FocusIn>", lambda _e: self.after(10, self._force_repaint))
 
     # ── path helpers ──
     def _guess_bb_path(self) -> str:
@@ -1356,11 +1360,11 @@ class App(ctk.CTk):
         """Watcher saw the clean-finish marker. The loop is done and BB is now
         in a half-initialised state — make that prominent."""
         self._mod_seen = True
-        self.after(0, lambda: self._show_notice(
+        self.after(0, lambda: (self._show_notice(
             "Battle Brothers is now in an UNSTABLE state (brute force finished: "
             + detail + "). Close BB and restart it before playing — it may show a "
             "crash dialog or return to the menu; either way, do not continue from there.",
-            kind="error"))
+            kind="error"), self._surface_window()))
 
     def _on_depcheck(self, missing):
         """Mod's dependency self-check reported missing required mods."""
@@ -1513,6 +1517,29 @@ class App(ctk.CTk):
             return f"{m}m{s:02d}s"
         return f"{s}s"
 
+    # ── window surfacing / repaint (CTk 5.2.x Windows blank-on-unfocus bug) ──
+    def _force_repaint(self):
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+
+    def _surface_window(self):
+        """Bring the window to the foreground and force a repaint. During a
+        reroll BB is focused, so the GUI is backgrounded and (CTk bug) may be
+        blank — a match/finish would otherwise be invisible. Lift + brief
+        topmost + repaint makes sure the user actually sees it."""
+        try:
+            self.deiconify()
+            self.lift()
+            self.attributes("-topmost", True)
+            self.after(1500, lambda: self.attributes("-topmost", False))
+            try: self.bell()
+            except Exception: pass
+            self.update_idletasks()
+        except Exception:
+            pass
+
     # ── matches ──
     def _add_match(self, iter_num: int, seed: str):
         if any(m["seed"] == seed for m in self._matches):
@@ -1520,6 +1547,7 @@ class App(ctk.CTk):
         self._matches.insert(0, {"seed": seed, "iter": iter_num, "ts": time.time()})
         self._render_match_list()
         self.match_pane.grid()
+        self._surface_window()   # pull the window to front so the match is seen
         if notification:
             try:
                 notification.notify(title="BB Reroll: MATCH — restart BB",
