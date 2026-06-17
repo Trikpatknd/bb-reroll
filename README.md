@@ -7,8 +7,8 @@ Brute-force seed finder for **Battle Brothers + Legends mod**. Search thousands 
 ## How it works
 
 1. **Squirrel mod** hooks the new-campaign screen. Type **`REROLL`** in the seed input → instead of starting a campaign, the mod loops through random seeds:
-   - **Fast pass** (cached world): generate seed → reseed RNG → spawn the chosen origin's roster → check star thresholds only
-   - **Slow verify** (rebuild world with the candidate's seed): full evaluation including traits, banned, required — matches what BB does for a real campaign start with that seed
+   - **Scan** (cached world): generate seed → reseed RNG → spawn the chosen origin's roster → full evaluation against your criteria (stars + banned + required). The deterministic reseed makes the cached-world roster identical to a real campaign start with that seed.
+   - **Confirm** (only when a seed passes): rebuild the world from scratch with that seed and re-evaluate — so every declared match is authoritative, with no false positives.
 2. **GUI** generates the mod's config (stars per slot, banned/required traits, origin) and deploys the packaged ZIP to BB's `data/` folder.
 3. **Verified matches** are logged to `Documents\Battle Brothers\log.html`. The GUI tails the log live, fires a desktop notification, and shows the seed in a copy-able banner.
 
@@ -19,7 +19,7 @@ Brute-force seed finder for **Battle Brothers + Legends mod**. Search thousands 
 ### Battle Brothers side (must be installed in `Battle Brothers/data/` before BB Reroll will do anything)
 
 - **Battle Brothers 1.5.1.8** (vanilla)
-- **Legends mod 19.3.24 or later** — tested through 19.3.27. Patch-version updates within 19.3.x don't touch the scenario `onSpawnAssets` paths or hardcoded talents that BB Reroll depends on; if Legends ever renames scenario classes in a future release our hooks would silently no-op, so pin if you want to be safe.
+- **Legends mod 19.3.24 or later** — tested through 19.3.27; the spawn mechanism (`onSpawnAssets` + reseed) was re-checked against 19.3.41 and is intact. Caveat: BB Reroll hooks a fixed list of origin scenario classes, so if Legends renames or removes one, that origin silently loses its deterministic reseed and its results can't be guaranteed to reproduce. This already happened to `legends_mage_scenario` (dropped sometime after 19.3.27). Pin Legends if you want to be safe, and re-check the hook list after Legends updates.
 - **MSU** (Modular Squirrel Utilities) — Legends dependency
 - **mod_hooks** — class-hooking framework used by Legends and BB Reroll
 - **modern_hooks** — newer hook framework, also a Legends dependency
@@ -53,8 +53,8 @@ For dev mode (no build), `python gui.py` runs the GUI directly.
 4. **💾 Save & Deploy** — writes the mod and copies it into BB.
 5. Launch BB → New Campaign → pick your origin → type **`REROLL`** as the seed → Start.
 6. Watch the GUI's status line:
-   - Green LED = fast pass running
-   - Blue LED = slow verify (a candidate seed found, double-checking traits)
+   - Green LED = scanning seeds
+   - Blue LED = confirming a candidate (rebuilding the world to verify the match)
    - On match: green banner with seed + 📋 Copy. Desktop notification fires.
 7. **After a match, BB is in a half-initialized state.** It may pop a "critical exception" dialog, OR it may silently return to the main menu — both outcomes are expected and depend on BB build / mod stack / RNG. Don't try to continue from there.
 8. **Quit BB completely** (Alt+F4 if needed), relaunch, start a new campaign with the same origin, paste the matched seed → Start. The bros will match the verified fingerprint.
