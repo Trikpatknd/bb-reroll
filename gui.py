@@ -632,7 +632,7 @@ class App(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         self.title(f"BB Reroll Control Panel — v{APP_VERSION}")
-        self.geometry("960x900")
+        self.geometry("940x840")
         self.minsize(880, 760)
 
         # Installed-mod version, learned from the dump log's init line.
@@ -689,6 +689,10 @@ class App(ctk.CTk):
         # transparent until it regains focus. Force a repaint when focus returns
         # so a match/banner that arrived while BB was focused becomes visible.
         self.bind("<FocusIn>", lambda _e: self.after(10, self._force_repaint))
+        # Proactive repaint loop — keeps the window painted while it's unfocused
+        # (BB has focus during a reroll) or parked on a different-DPI second
+        # monitor, not only on FocusIn. See _repaint_tick.
+        self.after(1000, self._repaint_tick)
 
     # ── path helpers ──
     def _guess_bb_path(self) -> str:
@@ -704,8 +708,10 @@ class App(ctk.CTk):
     # ── UI build ──
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
+        # Only the traits row carries the vertical stretch. The action bar (row 3)
+        # is fixed-height and sticks "ew", so giving its row weight just left a
+        # dead empty gap below the buttons.
         self.grid_rowconfigure(2, weight=1)
-        self.grid_rowconfigure(3, weight=1)
 
         # Top: meta config
         top = ctk.CTkFrame(self)
@@ -1342,11 +1348,13 @@ class App(ctk.CTk):
             pass
 
     def _on_verify_start(self, iter_num, seed):
-        """Mod just entered slow-verify for a stars-pass candidate. Distinguish
-        from the normal fast-pass progress with a different LED color and label."""
+        """Mod just entered the confirm-rebuild for a candidate seed (v3.4.6: the
+        loop full-evals stars+traits on the cached world, and a pass triggers one
+        authoritative rebuild). Distinguish from normal scanning with a different
+        LED color and label."""
         self._last_activity_ts = time.time()
         self.after(0, lambda: (self._set_watch_state("verifying"),
-                               self.watch_var.set(f"verifying seed {seed} (iter {iter_num})")))
+                               self.watch_var.set(f"confirming seed {seed} (iter {iter_num})")))
 
     def _on_brute_start(self):
         """Watcher saw '[BBREROLL2] brute force start' — a fresh run begins."""
@@ -1457,15 +1465,15 @@ class App(ctk.CTk):
                 rate = dc / dt
                 remaining_s = max(0, (total - cur) / rate)
                 eta = f" · ETA {self._fmt_duration(remaining_s)}"
-        msg = f"scanning stars · iter {cur}/{total}{eta}"
+        msg = f"scanning seeds · iter {cur}/{total}{eta}"
         self.after(0, lambda: (self._set_watch_state("running"), self.watch_var.set(msg)))
 
     # ── LED state machine ──
     _DOT_COLORS = {
         "idle":      "#6a6e76",   # grey
         "waiting":   "#c89500",   # amber — log file not visible yet
-        "running":   "#22b14c",   # green — fast pass (stars filter)
-        "verifying": "#3aa0d9",   # blue  — slow verify (rebuilding world)
+        "running":   "#22b14c",   # green — scanning (full stars+traits eval, cached world)
+        "verifying": "#3aa0d9",   # blue  — confirm-rebuild (authoritative re-check of a candidate)
     }
 
     def _set_watch_state(self, state: str):
@@ -1528,6 +1536,18 @@ class App(ctk.CTk):
             self.update_idletasks()
         except Exception:
             pass
+
+    def _repaint_tick(self):
+        """CTk 5.2.x can skip redraws while the window is unfocused (BB holds
+        focus during a reroll) or parked on a different-DPI monitor, leaving it
+        blank/transparent. Force a repaint on a steady cadence so live status
+        stays visible without clicking back into the window."""
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        finally:
+            self.after(1000, self._repaint_tick)
 
     def _surface_window(self):
         """Bring the window to the foreground and force a repaint. During a
@@ -1682,5 +1702,10 @@ class App(ctk.CTk):
 # ─────────────────────── entry ───────────────────────
 
 if __name__ == "__main__":
+    # Mixed-DPI monitors blank/transparent the CTk canvas when the window crosses
+    # between them — CTk's per-monitor auto-rescale is the trigger. Going DPI-unaware
+    # lets Windows bitmap-scale instead (slightly softer on a high-DPI monitor, but
+    # never blank). Must run before the first window (App) is created.
+    ctk.deactivate_automatic_dpi_awareness()
     app = App()
     app.mainloop()
