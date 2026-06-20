@@ -428,6 +428,19 @@
     }
     ::logInfo(Tag + " Map Options: " + msOut);
 
+    // One-time dump of the remaining values the Discord seed-report needs that
+    // aren't in Map Options: the Legends version/build and the Battle-sisters
+    // (GenderEquality) setting. " | "-separated because buildName and the enum
+    // value contain spaces/parens. Parsed by bbreroll/logscan.parse_report_info.
+    local sr = "";
+    try { sr += "legendsVersion=" + ::Legends.Version + " | "; }
+    catch (e) { sr += "legendsVersion=?? | "; }
+    try { sr += "buildName=" + ::Legends.BuildName + " | "; }
+    catch (e) { sr += "buildName=?? | "; }
+    try { sr += "battleSisters=" + ::Legends.Mod.ModSettings.getSetting("GenderEquality").getValue(); }
+    catch (e) { sr += "battleSisters=??"; }
+    ::logInfo(Tag + " Seed Report Info: " + sr);
+
     worldState.setAutoPause(true);
     ::Time.setVirtualTime(0);
     worldState.m.IsRunningUpdatesWhilePaused = true;

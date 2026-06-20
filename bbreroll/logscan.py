@@ -25,6 +25,13 @@ DEPCHECK_RE = re.compile(r"\[BBREROLL2\]\s+BB Reroll: missing required mod\(s\):
 # Non-sentinel exception passed through by the startNewCampaign catch (Phase 2).
 UNEXPECTED_RE = re.compile(r"\[BBREROLL2\]\s+UNEXPECTED exception in startNewCampaign[^:]*:\s*(\S.*)")
 
+# Seed-report inputs, both logged once at brute-force start. The Map Options
+# line is space-separated key=value (numbers / true|false, no spaces). The
+# Seed Report Info line is " | "-separated because buildName ("Left & Right")
+# and battleSisters ("Enabled (Cosmetic)") contain spaces/parens.
+MAPOPTS_RE    = re.compile(r"\[BBREROLL2\]\s+Map Options:\s*(.+)")
+REPORTINFO_RE = re.compile(r"\[BBREROLL2\]\s+Seed Report Info:\s*(.+)")
+
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -41,7 +48,8 @@ def analyze_tail(text: str) -> dict:
     anything before it belongs to an older session that survived in the same
     file. Without an init line, the whole text is considered.
 
-    Returns {mod_version, finished, missing_deps, unexpected} (None when absent).
+    Returns {mod_version, finished, missing_deps, unexpected, report_info}
+    (scalar fields None when absent; report_info is always a dict).
     """
     inits = list(INIT_RE.finditer(text))
     version = inits[-1].group(1) if inits else None
@@ -55,4 +63,39 @@ def analyze_tail(text: str) -> dict:
         "finished": finishes[-1].group(1) if finishes else None,
         "missing_deps": depchecks[-1].group(1) if depchecks else None,
         "unexpected": unexpecteds[-1].group(1) if unexpecteds else None,
+        "report_info": parse_report_info(scope),
     }
+
+
+def parse_report_info(text: str) -> dict:
+    """Extract everything the Discord seed report needs from the log.
+
+    Reads the LATEST `Map Options:` line (7 world settings) and the latest
+    `Seed Report Info:` line (Legends version + build name + Battle sisters).
+    Returns a fixed-shape dict; fields are None / {} when their line is absent,
+    so callers can render "(unknown)" without special-casing.
+    """
+    info = {"version": None, "build_name": None, "battle_sisters": None,
+            "map_options": {}}
+
+    mo = list(MAPOPTS_RE.finditer(text))
+    if mo:
+        for tok in mo[-1].group(1).split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                info["map_options"][k] = v
+
+    ri = list(REPORTINFO_RE.finditer(text))
+    if ri:
+        for field in ri[-1].group(1).split(" | "):
+            if "=" not in field:
+                continue
+            k, v = field.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if k == "legendsVersion":
+                info["version"] = v
+            elif k == "buildName":
+                info["build_name"] = v
+            elif k == "battleSisters":
+                info["battle_sisters"] = v
+    return info

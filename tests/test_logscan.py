@@ -8,6 +8,7 @@ from pathlib import Path
 
 from bbreroll.logscan import (
     INIT_RE, FINISH_RE, DEPCHECK_RE, UNEXPECTED_RE, MATCH_RE, VERIFY_RE,
+    MAPOPTS_RE, REPORTINFO_RE, parse_report_info,
     strip_html, analyze_tail,
 )
 
@@ -66,6 +67,11 @@ def test_nut_still_emits_these_lines():
     assert " *** FINISH: no seed matched in " in NUT
     assert "missing required mod(s): " in NUT
     assert "UNEXPECTED exception in startNewCampaign" in NUT
+    # seed-report lines (Task 3)
+    assert " Map Options: " in NUT
+    assert " Seed Report Info: " in NUT
+    assert 'legendsVersion=" + ::Legends.Version' in NUT
+    assert 'battleSisters=" + ::Legends.Mod.ModSettings.getSetting("GenderEquality")' in NUT
 
 
 # ── analyze_tail (connect-late classification) ──
@@ -126,3 +132,54 @@ def test_verify_re_matches_both_wordings():
     assert m and m.group(1) == "7" and m.group(2) == "ABCDEFGH12"
     # the progress line must NOT be mistaken for a verify line
     assert VERIFY_RE.search("[BBREROLL2] iter 10/10000 last_fail=x skipped=0") is None
+
+
+# ── seed-report parsing (Map Options + Seed Report Info lines) ──
+
+MAPOPTS_LINE = ("[BBREROLL2] Map Options: LandRatio=60 Water=38 Snowline=85 "
+                "Settlements=24 Factions=3 StackCitadels=true AllTradeLocations=true ")
+REPORTINFO_LINE = ("[BBREROLL2] Seed Report Info: legendsVersion=19.3.39 | "
+                   "buildName=Left & Right | battleSisters=Enabled (Cosmetic)")
+
+
+def test_mapopts_re_captures_value_string():
+    assert MAPOPTS_RE.search(MAPOPTS_LINE).group(1).startswith("LandRatio=60 Water=38")
+
+
+def test_reportinfo_re_captures_value_string():
+    assert "battleSisters=Enabled (Cosmetic)" in REPORTINFO_RE.search(REPORTINFO_LINE).group(1)
+
+
+def test_parse_report_info_combines_both_lines():
+    info = parse_report_info("\n".join([MAPOPTS_LINE, REPORTINFO_LINE]))
+    assert info["version"] == "19.3.39"
+    assert info["build_name"] == "Left & Right"           # spaces survive the | split
+    assert info["battle_sisters"] == "Enabled (Cosmetic)" # parens survive too
+    assert info["map_options"]["Settlements"] == "24"
+    assert info["map_options"]["Factions"] == "3"
+    assert info["map_options"]["StackCitadels"] == "true"
+    assert info["map_options"]["AllTradeLocations"] == "true"
+    assert len(info["map_options"]) == 7
+
+
+def test_parse_report_info_absent_returns_empty_shape():
+    info = parse_report_info("just engine noise\n")
+    assert info["version"] is None
+    assert info["build_name"] is None
+    assert info["battle_sisters"] is None
+    assert info["map_options"] == {}
+
+
+def test_parse_report_info_uses_latest_lines():
+    text = "\n".join([
+        "[BBREROLL2] Map Options: Settlements=19 Factions=2 ",
+        MAPOPTS_LINE,  # a later run with Settlements=24
+    ])
+    assert parse_report_info(text)["map_options"]["Settlements"] == "24"
+
+
+def test_analyze_tail_includes_report_info():
+    text = "\n".join([INIT_LINE, MAPOPTS_LINE, REPORTINFO_LINE])
+    out = analyze_tail(text)
+    assert out["report_info"]["version"] == "19.3.39"
+    assert out["report_info"]["map_options"]["Settlements"] == "24"
