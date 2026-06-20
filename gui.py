@@ -111,6 +111,38 @@ def _read_app_version() -> str:
 APP_VERSION = _read_app_version()
 
 
+def _attach_tooltip(widget, text: str):
+    """Minimal hover tooltip (CTk has none). Best-effort; never raises."""
+    tip = {"win": None}
+
+    def show(_event=None):
+        if tip["win"] is not None:
+            return
+        try:
+            x = widget.winfo_rootx() + 20
+            y = widget.winfo_rooty() + widget.winfo_height() + 6
+            win = ctk.CTkToplevel(widget)
+            win.overrideredirect(True)
+            win.geometry(f"+{x}+{y}")
+            win.attributes("-topmost", True)
+            ctk.CTkLabel(win, text=text, font=("Segoe UI", 11),
+                         fg_color="#222222", corner_radius=6).pack(padx=8, pady=4)
+            tip["win"] = win
+        except Exception:
+            tip["win"] = None
+
+    def hide(_event=None):
+        if tip["win"] is not None:
+            try:
+                tip["win"].destroy()
+            except Exception:
+                pass
+            tip["win"] = None
+
+    widget.bind("<Enter>", show)
+    widget.bind("<Leave>", hide)
+
+
 def _sanitize_trait(name: str) -> str:
     """Strip a user-typed trait name to a Squirrel-safe identifier ([a-z0-9_]).
     Spaces and hyphens become underscores so 'Iron Lungs' → 'iron_lungs'."""
@@ -447,8 +479,9 @@ def copy_to_bb(bb_data_dir: Path):
 # exact strings the .nut emits — see tests/test_logscan.py).
 from bbreroll.logscan import (
     MATCH_RE, PROGRESS_RE, START_RE, VERIFY_RE, INIT_RE, FINISH_RE,
-    DEPCHECK_RE, UNEXPECTED_RE, strip_html, analyze_tail,
+    DEPCHECK_RE, UNEXPECTED_RE, strip_html, analyze_tail, parse_report_info,
 )
+from bbreroll.seed_report import build_seed_report
 
 _strip_html = strip_html   # legacy alias for older call sites in this file
 
@@ -456,7 +489,7 @@ _strip_html = strip_html   # legacy alias for older call sites in this file
 class LogWatcher(threading.Thread):
     def __init__(self, log_path: Path, on_match, on_progress, on_brute_start, on_verify_start,
                  on_mod_init=None, on_finish=None, on_activity=None,
-                 on_depcheck=None, on_unexpected=None, poll=1.0):
+                 on_depcheck=None, on_unexpected=None, on_report_info=None, poll=1.0):
         super().__init__(daemon=True)
         self.log_path        = log_path
         self.on_match        = on_match
@@ -468,6 +501,7 @@ class LogWatcher(threading.Thread):
         self.on_activity     = on_activity
         self.on_depcheck     = on_depcheck
         self.on_unexpected   = on_unexpected
+        self.on_report_info  = on_report_info
         self.poll = poll
         self._stop = threading.Event()
         self._pos = log_path.stat().st_size if log_path.exists() else 0
@@ -505,6 +539,8 @@ class LogWatcher(threading.Thread):
                 self.on_finish(found["finished"])
             if found["unexpected"] and self.on_unexpected:
                 self.on_unexpected(found["unexpected"])
+            if found.get("report_info") and self.on_report_info:
+                self.on_report_info(found["report_info"])
         except Exception:
             pass
 
@@ -568,6 +604,11 @@ class LogWatcher(threading.Thread):
                             last_progress = (int(m.group(1)), int(m.group(2)))
                         if last_progress:
                             self.on_progress(*last_progress)
+                        if self.on_report_info:
+                            ri = parse_report_info(text)
+                            if (ri["version"] or ri["build_name"]
+                                    or ri["battle_sisters"] or ri["map_options"]):
+                                self.on_report_info(ri)
             except Exception:
                 pass
             self._stop.wait(self.poll)
@@ -675,6 +716,8 @@ class App(ctk.CTk):
         # ETA tracking — list of (timestamp, current_iter) tuples for last-N progress events.
         self._progress_history: list[tuple[float, int]] = []
         self._matches: list[dict] = []   # session-level history of matches
+        self._report_info: dict = {"version": None, "build_name": None,
+                                   "battle_sisters": None, "map_options": {}}
 
         self._build_ui()
         self._load_settings()
@@ -817,8 +860,17 @@ class App(ctk.CTk):
                      font=("Segoe UI", 11), text_color="#e85a3c", anchor="w", justify="left",
                      wraplength=820,
                      ).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 4))
+        desc_frame = ctk.CTkFrame(self.match_pane, fg_color="transparent")
+        desc_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 2))
+        desc_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(desc_frame, text="Brief description (for the Legends Discord seed post):",
+                     font=("Segoe UI", 11)).grid(row=0, column=0, sticky="w")
+        self.share_desc_var = ctk.StringVar(value="")
+        ctk.CTkEntry(desc_frame, textvariable=self.share_desc_var).grid(
+            row=0, column=1, sticky="ew", padx=(6, 0))
+
         self.match_list = ctk.CTkScrollableFrame(self.match_pane, height=140, fg_color="transparent")
-        self.match_list.grid(row=3, column=0, sticky="ew", padx=8, pady=(2, 8))
+        self.match_list.grid(row=4, column=0, sticky="ew", padx=8, pady=(2, 8))
         self.match_pane.grid_remove()
 
         # Reusable notice banner — hidden until something needs attention
@@ -1320,7 +1372,8 @@ class App(ctk.CTk):
                                   on_mod_init=self._on_mod_init, on_finish=self._on_finish,
                                   on_activity=self._on_log_activity,
                                   on_depcheck=self._on_depcheck,
-                                  on_unexpected=self._on_unexpected)
+                                  on_unexpected=self._on_unexpected,
+                                  on_report_info=self._on_report_info)
         self.watcher.start()
         self._set_watch_state("idle")
         self.watch_var.set("connected — waiting for brute force")
@@ -1449,6 +1502,18 @@ class App(ctk.CTk):
     def _on_match(self, iter_num, seed):
         self._last_activity_ts = time.time()
         self.after(0, lambda: self._add_match(iter_num, seed))
+
+    def _on_report_info(self, info):
+        self.after(0, lambda: self._merge_report_info(info))
+
+    def _merge_report_info(self, info):
+        # Map Options and Seed Report Info can arrive in separate watcher chunks;
+        # merge so a later partial parse never wipes an earlier field.
+        for key in ("version", "build_name", "battle_sisters"):
+            if info.get(key):
+                self._report_info[key] = info[key]
+        if info.get("map_options"):
+            self._report_info["map_options"] = info["map_options"]
 
     def _on_progress(self, cur, total):
         now = time.time()
@@ -1597,12 +1662,18 @@ class App(ctk.CTk):
                          text=f"seed: {entry['seed']}    iter {entry['iter']}",
                          font=("Segoe UI", 13, "bold"),
                          text_color="white").grid(row=0, column=0, sticky="w", padx=10, pady=6)
-            ctk.CTkButton(row, text="📋 Copy", width=90, height=28,
+            ctk.CTkButton(row, text="📋 Copy", width=80, height=28,
                           fg_color="#155028", hover_color="#0e3d1d",
                           command=lambda s=entry["seed"]: self._copy_to_clipboard(s)).grid(row=0, column=1, padx=4)
+            share_btn = ctk.CTkButton(row, text="📋 Copy seed share", width=150, height=28,
+                          fg_color="#155028", hover_color="#0e3d1d",
+                          command=lambda e=entry: self._copy_seed_share(e))
+            share_btn.grid(row=0, column=2, padx=4)
+            _attach_tooltip(share_btn,
+                            "Copies a ready-to-paste Legends Discord seed-sharing post to the clipboard")
             ctk.CTkButton(row, text="×", width=32, height=28,
                           fg_color="transparent", hover_color="#5a1f1f",
-                          command=lambda s=entry["seed"]: self._dismiss_match(s)).grid(row=0, column=2, padx=(0, 6))
+                          command=lambda s=entry["seed"]: self._dismiss_match(s)).grid(row=0, column=3, padx=(0, 6))
 
     def _dismiss_match(self, seed: str):
         self._matches = [m for m in self._matches if m["seed"] != seed]
@@ -1613,14 +1684,28 @@ class App(ctk.CTk):
         self._render_match_list()
         self._dismiss_notice()   # users reach for Clear to dismiss banners too
 
-    def _copy_to_clipboard(self, text: str):
+    def _copy_to_clipboard(self, text: str, label: str | None = None):
         try:
             self.clipboard_clear()
             self.clipboard_append(text)
             self.update()
-            self.status_var.set(f"Copied: {text}")
+            self.status_var.set(label or f"Copied: {text}")
         except Exception as e:
             self.status_var.set(f"clipboard error: {e}")
+
+    def _copy_seed_share(self, entry: dict):
+        report = build_seed_report(
+            origin=self.origin_var.get(),
+            description=self.share_desc_var.get().strip(),
+            seed=entry["seed"],
+            report_info=self._report_info,
+            tool_version=APP_VERSION,
+        )
+        self._copy_to_clipboard(report, label=f"Copied Discord seed share for {entry['seed']}")
+        if not self._report_info.get("version"):
+            self.status_var.set(
+                "Copied — but Version/Battle sisters/Map Options are blank. "
+                "Redeploy the mod (tools\\deploy.py) + restart BB so it logs them.")
 
     # ── stale mod cleanup ──
     def _on_clean_stale(self):
