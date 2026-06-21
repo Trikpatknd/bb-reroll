@@ -14,7 +14,7 @@
 // to a hardcoded Davkul Awaits roster if dynamic origin lookup fails.
 
 ::BBReroll <- {
-    Version = "3.4.6",
+    Version = "3.4.7",
     Tag     = "[BBREROLL]",
     Tag2    = "[BBREROLL2]",
     // Sentinel values thrown by the brute-force loop on a clean finish. The
