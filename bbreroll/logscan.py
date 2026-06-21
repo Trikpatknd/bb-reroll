@@ -36,7 +36,11 @@ _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def strip_html(s: str) -> str:
-    return _TAG_RE.sub("", s)
+    # Replace tags with a newline, NOT "". log.html is one giant HTML line with
+    # entries separated only by tags; collapsing them onto one line let a greedy
+    # capture (e.g. REPORTINFO_RE's (.+)) swallow following entries into the last
+    # field. Inserting newlines keeps each log entry on its own line.
+    return _TAG_RE.sub("\n", s)
 
 
 def analyze_tail(text: str) -> dict:

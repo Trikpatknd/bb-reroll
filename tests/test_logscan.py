@@ -183,3 +183,22 @@ def test_analyze_tail_includes_report_info():
     out = analyze_tail(text)
     assert out["report_info"]["version"] == "19.3.39"
     assert out["report_info"]["map_options"]["Settlements"] == "24"
+
+
+def test_strip_html_separates_entries_so_greedy_capture_is_bounded():
+    # Regression (real in-game bug): log.html is one giant HTML line — entries
+    # are separated by tags, NOT newlines. strip_html must turn tags into a
+    # separator, or the greedy (.+) in REPORTINFO_RE/MAPOPTS_RE swallows every
+    # following log entry into the last parsed field (battleSisters).
+    html = (
+        '<div class="text">[BBREROLL2] Map Options: LandRatio=60 Settlements=24 Factions=3 </div>'
+        '<div class="text">[BBREROLL2] Seed Report Info: legendsVersion=19.3.39 | '
+        'buildName=Left & Right | battleSisters=Enabled</div>'
+        '<div class="text">[BBREROLL2] setup: getting roster</div>'
+        '<div class="text">Building land and sea...</div>'
+    )
+    info = parse_report_info(strip_html(html))
+    assert info["battle_sisters"] == "Enabled"   # NOT "Enabled[BBREROLL2] setup: ..."
+    assert info["version"] == "19.3.39"
+    assert info["map_options"]["Settlements"] == "24"
+    assert len(info["map_options"]) == 3         # only the 3 real keys, no junk
