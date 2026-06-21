@@ -56,3 +56,18 @@ def test_version_without_build_name_omits_trailing_space():
 def test_footer_drops_version_when_unknown():
     out = build_seed_report("Gladiators", "x", "ABCDEFGH12", FULL_INFO, "unknown")
     assert "Found with BB Reroll — github.com/Trikpatknd/bb-reroll" in out
+
+
+def test_origin_prefers_report_info_over_dropdown_arg():
+    # The real origin logged by the mod must win over the GUI dropdown value.
+    info = dict(FULL_INFO, origin="Gladiators")
+    out = build_seed_report("Custom", "x", "ABCDEFGH12", info, "3.4.6")
+    assert "Origin: Gladiators" in out
+    assert "Origin: Custom" not in out
+
+
+def test_origin_falls_back_to_dropdown_arg_when_not_logged():
+    # Older log / mod not yet redeployed: no logged origin → use the dropdown.
+    info = dict(FULL_INFO)            # FULL_INFO has no "origin" key
+    out = build_seed_report("Lone Wolf", "x", "ABCDEFGH12", info, "3.4.6")
+    assert "Origin: Lone Wolf" in out

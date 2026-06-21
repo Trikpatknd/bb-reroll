@@ -717,7 +717,8 @@ class App(ctk.CTk):
         self._progress_history: list[tuple[float, int]] = []
         self._matches: list[dict] = []   # session-level history of matches
         self._report_info: dict = {"version": None, "build_name": None,
-                                   "battle_sisters": None, "map_options": {}}
+                                   "battle_sisters": None, "origin": None,
+                                   "map_options": {}}
 
         self._build_ui()
         self._load_settings()
@@ -1509,7 +1510,7 @@ class App(ctk.CTk):
     def _merge_report_info(self, info):
         # Map Options and Seed Report Info can arrive in separate watcher chunks;
         # merge so a later partial parse never wipes an earlier field.
-        for key in ("version", "build_name", "battle_sisters"):
+        for key in ("version", "build_name", "battle_sisters", "origin"):
             if info.get(key):
                 self._report_info[key] = info[key]
         if info.get("map_options"):

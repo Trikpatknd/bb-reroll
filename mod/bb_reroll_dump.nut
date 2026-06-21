@@ -439,6 +439,20 @@
     catch (e) { sr += "buildName=?? | "; }
     try { sr += "battleSisters=" + ::Legends.Mod.ModSettings.getSetting("GenderEquality").getValue(); }
     catch (e) { sr += "battleSisters=??"; }
+    // Real origin actually running in BB. The resolved scenario's display name
+    // (e.g. "Gladiators") matches the GUI's origin list, so the report names the
+    // origin being played rather than the GUI dropdown. getName() is the public
+    // accessor; fall back to the m.Name slot, then the ID, if a build lacks it.
+    local oname = "??";
+    try {
+        local sc = ::BBReroll_BF_FindScenario(worldState);
+        if (sc != null) {
+            try { oname = sc.getName(); }
+            catch (e1) { try { oname = sc.m.Name; }
+                         catch (e2) { try { oname = sc.getID(); } catch (e3) {} } }
+        }
+    } catch (e) {}
+    sr += " | origin=" + oname;
     ::logInfo(Tag + " Seed Report Info: " + sr);
 
     worldState.setAutoPause(true);

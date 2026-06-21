@@ -72,6 +72,7 @@ def test_nut_still_emits_these_lines():
     assert " Seed Report Info: " in NUT
     assert 'legendsVersion=" + ::Legends.Version' in NUT
     assert 'battleSisters=" + ::Legends.Mod.ModSettings.getSetting("GenderEquality")' in NUT
+    assert 'origin=" + oname' in NUT
 
 
 # ── analyze_tail (connect-late classification) ──
@@ -139,7 +140,8 @@ def test_verify_re_matches_both_wordings():
 MAPOPTS_LINE = ("[BBREROLL2] Map Options: LandRatio=60 Water=38 Snowline=85 "
                 "Settlements=24 Factions=3 StackCitadels=true AllTradeLocations=true ")
 REPORTINFO_LINE = ("[BBREROLL2] Seed Report Info: legendsVersion=19.3.39 | "
-                   "buildName=Left & Right | battleSisters=Enabled (Cosmetic)")
+                   "buildName=Left & Right | battleSisters=Enabled (Cosmetic) | "
+                   "origin=Master Necromancer")
 
 
 def test_mapopts_re_captures_value_string():
@@ -155,6 +157,7 @@ def test_parse_report_info_combines_both_lines():
     assert info["version"] == "19.3.39"
     assert info["build_name"] == "Left & Right"           # spaces survive the | split
     assert info["battle_sisters"] == "Enabled (Cosmetic)" # parens survive too
+    assert info["origin"] == "Master Necromancer"         # spaces survive too
     assert info["map_options"]["Settlements"] == "24"
     assert info["map_options"]["Factions"] == "3"
     assert info["map_options"]["StackCitadels"] == "true"

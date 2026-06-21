@@ -42,7 +42,7 @@ def build_seed_report(origin, description, seed, report_info, tool_version) -> s
 
     lines = [
         f"Version: {_version_line(report_info)}",
-        f"Origin: {origin}",
+        f"Origin: {report_info.get('origin') or origin}",
         f"Brief description: {description}",
         f"Seed: {seed}",
         f"Battle sisters: {report_info.get('battle_sisters') or _UNKNOWN}",

@@ -80,7 +80,7 @@ def parse_report_info(text: str) -> dict:
     so callers can render "(unknown)" without special-casing.
     """
     info = {"version": None, "build_name": None, "battle_sisters": None,
-            "map_options": {}}
+            "origin": None, "map_options": {}}
 
     mo = list(MAPOPTS_RE.finditer(text))
     if mo:
@@ -102,4 +102,6 @@ def parse_report_info(text: str) -> dict:
                 info["build_name"] = v
             elif k == "battleSisters":
                 info["battle_sisters"] = v
+            elif k == "origin":
+                info["origin"] = v
     return info
