@@ -1,13 +1,13 @@
 """Trait ID → display-name lookup for the BB Reroll GUI.
 
-Source: live extraction of mod_legends-19.3.24 (scripts/skills/traits/*_trait.nut
-and mod_legends/hooks/skills/traits/*.nut). The mod emits IDs like
-`trait.legend_heavy`; the GUI strips the `trait.` prefix and looks the
-remainder up here to get the player-facing label (e.g. "Lumbering").
+Source: live extraction of mod_legends-19.3.24, re-checked against 19.4.22 trait_defs.nut
+(scripts/skills/traits/*_trait.nut and mod_legends/hooks/skills/traits/*.nut). The game's
+skill IDs look like `trait.legend_heavy`; the search and the GUI use them without the
+`trait.` prefix and look them up here to get the player-facing label (e.g. "Lumbering").
 
 Vanilla traits typically have a display name equal to their ID titlecased;
 Legends adds renamed and net-new traits. Anything not in this map falls back
-to `_id_to_display()` in gui.py — snake_case → Title Case with the
+to `criteria.id_to_display()` — snake_case → Title Case with the
 `legend_` prefix stripped.
 """
 
@@ -97,7 +97,6 @@ TRAIT_NAMES: dict[str, str] = {
     "legend_seductive":       "Seductive",
     "legend_steady_hands":    "Steady Hands",
     "legend_sureshot":        "Sureshot",
-    "legend_undead_killer":   "Undead Killer",
     "legend_unpredictable":   "Unpredictable",
 
     # Combat-acquired (Legends)

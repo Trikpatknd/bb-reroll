@@ -1,32 +1,38 @@
 """
-BB Reroll Control Panel — single-window GUI for configuring the brute-force mod.
+BB Reroll — find Battle Brothers campaign seeds whose starting brothers meet your
+criteria, without running the game.
 
-Features:
-  • Origin dropdown (auto-sets brother count)
+One window:
+  • Game setup (Vanilla / Legends — read from the installed game) and Origin
   • Stars grid (rows = brother slots, cols = the 8 stat keys, 0-3 each)
   • Banned + Required trait checklists (with custom additions)
-  • Save & Deploy: regenerates mod/bb_reroll_dump.nut, builds the ZIP, copies
-    it into <BB install>/data/.
-  • Scan log for traits: pulls every trait ID the mod has emitted into the
-    checklists so they grow over time.
-  • Background log watcher: pops a desktop notification + flashes the GUI
-    when [BBREROLL2] *** MATCH is found.
+  • Search: the game's own campaign-start scripts are run for seed after seed in
+    parallel worker processes (bbseed/), straight from the game's files
+  • Results: every match with its full starting roster, copy buttons, and a
+    ready-made Legends Discord seed post
+  • Check a seed: shows the roster any seed gives
+
+The seeds are ordinary campaign seeds: they work in any game with the same game
+version, mods and recruit-related Mod Options — no mod of ours involved.
 
 Runs as `python gui.py` for dev, or as a standalone `.exe` after PyInstaller.
 """
 
 import json
 import os
-import re
-import shutil
-import subprocess
+import queue
 import sys
-import tempfile
 import threading
 import time
 import webbrowser
-import zipfile
 from pathlib import Path
+
+# A windowed exe has no console: sys.stdout / sys.stderr are None, also in the search's
+# worker processes (which start by running this file). Anything that prints would crash.
+for _stream in ("stdout", "stderr"):
+    if getattr(sys, _stream) is None:
+        setattr(sys, _stream, open(os.devnull, "w"))
+
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -36,20 +42,13 @@ try:
 except Exception:
     notification = None
 
-# Embedded copy of mod/bb_reroll_dump.nut so the GUI/exe can write a fresh .nut
-# from scratch when none exists yet.
-try:
-    from bbreroll.mod_template import NUT_TEMPLATE
-except Exception:
-    NUT_TEMPLATE = ""
-
 # Trait ID → display-name map (Lumbering / legend_heavy, etc.).
 try:
     from bbreroll.trait_names import TRAIT_NAMES
 except Exception:
     TRAIT_NAMES = {}
 
-# Per-origin hardcoded talent stars — drives the info label above the grid
+# Per-origin hardcoded talent stars (Legends) — drives the info label above the grid
 # and the auto-fill of the stars grid when an origin is picked.
 try:
     from bbreroll.origin_hardcoded_stars import (
@@ -64,11 +63,18 @@ except Exception:
     def origin_conflicts(_origin, _stars_by_slot):
         return []
 
+from bbreroll import offline_origins as O
+from bbreroll.criteria import (
+    DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
+    roster_lines, sanitize_trait, to_int,
+)
+from bbreroll.seed_report import build_seed_report
+
 
 # ─────────────────────── paths ───────────────────────
 
 def _app_dir() -> Path:
-    """Where mod/, finds/, etc. live — next to the script in dev, next to the .exe when frozen."""
+    """Where the settings file lives — next to the script in dev, next to the .exe when frozen."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
@@ -83,17 +89,13 @@ def _bundle_dir() -> Path:
 
 APP_DIR       = _app_dir()
 BUNDLE_DIR    = _bundle_dir()
-NUT_PATH      = APP_DIR / "mod" / "bb_reroll_dump.nut"
-ZIP_PATH      = APP_DIR / "mod" / "mod_bb_reroll_dump.zip"
-BB_DIR        = Path.home() / "Documents" / "Battle Brothers"
-BB_LOG        = BB_DIR / "log.html"
 SETTINGS_PATH = APP_DIR / "bb_reroll_gui.json"
+SETTINGS_VERSION = 4      # settings written by 3.x (the in-game search) carry no version
 
 
 def _read_app_version() -> str:
     """Version string from the repo-root VERSION file (the single source of
-    truth). Bundled into the .exe via gui.spec; falls back to the version
-    baked into the embedded template, then 'unknown'."""
+    truth). Bundled into the .exe via gui.spec."""
     for base in (BUNDLE_DIR, APP_DIR):
         try:
             p = base / "VERSION"
@@ -101,523 +103,56 @@ def _read_app_version() -> str:
                 return p.read_text(encoding="utf-8").strip()
         except Exception:
             pass
-    try:
-        from bbreroll.mod_template import NUT_VERSION
-        return NUT_VERSION
-    except Exception:
-        return "unknown"
+    return "unknown"
 
 
 APP_VERSION = _read_app_version()
 
 
-def _attach_tooltip(widget, text: str):
-    """Minimal hover tooltip (CTk has none). Best-effort; never raises."""
-    tip = {"win": None}
+def default_workers() -> int:
+    return max(1, min(8, (os.cpu_count() or 2) // 2))
 
-    def show(_event=None):
-        if tip["win"] is not None:
-            return
-        try:
-            x = widget.winfo_rootx() + 20
-            y = widget.winfo_rooty() + widget.winfo_height() + 6
-            win = ctk.CTkToplevel(widget)
-            win.overrideredirect(True)
-            win.geometry(f"+{x}+{y}")
-            win.attributes("-topmost", True)
-            ctk.CTkLabel(win, text=text, font=("Segoe UI", 11),
-                         fg_color="#222222", corner_radius=6).pack(padx=8, pady=4)
-            tip["win"] = win
-        except Exception:
-            tip["win"] = None
+
+def _attach_tooltip(widget, text):
+    """Hover tooltip (CTk has none) that cannot get stuck: it goes away when the mouse
+    leaves, on any click or loss of focus, when the widget is destroyed, and by itself
+    after 6 s. `text` may be a function, asked each time the tooltip is shown.
+    Not for dropdowns: once their list opens the widget never hears the mouse leave."""
+    state = {"win": None, "job": None}
 
     def hide(_event=None):
-        if tip["win"] is not None:
+        if state["job"] is not None:
             try:
-                tip["win"].destroy()
+                widget.after_cancel(state["job"])
             except Exception:
                 pass
-            tip["win"] = None
+            state["job"] = None
+        if state["win"] is not None:
+            try:
+                state["win"].destroy()
+            except Exception:
+                pass
+            state["win"] = None
 
-    widget.bind("<Enter>", show)
-    widget.bind("<Leave>", hide)
-
-
-def _sanitize_trait(name: str) -> str:
-    """Strip a user-typed trait name to a Squirrel-safe identifier ([a-z0-9_]).
-    Spaces and hyphens become underscores so 'Iron Lungs' → 'iron_lungs'."""
-    s = name.strip().lower()
-    s = re.sub(r"[\s\-]+", "_", s)
-    s = re.sub(r"[^a-z0-9_]", "", s)
-    return s.strip("_")
-
-
-def _id_to_display(trait_id: str) -> str:
-    """Fallback display name for trait IDs not in TRAIT_NAMES — strips the
-    `legend_` prefix and titlecases the rest. 'legend_steady_hands' → 'Steady Hands'."""
-    s = trait_id
-    if s.startswith("legend_"):
-        s = s[len("legend_"):]
-    return s.replace("_", " ").title() if s else trait_id
-
-
-# ─────────────────────── presets ───────────────────────
-
-# (display name, brother count). None = let user set manually.
-# Display names + counts confirmed from mod_legends/hooks/scenarios/world/*.nut
-# and scripts/scenarios/world/legends_*_scenario.nut (Legends 19.3.24).
-# Skipped: tutorial / random / debug-random scenarios (don't make sense for seed brute-forcing).
-ORIGINS = [
-    ("Custom",                    None),
-    # Vanilla origins (Legends-hooked)
-    ("Anatomist",                    3),
-    ("Band of Poachers",             3),
-    ("Beast Slayers",                3),
-    ("Davkul Cultists",              5),
-    ("Deserters",                    3),
-    ("Gladiators",                   3),
-    ("Lone Wolf",                    1),
-    ("Manhunters",                   6),
-    ("Northern Raiders",             4),
-    ("Oathtakers",                   2),
-    ("Peasant Militia",             12),
-    ("Trading Caravan",              2),
-    # Legends-added origins (4 dropped: Build your own, Druid [Legacy], Horse Party,
-    # Mage — all hard-disabled via `function isValid() { return false; }` and
-    # therefore not selectable in BB's new-campaign picker)
-    ("Adventuring Party",            6),
-    ("Assassin",                     1),
-    ("Berserker",                    1),
-    ("Crusader",                     1),
-    ("Escaped Slaves",               5),  # requires Blazing Deserts DLC
-    ("The Free Company",             5),
-    ("The Inquisition",              3),
-    ("Master Necromancer",           6),
-    ("Noble",                        6),
-    ("Nomad Tribe",                  5),
-    ("Original Beggar Challenge",    1),
-    ("Ranger",                       2),
-    ("Scaling Beggar Challenge",     1),
-    ("Seer",                         1),
-    ("Sisterhood",                   6),
-    ("The Cabal",                    4),
-    ("The Troupe",                   4),
-]
-
-STATS = ["hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf"]
-
-# Legends-aware trait categorization. IDs match the `trait.X` skill IDs the mod
-# emits in dumps (after stripping the `trait.` prefix). Defaults reflect a
-# typical "I want a strong roll, no glaring flaws" preset — user can tweak any
-# of them via the GUI. See plans/first-we-should-get-abstract-sutton.md.
-DEFAULT_BANNED = [
-    # Vanilla bad traits (33)
-    "addict", "ailing", "asthmatic", "bleeder", "brute", "clubfooted", "clumsy",
-    "cocky", "craven", "dastard", "disloyal", "drunkard", "dumb", "fainthearted",
-    "fat", "fear_beasts", "fear_greenskins", "fear_undead", "fragile",
-    "gluttonous", "greedy", "hesitant", "impatient", "insecure", "irrational",
-    "mad", "night_blind", "paranoid", "pessimist", "short_sighted",
-    "superstitious", "tiny", "weasel",
-    # Legends-added bad traits (10)
-    "legend_cannibalistic", "legend_deathly_spectre", "legend_double_tongued",
-    "legend_fear_dark", "legend_fear_nobles", "legend_fleshless", "legend_heavy",
-    "legend_predictable", "legend_rotten_flesh", "legend_slack",
-    "legend_withering_aura",
-]
-DEFAULT_REQUIRED = [
-    # Vanilla good traits (22)
-    "athletic", "bloodthirsty", "brave", "bright", "determined", "dexterous",
-    "eagle_eyes", "fearless", "huge", "iron_jaw", "iron_lungs", "loyal", "lucky",
-    "optimist", "quick", "spartan", "strong", "sure_footing", "survivor", "swift",
-    "teamplayer", "tough",
-    # Legends-added good traits (14)
-    "legend_aggressive", "legend_ambitious", "legend_arena_champion",
-    "legend_arena_invictus", "legend_beastslayers", "legend_gift_of_people",
-    "legend_martial", "legend_natural", "legend_pragmatic", "legend_seductive",
-    "legend_steady_hands", "legend_sureshot", "legend_undead_killer",
-    "legend_unpredictable",
-]
-
-# Origin-baked, scenario-specific, acquired, or cosmetic traits.
-# These IDs WILL appear in dumps but should never be auto-added to either
-# checklist — banning one would reject the origin that grants it; requiring
-# one would demand a trait an origin can't roll.
-IGNORE_TRAITS = frozenset([
-    "player",
-    "cultist_acolyte", "cultist_chosen", "cultist_disciple", "cultist_fanatic",
-    "cultist_prophet", "cultist_zealot",
-    "legend_intensive_training_trait", "legend_lw_relationship",
-    "legend_brothers_in_chains", "legend_appetite_donkey",
-    "legend_inquisition_disciple", "legend_horse", "legend_necromancer",
-    "legend_nomad", "legend_peasant", "legend_light",
-    "hate_beasts", "hate_greenskins", "hate_undead",
-    "noble_killer", "undead_killer",
-    "old", "night_owl", "glorious", "deathwish",
-    "pit_fighter", "arena_fighter", "arena_veteran",
-])
-# Anything starting with these prefixes is also ignored (covers the prosthetics
-# + the paladin oath family — too many to enumerate, all origin/acquired).
-IGNORE_PREFIXES = ("legend_prosthetic_", "oath_of_")
-
-
-# ─────────────────────── .nut config codec ───────────────────────
-
-def _find_config_block(text: str):
-    """Return (start, end) indices of `::BBReroll_BF <- { … };` or None."""
-    marker = "::BBReroll_BF <- {"
-    start = text.find(marker)
-    if start == -1:
-        return None
-    depth = 0
-    i = text.find("{", start)
-    while i < len(text):
-        c = text[i]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                end = i + 1
-                while end < len(text) and text[end] in " \t\r\n":
-                    end += 1
-                if end < len(text) and text[end] == ";":
-                    end += 1
-                return start, end
-        i += 1
-    return None
-
-
-def parse_existing_config(nut_text: str) -> dict:
-    """Best-effort parse of the existing ::BBReroll_BF block. Missing pieces → defaults."""
-    cfg = {
-        "trigger_seed": "REROLL",
-        "max_iters":   10000,
-        "log_every":   10,
-        "stars_by_slot": {"*": {}},      # slot_key (str) -> {stat: int}
-        "banned":   list(DEFAULT_BANNED),
-        "required": list(DEFAULT_REQUIRED),
-        "required_mode": "any",          # "any" = at least one match, "all" = every one
-    }
-    block = _find_config_block(nut_text)
-    if block is None:
-        return cfg
-    body = nut_text[block[0]:block[1]]
-
-    m = re.search(r'TriggerSeed\s*=\s*"([^"]*)"', body)
-    if m: cfg["trigger_seed"] = m.group(1)
-    m = re.search(r'MaxIters\s*=\s*(\d+)', body)
-    if m: cfg["max_iters"] = int(m.group(1))
-    m = re.search(r'LogEvery\s*=\s*(\d+)', body)
-    if m: cfg["log_every"] = int(m.group(1))
-
-    sbs = re.search(r'StarsBySlot\s*=\s*\{([^}]*)\}', body)
-    if sbs:
-        cfg["stars_by_slot"] = {}
-        for key, spec in re.findall(r'\["([^"]*)"\]\s*=\s*"([^"]*)"', sbs.group(1)):
-            stats = {}
-            for tok in re.findall(r'([a-zA-Z]+)(\d+)', spec):
-                stats[tok[0].lower()] = int(tok[1])
-            cfg["stars_by_slot"][key] = stats
-        if "*" not in cfg["stars_by_slot"]:
-            cfg["stars_by_slot"]["*"] = {}
-
-    bt = re.search(r'BannedTraits\s*=\s*\[([^\]]*)\]', body)
-    if bt:
-        cfg["banned"] = re.findall(r'"([^"]+)"', bt.group(1))
-    # Accept either new field name (Required) or old (RequiredAny).
-    rq = re.search(r'\bRequired\s*=\s*\[([^\]]*)\]', body) or \
-         re.search(r'RequiredAny\s*=\s*\[([^\]]*)\]', body)
-    if rq:
-        cfg["required"] = re.findall(r'"([^"]+)"', rq.group(1))
-    rm = re.search(r'RequiredMode\s*=\s*"(any|all)"', body)
-    if rm:
-        cfg["required_mode"] = rm.group(1)
-    return cfg
-
-
-def render_config_block(cfg: dict) -> str:
-    """Render a fresh ::BBReroll_BF block from cfg."""
-    # Spec strings
-    spec_lines = []
-    # always emit "*" first
-    keys = ["*"] + sorted([k for k in cfg["stars_by_slot"] if k != "*"], key=lambda k: (len(k), k))
-    for key in keys:
-        if key not in cfg["stars_by_slot"]:
-            continue
-        stats = cfg["stars_by_slot"][key]
-        spec = " ".join(f"{s}{n}" for s, n in stats.items() if n > 0)
-        spec_lines.append(f'        ["{key}"] = "{spec}",')
-
-    banned_lines = []
-    for i, t in enumerate(cfg["banned"]):
-        if i % 6 == 0:
-            banned_lines.append("        ")
-        banned_lines[-1] += f'"{t}",'
-        if i % 6 != 5:
-            banned_lines[-1] += " "
-
-    req_lines = []
-    for i, t in enumerate(cfg["required"]):
-        if i % 6 == 0:
-            req_lines.append("        ")
-        req_lines[-1] += f'"{t}",'
-        if i % 6 != 5:
-            req_lines[-1] += " "
-
-    required_mode = cfg.get("required_mode", "any")
-    return (
-"::BBReroll_BF <- {\n"
-f'    TriggerSeed = "{cfg["trigger_seed"]}",\n'
-f"    MaxIters    = {cfg['max_iters']},\n"
-f"    LogEvery    = {cfg['log_every']},\n"
-"\n"
-"    StarsBySlot = {\n"
-+ "\n".join(spec_lines) + "\n"
-"    },\n"
-"\n"
-"    BannedTraits = [\n"
-+ "\n".join(banned_lines) + "\n"
-"    ],\n"
-"\n"
-f'    RequiredMode = "{required_mode}",  // "any" = at least one match; "all" = every one\n'
-"    Required = [\n"
-+ "\n".join(req_lines) + "\n"
-"    ],\n"
-"\n"
-'    // Fallback used only if dynamic origin lookup fails.\n'
-"    Fallback = {\n"
-"        backgrounds = [\n"
-'            "legend_magister_background",\n'
-'            "legend_husk_background",\n'
-'            "cultist_background",\n'
-'            "cultist_background",\n'
-'            "legend_lurker_background",\n'
-"        ],\n"
-'        granted_traits = ["CultistFanatic"],\n'
-'        removed_traits = ["Superstitious","Dastard","Insecure","Craven"],\n'
-"    },\n"
-"};"
-    )
-
-
-# ─────────────────────── deploy ───────────────────────
-
-_NUT_VER_RE = re.compile(r'Version\s*=\s*"([^"]*)"')
-
-
-def nut_version(text: str):
-    """The Version string inside .nut source, or None."""
-    m = _NUT_VER_RE.search(text)
-    return m.group(1) if m else None
-
-
-def rewrite_nut(cfg: dict):
-    """Write a fresh .nut with the GUI's config. Creates the file (and parent
-    directory) from the embedded template if it doesn't exist yet.
-
-    Stale-base guard: a frozen exe carries its mod source next to itself
-    (<exe dir>/mod/bb_reroll_dump.nut). If that on-disk copy is from an OLDER
-    GUI version, reusing it would silently deploy outdated mod code — exactly
-    how a v3.4.3 zip once overwrote a v3.4.5 deploy. When the on-disk version
-    disagrees with this GUI's version, the embedded template (which always
-    matches the GUI) wins. Returns a notice string when that happens, else None.
-    """
-    notice = None
-    NUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if NUT_PATH.exists():
-        text = NUT_PATH.read_text(encoding="utf-8")
-        disk_ver = nut_version(text)
-        if (NUT_TEMPLATE and APP_VERSION != "unknown"
-                and disk_ver is not None and disk_ver != APP_VERSION):
-            notice = (f"Mod source next to the GUI was v{disk_ver} (stale) — replaced with "
-                      f"this GUI's embedded v{APP_VERSION} before deploying.")
-            text = NUT_TEMPLATE
-    elif NUT_TEMPLATE:
-        text = NUT_TEMPLATE
-    else:
-        raise FileNotFoundError(
-            f"{NUT_PATH} not found and no embedded template available. "
-            "Place bb_reroll_dump.nut in the mod/ folder."
-        )
-    block = _find_config_block(text)
-    if block is None:
-        raise RuntimeError("Couldn't find ::BBReroll_BF block in the .nut/template.")
-    new = text[:block[0]] + render_config_block(cfg) + text[block[1]:]
-    NUT_PATH.write_text(new, encoding="utf-8")
-    return notice
-
-
-def rebuild_zip():
-    NUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    manifest = json.dumps({
-        "mod": "bb_reroll_dump",
-        "version": APP_VERSION,
-        "built": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "via": "gui",
-    }, indent=2)
-    with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(NUT_PATH, arcname="scripts/!mods_preload/bb_reroll_dump.nut")
-        z.writestr("BBRR_MANIFEST.json", manifest)
-
-
-def deployed_nut_version(zip_path: Path):
-    """Read the mod version back out of a deployed zip (verification step)."""
-    with zipfile.ZipFile(zip_path) as z:
-        return nut_version(
-            z.read("scripts/!mods_preload/bb_reroll_dump.nut").decode("utf-8", "ignore"))
-
-
-def copy_to_bb(bb_data_dir: Path):
-    target = bb_data_dir / ZIP_PATH.name
-    shutil.copy2(ZIP_PATH, target)
-    return target
-
-
-# ─────────────────────── log watcher ───────────────────────
-
-# Patterns + tail classification live in logscan.py (unit-tested against the
-# exact strings the .nut emits — see tests/test_logscan.py).
-from bbreroll.logscan import (
-    MATCH_RE, PROGRESS_RE, START_RE, VERIFY_RE, INIT_RE, FINISH_RE,
-    DEPCHECK_RE, UNEXPECTED_RE, strip_html, analyze_tail, parse_report_info,
-)
-from bbreroll.seed_report import build_seed_report
-
-_strip_html = strip_html   # legacy alias for older call sites in this file
-
-
-class LogWatcher(threading.Thread):
-    def __init__(self, log_path: Path, on_match, on_progress, on_brute_start, on_verify_start,
-                 on_mod_init=None, on_finish=None, on_activity=None,
-                 on_depcheck=None, on_unexpected=None, on_report_info=None, poll=1.0):
-        super().__init__(daemon=True)
-        self.log_path        = log_path
-        self.on_match        = on_match
-        self.on_progress     = on_progress
-        self.on_brute_start  = on_brute_start
-        self.on_verify_start = on_verify_start
-        self.on_mod_init     = on_mod_init
-        self.on_finish       = on_finish
-        self.on_activity     = on_activity
-        self.on_depcheck     = on_depcheck
-        self.on_unexpected   = on_unexpected
-        self.on_report_info  = on_report_info
-        self.poll = poll
-        self._stop = threading.Event()
-        self._pos = log_path.stat().st_size if log_path.exists() else 0
-
-    def _initial_scan(self):
-        """Classify any pre-existing log once, so events written BEFORE the GUI
-        connected still surface: the mod's init line (and its version), a
-        finished run (BB sitting in a half-init state right now), or a
-        dependency-check failure.
-
-        Two hard-won details:
-        - Binary read; text-mode seek() with an arbitrary byte offset is
-          undefined behaviour in Python 3 and silently broke this scan.
-        - The init line is written at BB LAUNCH, i.e. near the HEAD of the log
-          — a long brute-force run pushes it megabytes away from the tail (in
-          one real log it sat at 1.2% of 4.3 MB). A tail-only window misses it,
-          so read the whole file (one-time cost at connect); for pathological
-          sizes fall back to head + tail windows.
-        """
+    def show(_event=None):
+        if state["win"] is not None:
+            return
         try:
-            size = self.log_path.stat().st_size
-            with open(self.log_path, "rb") as f:
-                if size <= 64_000_000:
-                    raw = f.read()
-                else:
-                    head = f.read(1_000_000)
-                    f.seek(size - 8_000_000)
-                    raw = head + b"\n" + f.read()
-            found = analyze_tail(strip_html(raw.decode("utf-8", errors="ignore")))
-            if found["mod_version"] and self.on_mod_init:
-                self.on_mod_init(found["mod_version"])
-            if found["missing_deps"] and self.on_depcheck:
-                self.on_depcheck(found["missing_deps"])
-            if found["finished"] and self.on_finish:
-                self.on_finish(found["finished"])
-            if found["unexpected"] and self.on_unexpected:
-                self.on_unexpected(found["unexpected"])
-            if found.get("report_info") and self.on_report_info:
-                self.on_report_info(found["report_info"])
+            win = ctk.CTkToplevel(widget)
+            win.overrideredirect(True)
+            win.geometry(f"+{widget.winfo_rootx() + 20}+{widget.winfo_rooty() + widget.winfo_height() + 6}")
+            win.attributes("-topmost", True)
+            ctk.CTkLabel(win, text=text() if callable(text) else text, font=("Segoe UI", 11),
+                         fg_color="#222222", corner_radius=6, wraplength=420, justify="left").pack(padx=8, pady=4)
+            state["win"] = win
+            state["job"] = widget.after(6000, hide)
         except Exception:
-            pass
+            state["win"] = None
 
-    def run(self):
-        if self.log_path.exists():
-            self._initial_scan()
-        while not self._stop.is_set():
-            try:
-                if self.log_path.exists():
-                    size = self.log_path.stat().st_size
-                    if size < self._pos:
-                        # Log rotated/truncated (BB does this on some launches).
-                        # Resume tailing from the NEW end — do NOT reset to 0,
-                        # which would replay a previous run's progress lines and
-                        # show a stale iter count when the game (re)starts.
-                        self._pos = size
-                    if size > self._pos:
-                        with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
-                            f.seek(self._pos)
-                            chunk = f.read()
-                            self._pos = f.tell()
-                        text = _strip_html(chunk)
-                        # Any non-empty new content = BB is actively writing
-                        # its log (used for the mod-not-loaded heuristic).
-                        if self.on_activity and text.strip():
-                            self.on_activity()
-                        # Mod init line (fires once at BB launch after Legends).
-                        if self.on_mod_init:
-                            mi = INIT_RE.search(text)
-                            if mi:
-                                self.on_mod_init(mi.group(1))
-                        # Brute force just started → consume any stale STOP request.
-                        if START_RE.search(text):
-                            self.on_brute_start()
-                        # Clean-finish marker → loop done, BB now half-initialised.
-                        if self.on_finish:
-                            mf = FINISH_RE.search(text)
-                            if mf:
-                                self.on_finish(mf.group(1))
-                        # Dependency-check failure (missing Legends/MSU).
-                        if self.on_depcheck:
-                            md = DEPCHECK_RE.search(text)
-                            if md:
-                                self.on_depcheck(md.group(1))
-                        # Non-sentinel exception passed through by our hook.
-                        if self.on_unexpected:
-                            mu = UNEXPECTED_RE.search(text)
-                            if mu:
-                                self.on_unexpected(mu.group(1))
-                        for m in MATCH_RE.finditer(text):
-                            self.on_match(int(m.group(1)), m.group(2))
-                        # If both verify and progress fire in the same chunk,
-                        # progress (most recent state) should win for display.
-                        last_verify = None
-                        for m in VERIFY_RE.finditer(text):
-                            last_verify = (int(m.group(1)), m.group(2))
-                        if last_verify:
-                            self.on_verify_start(*last_verify)
-                        last_progress = None
-                        for m in PROGRESS_RE.finditer(text):
-                            last_progress = (int(m.group(1)), int(m.group(2)))
-                        if last_progress:
-                            self.on_progress(*last_progress)
-                        if self.on_report_info:
-                            ri = parse_report_info(text)
-                            if (ri["version"] or ri["build_name"]
-                                    or ri["battle_sisters"] or ri["map_options"]):
-                                self.on_report_info(ri)
-            except Exception:
-                pass
-            self._stop.wait(self.poll)
+    widget.bind("<Enter>", show, add="+")
+    for sequence in ("<Leave>", "<ButtonPress>", "<FocusOut>", "<Destroy>"):
+        widget.bind(sequence, hide, add="+")
 
-    def stop(self):
-        self._stop.set()
-
-
-# ─────────────────────── GUI ───────────────────────
 
 class _TraitEditDialog(ctk.CTkToplevel):
     """Modal dialog with two text inputs: display name + trait ID.
@@ -639,7 +174,7 @@ class _TraitEditDialog(ctk.CTkToplevel):
         self._display.pack(fill="x", padx=14)
         self._display.insert(0, current_display)
 
-        ctk.CTkLabel(self, text="Trait ID (the snake_case name written into the .nut):",
+        ctk.CTkLabel(self, text="Trait ID (the game's snake_case name, e.g. legend_heavy):",
                      anchor="w").pack(fill="x", padx=14, pady=(10, 2))
         self._tid = ctk.CTkEntry(self, width=400)
         self._tid.pack(fill="x", padx=14)
@@ -659,7 +194,7 @@ class _TraitEditDialog(ctk.CTkToplevel):
         self.wait_window()
 
     def _ok(self):
-        self.result = (self._display.get().strip(), _sanitize_trait(self._tid.get()))
+        self.result = (self._display.get().strip(), sanitize_trait(self._tid.get()))
         self.destroy()
 
     def _cancel(self):
@@ -672,31 +207,29 @@ class App(ctk.CTk):
         super().__init__()
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
-        self.title(f"BB Reroll Control Panel — v{APP_VERSION}")
-        self.geometry("940x840")
-        self.minsize(880, 760)
+        self.title(f"BB Reroll v{APP_VERSION} — offline seed search")
+        self.geometry("980x940")
+        self.minsize(900, 820)
 
-        # Installed-mod version, learned from the dump log's init line.
-        self.mod_version = None
-        self._mod_seen = False
-        # Mod-not-loaded heuristic state (GitHub issue #1).
-        self._first_activity_ts = None
-        self._not_loaded_warned = False
+        self._saved = self._read_settings()
+        self._game_folder = None
+        self._restore_game_folder()      # decides which game setups exist — before the UI lists them
+
         # Banner texts the user has ✕'d this session (sticky dismissal).
         self._dismissed_notices: set[str] = set()
+        self._notice_action = None
 
-        self.origin_var       = ctk.StringVar(value="Custom")
-        self.bro_count_var    = ctk.StringVar(value="5")
-        self.trigger_seed_var = ctk.StringVar(value="REROLL")
-        self.max_iters_var    = ctk.StringVar(value="10000")
-        self.log_every_var    = ctk.StringVar(value="10")
-        self.bb_path_var      = ctk.StringVar(value=self._guess_bb_path())
-        self.status_var       = ctk.StringVar(value="Ready.")
-        self.watch_var        = ctk.StringVar(value="idle")
-
-        # Real status-LED tracking.
-        self._last_activity_ts = 0.0
-        self._watch_state      = "idle"
+        self.setup_var      = ctk.StringVar(value=O.DEFAULT_SETUP or "")
+        self.origin_var     = ctk.StringVar(value="")
+        self.bro_count_var  = ctk.StringVar(value="3")
+        self.max_iters_var  = ctk.StringVar(value="100000")
+        self.count_var      = ctk.StringVar(value="3")
+        self.workers_var    = ctk.StringVar(value=str(default_workers()))
+        self.sisters_var    = ctk.StringVar(value=O.BATTLE_SISTERS[1])
+        self.check_seed_var = ctk.StringVar(value="")
+        self.status_var     = ctk.StringVar(value="Ready.")
+        self.watch_var      = ctk.StringVar(value="idle")
+        self._watch_state   = "idle"
 
         self.stars_vars:             dict[tuple[str, str], ctk.StringVar] = {}
         self.stars_widgets:          dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
@@ -706,81 +239,92 @@ class App(ctk.CTk):
         self.stars_widget_defaults:  dict[tuple[str, str], dict] = {}
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
         self.required_vars: dict[str, ctk.BooleanVar] = {}
-        self.banned_known   = list(DEFAULT_BANNED)
-        self.required_known = list(DEFAULT_REQUIRED)
+        self.banned_known   = self._saved_list("known_banned", DEFAULT_BANNED)
+        self.required_known = self._saved_list("known_required", DEFAULT_REQUIRED)
         self.required_mode_var = ctk.StringVar(value="any")
         # ID -> display name. Seeded from TRAIT_NAMES; user-overrides
         # come from bb_reroll_gui.json (loaded by _load_settings).
         self.trait_display: dict[str, str] = dict(TRAIT_NAMES)
 
-        # ETA tracking — list of (timestamp, current_iter) tuples for last-N progress events.
-        self._progress_history: list[tuple[float, int]] = []
-        self._matches: list[dict] = []   # session-level history of matches
+        # The search runs in worker processes; a thread relays their events into this
+        # queue and the Tk thread drains it — every handler below runs on the Tk thread.
+        self._events = queue.Queue()
+        self._stop = threading.Event()
+        self._searching = False
+        self._search_total = 0
+        self._run = {}
+        self._matches: list[dict] = []   # session-level list of results, newest first
         self._report_info: dict = {"version": None, "build_name": None,
                                    "battle_sisters": None, "origin": None,
                                    "map_options": {}}
+        self._selftest = None
 
+        self._grid_rebuild_id = None   # pending debounced stars-grid rebuild
         self._build_ui()
         self._load_settings()
-        # Sync bro count + info label to the saved origin BEFORE pulling
-        # config from the .nut. The .nut load skips stars at startup so the
-        # grid stays at zero; user clicks "Reload .nut" to pull live stars.
-        self._on_origin_change(self.origin_var.get())
-        self._load_from_nut(load_stars=False)
-        self._start_log_watcher()
+        self._on_setup_change()        # origin list, brother count, stars grid for the saved setup/origin
+        self._restore_criteria()
+        self._ready_status()
+        self._warn_old_mod()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         # CustomTkinter 5.2.x on Windows can leave a backgrounded window blank/
         # transparent until it regains focus. Force a repaint when focus returns
-        # so a match/banner that arrived while BB was focused becomes visible.
+        # so a match that arrived while another window was focused becomes visible.
         self.bind("<FocusIn>", lambda _e: self.after(10, self._force_repaint))
         # Proactive repaint loop — keeps the window painted while it's unfocused
-        # (BB has focus during a reroll) or parked on a different-DPI second
-        # monitor, not only on FocusIn. See _repaint_tick.
+        # (a search runs for a while) or parked on a different-DPI second monitor.
         self.after(1000, self._repaint_tick)
-
-    # ── path helpers ──
-    def _guess_bb_path(self) -> str:
-        for p in [
-            Path("G:/SteamLibrary/steamapps/common/Battle Brothers/data"),
-            Path("C:/Program Files (x86)/Steam/steamapps/common/Battle Brothers/data"),
-            Path("C:/Program Files/Steam/steamapps/common/Battle Brothers/data"),
-        ]:
-            if p.exists():
-                return str(p)
-        return ""
+        self.after(100, self._drain_events)
 
     # ── UI build ──
     def _build_ui(self):
         self.grid_columnconfigure(0, weight=1)
-        # Only the traits row carries the vertical stretch. The action bar (row 3)
-        # is fixed-height and sticks "ew", so giving its row weight just left a
-        # dead empty gap below the buttons.
-        self.grid_rowconfigure(2, weight=1)
+        # Only the traits row carries the vertical stretch; it must not collapse
+        # when the result list grows.
+        self.grid_rowconfigure(2, weight=1, minsize=190)
 
-        # Top: meta config
+        # Top: what to search. Two independent rows (their columns need not line up).
         top = ctk.CTkFrame(self)
         top.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        for i in range(8):
-            top.grid_columnconfigure(i, weight=1 if i in (1, 3, 5, 7) else 0)
+        row_a = ctk.CTkFrame(top, fg_color="transparent")
+        row_a.pack(fill="x", padx=4, pady=(8, 4))
+        row_b = ctk.CTkFrame(top, fg_color="transparent")
+        row_b.pack(fill="x", padx=4, pady=(0, 8))
 
-        ctk.CTkLabel(top, text="Origin:").grid(row=0, column=0, padx=(8, 4), pady=8, sticky="e")
-        ctk.CTkOptionMenu(top, values=[o[0] for o in ORIGINS], variable=self.origin_var,
-                          command=self._on_origin_change).grid(row=0, column=1, sticky="ew", padx=4)
-        ctk.CTkLabel(top, text="Brothers:").grid(row=0, column=2, padx=(8, 4), sticky="e")
-        bc = ctk.CTkEntry(top, textvariable=self.bro_count_var, width=60)
-        bc.grid(row=0, column=3, sticky="w", padx=4)
-        self.bro_count_var.trace_add("write", lambda *_: self.after(120, self._rebuild_stars_grid))
+        def label(parent, text, first=False):
+            ctk.CTkLabel(parent, text=text).pack(side="left", padx=(4 if first else 16, 4))
 
-        ctk.CTkLabel(top, text="Trigger seed:").grid(row=0, column=4, padx=(16, 4), sticky="e")
-        ctk.CTkEntry(top, textvariable=self.trigger_seed_var, width=100).grid(row=0, column=5, sticky="w", padx=4)
-        ctk.CTkLabel(top, text="Max iters:").grid(row=0, column=6, padx=(16, 4), sticky="e")
-        ctk.CTkEntry(top, textvariable=self.max_iters_var, width=80).grid(row=0, column=7, sticky="w", padx=4)
+        label(row_a, "Game setup:", first=True)
+        self.setup_menu = ctk.CTkOptionMenu(row_a, values=list(O.SETUPS) or ["(game not found)"],
+                                            variable=self.setup_var, width=160, command=self._on_setup_change)
+        self.setup_menu.pack(side="left")
+        label(row_a, "Origin:")
+        self.origin_menu = ctk.CTkOptionMenu(row_a, values=O.names_for(self.setup_var.get()), width=230,
+                                             variable=self.origin_var, command=self._on_origin_change)
+        self.origin_menu.pack(side="left")
+        label(row_a, "Brothers:")
+        ctk.CTkEntry(row_a, textvariable=self.bro_count_var, width=50).pack(side="left")
+        self.bro_count_var.trace_add("write", lambda *_: self._schedule_grid_rebuild())
+        folder_btn = ctk.CTkButton(row_a, text="Game folder…", width=110, fg_color="#3a3f4a", hover_color="#4a505c",
+                                   command=self._on_game_folder)
+        folder_btn.pack(side="right", padx=(8, 4))
+        _attach_tooltip(folder_btn, lambda: O.found_text(details=True) + "\n\nThe search reads the game's own files "
+                        "and these mod zips where they are — nothing has to be extracted. Click to choose another install.")
 
-        ctk.CTkLabel(top, text="Log every:").grid(row=1, column=0, padx=(8, 4), pady=(0, 8), sticky="e")
-        ctk.CTkEntry(top, textvariable=self.log_every_var, width=80).grid(row=1, column=1, sticky="w", padx=4, pady=(0, 8))
-        ctk.CTkLabel(top, text="BB data folder:").grid(row=1, column=2, padx=(8, 4), pady=(0, 8), sticky="e")
-        ctk.CTkEntry(top, textvariable=self.bb_path_var).grid(row=1, column=3, columnspan=4, sticky="ew", padx=4, pady=(0, 8))
-        ctk.CTkButton(top, text="Browse…", width=80, command=self._browse_bb).grid(row=1, column=7, sticky="ew", padx=4, pady=(0, 8))
+        label(row_b, "Max seeds:", first=True)
+        ctk.CTkEntry(row_b, textvariable=self.max_iters_var, width=100).pack(side="left")
+        label(row_b, "Stop after matches:")
+        ctk.CTkEntry(row_b, textvariable=self.count_var, width=60).pack(side="left")
+        label(row_b, "Workers:")
+        workers = ctk.CTkEntry(row_b, textvariable=self.workers_var, width=50)
+        workers.pack(side="left")
+        _attach_tooltip(workers, f"Parallel processes (this PC has {os.cpu_count() or 1} CPU threads). With Legends "
+                                 "each one needs about 0.8 GB of memory and ~15 s to load.")
+        label(row_b, "Battle sisters:")
+        self.sisters_menu = ctk.CTkOptionMenu(row_b, values=list(O.BATTLE_SISTERS), variable=self.sisters_var, width=170)
+        self.sisters_menu.pack(side="left")
+        ctk.CTkLabel(row_b, text="(as in the game's Mod Options)",
+                     font=("Segoe UI", 11), text_color="#9aa3b0").pack(side="left", padx=(8, 4))
 
         # Stars grid
         stars_outer = ctk.CTkFrame(self)
@@ -789,7 +333,7 @@ class App(ctk.CTk):
                      text=("STARS  (0 = don't care, 1-3 = minimum stars.  "
                            "A numeric slot row with all zeros falls back to the * default rule.)"),
                      font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2))
-        self.origin_info_var = ctk.StringVar(value=summarize_origin(self.origin_var.get()))
+        self.origin_info_var = ctk.StringVar(value="")
         self.origin_info_label = ctk.CTkLabel(
             stars_outer,
             textvariable=self.origin_info_var,
@@ -817,50 +361,40 @@ class App(ctk.CTk):
         actions = ctk.CTkFrame(self)
         actions.grid(row=3, column=0, sticky="ew", padx=10, pady=(5, 5))
         actions.grid_columnconfigure(99, weight=1)
-        ctk.CTkButton(actions, text="💾 Save & Deploy", height=36,
-                      command=self._on_save).grid(row=0, column=0, padx=8, pady=8)
-        ctk.CTkButton(actions, text="🔍 Scan log for traits", height=36,
-                      command=self._on_scan_log).grid(row=0, column=1, padx=8, pady=8)
-        ctk.CTkButton(actions, text="🧹 Clean stale mods", height=36,
-                      command=self._on_clean_stale).grid(row=0, column=2, padx=8, pady=8)
-        ctk.CTkButton(actions, text="📂 Open BB log", height=36,
-                      command=self._open_log).grid(row=0, column=3, padx=8, pady=8)
-        ctk.CTkButton(actions, text="↻ Reload .nut", height=36,
-                      command=self._load_from_nut).grid(row=0, column=4, padx=8, pady=8)
+        self.search_btn = ctk.CTkButton(actions, text="▶ Search", height=36, command=self._on_search)
+        self.search_btn.grid(row=0, column=0, padx=8, pady=8)
+        self.stop_btn = ctk.CTkButton(actions, text="■ Stop", height=36, width=90, state="disabled",
+                                      fg_color="#7a2a2a", hover_color="#5a1f1f", command=self._on_stop)
+        self.stop_btn.grid(row=0, column=1, padx=8, pady=8)
+        ctk.CTkLabel(actions, text="Check a seed:").grid(row=0, column=2, padx=(24, 4))
+        entry = ctk.CTkEntry(actions, textvariable=self.check_seed_var, width=130)
+        entry.grid(row=0, column=3, padx=4)
+        entry.bind("<Return>", lambda _e: self._on_check_seed())
+        self.check_btn = ctk.CTkButton(actions, text="Show its roster", height=36, command=self._on_check_seed)
+        self.check_btn.grid(row=0, column=4, padx=8, pady=8)
+        _attach_tooltip(self.check_btn, "Shows the starting roster this seed gives for the chosen game setup "
+                                        "and origin — type it exactly as in the game (capitals matter).")
         ctk.CTkButton(actions, text="↗ Check for updates", height=36,
                       fg_color="transparent", border_width=1,
                       command=self._open_github).grid(row=0, column=99, padx=8, pady=8, sticky="e")
 
-        # Match history — scrollable list. Hidden until a match comes in.
+        # Results — scrollable list. Hidden until a result comes in.
         self.match_pane = ctk.CTkFrame(self)
         self.match_pane.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 5))
         self.match_pane.grid_columnconfigure(0, weight=1)
         match_head = ctk.CTkFrame(self.match_pane, fg_color="transparent")
         match_head.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))
         match_head.grid_columnconfigure(0, weight=1)
-        self.match_title = ctk.CTkLabel(match_head, text="MATCHES (this session)",
+        self.match_title = ctk.CTkLabel(match_head, text="RESULTS (this session)",
                                         font=("Segoe UI", 12, "bold"))
         self.match_title.grid(row=0, column=0, sticky="w")
         ctk.CTkButton(match_head, text="Clear", width=60, height=24,
                       command=self._clear_matches).grid(row=0, column=1, sticky="e")
-        # Reminder: mod Map Options affect world gen → changing them between the
-        # brute force run and the real campaign changes which bros that seed produces.
         ctk.CTkLabel(self.match_pane,
-                     text=("⚠ Don't change Mod → Map Options between now and starting the campaign — "
-                           "would change the world the seed produces."),
-                     font=("Segoe UI", 11), text_color="#c89500", anchor="w"
-                     ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 2))
-        # After a match BB is in a half-initialised state. Depending on BB
-        # build / mods / RNG, it may pop a "critical exception" dialog OR
-        # silently return to the main menu — neither outcome leaves a usable
-        # world. User MUST restart BB regardless before the real campaign.
-        ctk.CTkLabel(self.match_pane,
-                     text=("ℹ After a match, BB may pop a \"critical exception\" dialog OR may just return to the main menu — both are expected. "
-                           "BB's world state is half-initialised either way; do NOT try to continue from there. "
-                           "Quit BB completely (Alt+F4 if needed), relaunch, and start a new campaign with the matched seed."),
-                     font=("Segoe UI", 11), text_color="#e85a3c", anchor="w", justify="left",
-                     wraplength=820,
-                     ).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 4))
+                     text=("These are ordinary campaign seeds: start a New Campaign with the same game version, "
+                           "mods, origin and recruit-related Mod Options, and type the seed exactly as shown."),
+                     font=("Segoe UI", 11), text_color="#79b8e0", anchor="w", justify="left", wraplength=880,
+                     ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
         desc_frame = ctk.CTkFrame(self.match_pane, fg_color="transparent")
         desc_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 2))
         desc_frame.grid_columnconfigure(1, weight=1)
@@ -874,25 +408,27 @@ class App(ctk.CTk):
         self.match_list.grid(row=4, column=0, sticky="ew", padx=8, pady=(2, 8))
         self.match_pane.grid_remove()
 
-        # Reusable notice banner — hidden until something needs attention
-        # (version mismatch, brute-force finish, mod-not-loaded). One strip,
-        # recolored per severity, with a ✕ to dismiss. Dismissal is sticky per
-        # message text for this GUI session: the connect-time tail scan re-fires
-        # events that are still in the log, and without stickiness the same
-        # banner would resurrect immediately after being dismissed.
+        # Reusable notice banner — hidden until something needs attention (the old
+        # in-game mod still installed, a search that could not run, no match found).
+        # One strip, recolored per severity, with an optional action button and a ✕ to
+        # dismiss. Dismissal is sticky per message text for this GUI session.
         self.notice_var = ctk.StringVar(value="")
         self.notice_banner = ctk.CTkFrame(self, fg_color="#3a2a00", corner_radius=6)
         self.notice_banner.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 5))
         self.notice_banner.grid_columnconfigure(0, weight=1)
         self.notice_label = ctk.CTkLabel(self.notice_banner, textvariable=self.notice_var,
                                          font=("Segoe UI", 12, "bold"),
-                                         anchor="w", justify="left", wraplength=860,
+                                         anchor="w", justify="left", wraplength=760,
                                          text_color="#ffcf66")
         self.notice_label.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=6)
+        self.notice_action_btn = ctk.CTkButton(self.notice_banner, text="", width=90, height=24,
+                                               command=self._on_notice_action)
+        self.notice_action_btn.grid(row=0, column=1, sticky="ne", padx=(0, 6), pady=6)
+        self.notice_action_btn.grid_remove()
         self.notice_close = ctk.CTkButton(self.notice_banner, text="✕", width=28, height=24,
                                           fg_color="transparent", border_width=1,
                                           command=self._dismiss_notice)
-        self.notice_close.grid(row=0, column=1, sticky="ne", padx=(0, 8), pady=6)
+        self.notice_close.grid(row=0, column=2, sticky="ne", padx=(0, 8), pady=6)
         self.notice_banner.grid_remove()
 
         status = ctk.CTkFrame(self)
@@ -900,13 +436,13 @@ class App(ctk.CTk):
         status.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(status, textvariable=self.status_var, anchor="w").grid(row=0, column=0, sticky="ew", padx=10, pady=4)
 
-        # Right side: colored LED + "Log watch: <text>"
+        # Right side: colored LED + "Search: <text>"
         right = ctk.CTkFrame(status, fg_color="transparent")
         right.grid(row=0, column=1, sticky="e", padx=10, pady=4)
         self.watch_dot = ctk.CTkLabel(right, text="●", font=("Segoe UI", 16, "bold"),
                                       text_color="#6a6e76", width=14)
         self.watch_dot.pack(side="left")
-        ctk.CTkLabel(right, text=" Log watch: ").pack(side="left")
+        ctk.CTkLabel(right, text=" Search: ").pack(side="left")
         ctk.CTkLabel(right, textvariable=self.watch_var).pack(side="left")
 
     def _build_trait_pane(self, parent, col, title, known_list, vars_dict, kind):
@@ -955,13 +491,12 @@ class App(ctk.CTk):
         self._populate_trait_pane(kind)
 
     def _display_for(self, trait_id: str) -> str:
-        return self.trait_display.get(trait_id) or _id_to_display(trait_id)
+        return self.trait_display.get(trait_id) or id_to_display(trait_id)
 
     def _populate_trait_pane(self, kind):
         """Rebuild the rows for one trait pane. Preserves existing check states.
         Rows are labeled by display name (Lumbering, Iron Lungs) and sorted that way;
-        the trait ID stays as the underlying dict key so the .nut still gets the
-        correct snake_case identifier."""
+        the trait ID stays as the underlying dict key — it is what the search compares."""
         sf, known_list, vars_dict = self._pane_ctx(kind)
         existing_states = {t: v.get() for t, v in vars_dict.items()}
         for w in sf.winfo_children():
@@ -1017,7 +552,7 @@ class App(ctk.CTk):
 
     def _edit_trait(self, kind, trait):
         """Two-field edit dialog: display name (what the user sees) + trait ID
-        (what gets written to the .nut)."""
+        (what the search compares against a brother's traits)."""
         _, known_list, vars_dict = self._pane_ctx(kind)
         current_display = self._display_for(trait)
         dlg = _TraitEditDialog(self, current_display=current_display, current_id=trait)
@@ -1041,7 +576,7 @@ class App(ctk.CTk):
                 del self.trait_display[trait]
             vars_dict[new_id] = ctk.BooleanVar(value=was_checked)
         # Always update the display name (it may have been edited even if ID wasn't).
-        self.trait_display[new_id] = new_display or _id_to_display(new_id)
+        self.trait_display[new_id] = new_display or id_to_display(new_id)
         self._populate_trait_pane(kind)
         if new_id != trait:
             self.status_var.set(f"Renamed '{trait}' → '{new_id}' ({new_display}).")
@@ -1050,7 +585,7 @@ class App(ctk.CTk):
 
     def _add_custom_trait(self, kind, entry: ctk.CTkEntry):
         raw  = entry.get()
-        name = _sanitize_trait(raw)
+        name = sanitize_trait(raw)
         entry.delete(0, "end")
         if not name:
             if raw.strip():
@@ -1094,7 +629,18 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    def _schedule_grid_rebuild(self):
+        """Debounce: typing a count or picking an origin writes bro_count_var
+        once or more; rebuild the grid once, 120 ms after the last write."""
+        if self._grid_rebuild_id is not None:
+            self.after_cancel(self._grid_rebuild_id)
+        self._grid_rebuild_id = self.after(120, self._rebuild_stars_grid)
+
     def _rebuild_stars_grid(self):
+        # A synchronous rebuild supersedes any pending debounced one.
+        if self._grid_rebuild_id is not None:
+            self.after_cancel(self._grid_rebuild_id)
+            self._grid_rebuild_id = None
         # preserve current values
         prior = {k: v.get() for k, v in self.stars_vars.items()}
         for w in self.stars_frame.winfo_children():
@@ -1135,18 +681,40 @@ class App(ctk.CTk):
                 v.trace_add("write", lambda *_a, s=slot, t=stat: self._on_star_changed(s, t))
                 self._on_star_changed(slot, stat)
 
-    # ── origin dropdown ──
+    # ── game setup / origin ──
+    def _legends(self) -> bool:
+        return O.SETUPS.get(self.setup_var.get(), (None, False))[1]
+
+    def _on_setup_change(self, _value=None):
+        names = O.names_for(self.setup_var.get())
+        self.origin_menu.configure(values=names)
+        if self.origin_var.get() not in names:
+            self.origin_var.set(names[0])
+        self.sisters_menu.configure(state="normal" if self._legends() else "disabled")
+        self._on_origin_change(self.origin_var.get())
+
     def _on_origin_change(self, value: str):
-        for name, count in ORIGINS:
-            if name == value and count is not None:
-                self.bro_count_var.set(str(count))
-                break
-        # Rebuild synchronously so we can pre-fill hardcoded stars right away.
-        # The bro_count_var trace also schedules a debounced rebuild in 120ms,
-        # but that one just preserves the values we set here — idempotent.
+        if value not in O.SCENARIO or value in O.NOT_SEARCHABLE:
+            value = O.names_for(self.setup_var.get())[0]
+            self.origin_var.set(value)
+        count = O.COUNTS.get(value)
+        if not self._legends():
+            count = O.VANILLA_COUNTS.get(value) or count
+        if count is not None:
+            self.bro_count_var.set(str(count))
+        # Rebuild synchronously so hardcoded stars can be pre-filled right away;
+        # this also cancels the debounced rebuild the bro_count_var write just
+        # scheduled.
         self._rebuild_stars_grid()
-        self._apply_hardcoded_stars(value)
-        self._refresh_origin_info()
+        if self._legends():
+            self._apply_hardcoded_stars(value)
+            self._refresh_origin_info()
+        else:
+            # The table of origin-fixed stars describes Legends: nothing is pre-filled.
+            for (slot, _stat), var in self.stars_vars.items():
+                if slot != "*":
+                    var.set("0")
+            self.origin_info_var.set(f"{self.setup_var.get()}: stars an origin fixes are not pre-filled here.")
 
     def _apply_hardcoded_stars(self, origin: str):
         """Reset numeric slots, then pre-fill the origin's hardcoded stars."""
@@ -1168,61 +736,91 @@ class App(ctk.CTk):
         except Exception:
             self.origin_info_var.set("")
 
-    # ── browse ──
-    def _browse_bb(self):
-        from tkinter import filedialog
-        path = filedialog.askdirectory(title="Select Battle Brothers/data folder",
-                                       initialdir=self.bb_path_var.get() or str(Path.home()))
-        if path:
-            self.bb_path_var.set(path)
+    def _ready_status(self):
+        if O.FOUND is None:
+            self.status_var.set(O.found_text())
+        else:
+            self.status_var.set(f"{O.found_text()}. Pick an origin and criteria, then Search.")
 
-    # ── nut I/O ──
-    def _load_from_nut(self, load_stars: bool = True):
-        try:
-            if NUT_PATH.exists():
-                cfg = parse_existing_config(NUT_PATH.read_text(encoding="utf-8"))
-                self.status_var.set(f"Loaded settings from {NUT_PATH.name}.")
-            elif NUT_TEMPLATE:
-                cfg = parse_existing_config(NUT_TEMPLATE)
-                self.status_var.set("No .nut on disk — defaults loaded from embedded template. Click Save & Deploy to create it.")
-            else:
-                cfg = parse_existing_config("")
-                self.status_var.set("No .nut and no template — defaults loaded.")
-        except Exception as e:
-            self.status_var.set(f"Couldn't read .nut: {e}")
+    # ── the game's folder ──
+    def _restore_game_folder(self):
+        """A folder the player pointed at earlier wins over auto-detection; the data folder a
+        3.x settings file remembers is tried when the game is not found by itself."""
+        if os.environ.get("BBSEED_GAME_DATA"):
             return
+        chosen = self._saved.get("game_folder")
+        if chosen and Path(chosen).is_dir():
+            self._game_folder = chosen
+        elif O.FOUND is None and self._saved.get("bb_path") and Path(self._saved["bb_path"]).is_dir():
+            chosen = self._saved["bb_path"]
+        else:
+            return
+        os.environ["BBSEED_GAME_DATA"] = chosen     # inherited by the search's worker processes
+        O.refresh()
 
-        self.trigger_seed_var.set(cfg["trigger_seed"])
-        self.max_iters_var.set(str(cfg["max_iters"]))
-        self.log_every_var.set(str(cfg["log_every"]))
-        self.required_mode_var.set(cfg.get("required_mode", "any"))
+    def _on_game_folder(self):
+        """Let the player point at the game (its folder or the data folder inside it)."""
+        if self._searching:
+            return
+        from tkinter import filedialog
+        from bbseed import gamedata
+        start = str(O.FOUND["data"].parent) if O.FOUND else None
+        chosen = filedialog.askdirectory(parent=self, initialdir=start, mustexist=True,
+                                         title="Select the Battle Brothers folder (the one that contains \"data\")")
+        if not chosen:
+            return
+        if gamedata.as_data_dir(chosen) is None:
+            messagebox.showerror("Game folder", f"No game files (data\\data_001.dat) in\n{chosen}")
+            return
+        self._game_folder = chosen
+        os.environ["BBSEED_GAME_DATA"] = chosen
+        O.refresh()
+        self.setup_menu.configure(values=list(O.SETUPS))
+        if self.setup_var.get() not in O.SETUPS:
+            self.setup_var.set(O.DEFAULT_SETUP)
+        self._on_setup_change()
+        self._ready_status()
+        self._warn_old_mod()
+        self._save_settings()
 
-        # extend trait lists with whatever's already in the .nut
-        for t in cfg["banned"]:
-            if t not in self.banned_known: self.banned_known.append(t)
-        for t in cfg["required"]:
-            if t not in self.required_known: self.required_known.append(t)
-        self._populate_trait_pane("banned")
-        self._populate_trait_pane("required")
-        for t in self.banned_known:
-            self.banned_vars[t].set(t in cfg["banned"])
-        for t in self.required_known:
-            self.required_vars[t].set(t in cfg["required"])
+    def _have_game(self) -> bool:
+        if self.setup_var.get() in O.SETUPS:
+            return True
+        messagebox.showerror("Game not found", "Battle Brothers was not found on this PC.\n\n"
+                             "Click \"Game folder…\" and select the folder the game is installed in.")
+        return False
 
-        if load_stars:
-            # set brother count from highest numeric slot key
-            numeric_slots = [int(k) for k in cfg["stars_by_slot"] if k.isdigit()]
-            if numeric_slots:
-                self.bro_count_var.set(str(max(max(numeric_slots), 1)))
-            elif not self.bro_count_var.get():
-                self.bro_count_var.set("5")
-            self._rebuild_stars_grid()
-            for slot, stats in cfg["stars_by_slot"].items():
-                for stat, n in stats.items():
-                    if (slot, stat) in self.stars_vars:
-                        self.stars_vars[(slot, stat)].set(str(n))
+    # ── the old in-game mod (BB Reroll 3.x) ──
+    def _warn_old_mod(self):
+        text = O.reroll_mod_warning()
+        if text:
+            self._show_notice("⚠ " + text, kind="warn", action=("Remove it", self._on_remove_old_mod))
 
-    def _gather_cfg(self) -> dict:
+    def _on_remove_old_mod(self):
+        names = list((O.FOUND or {}).get("reroll_mod") or [])
+        if not names:
+            return
+        data = O.FOUND["data"]
+        listing = "\n  ".join(names)
+        if not messagebox.askyesno("Remove the old in-game mod",
+                                   f"Delete from\n{data}\n\n  {listing}\n\n"
+                                   "(BB Reroll 3.x's in-game search mod. Restart Battle Brothers afterwards.)"):
+            return
+        failed = []
+        for name in names:
+            try:
+                (data / name).unlink()
+            except Exception as e:
+                failed.append(f"{name}: {e}")
+        O.refresh()
+        self._clear_notice()
+        if failed:
+            self._show_notice("Could not delete (is Battle Brothers running?): " + "; ".join(failed), kind="error")
+        else:
+            self.status_var.set("Removed the old in-game mod. Restart Battle Brothers if it is running.")
+
+    # ── criteria ──
+    def _gather_criteria(self) -> dict:
         try:
             n = max(1, min(20, int(self.bro_count_var.get())))
         except ValueError:
@@ -1245,249 +843,244 @@ class App(ctk.CTk):
             if slot == "*" or entry:
                 stars_by_slot[slot] = entry
         return {
-            "trigger_seed": self.trigger_seed_var.get().strip() or "REROLL",
-            "max_iters":    int(self.max_iters_var.get() or "10000"),
-            "log_every":    int(self.log_every_var.get() or "10"),
             "stars_by_slot": stars_by_slot,
             "banned":   [t for t, v in self.banned_vars.items()   if v.get()],
             "required": [t for t, v in self.required_vars.items() if v.get()],
             "required_mode": self.required_mode_var.get(),
         }
 
-    def _on_save(self):
-        try:
-            cfg = self._gather_cfg()
-            # Pre-flight: trivially-passing criteria match every seed immediately.
-            if self._is_criteria_trivial(cfg):
-                if not messagebox.askyesno(
-                    "Trivial criteria",
-                    "No star thresholds and no required traits are set.\n"
-                    "Every random seed will match on iteration 0.\n\nDeploy anyway?",
-                ):
-                    self.status_var.set("Deploy cancelled.")
-                    return
-            # Pre-flight: hardcoded-stars unsatisfiability (the Gladiators-bear
-            # case). If a slot's stars are fixed by the scenario below a required
-            # minimum, no seed can ever match — warn and require confirmation.
-            conflicts = origin_conflicts(self.origin_var.get(), cfg["stars_by_slot"])
+    def _restore_criteria(self):
+        """Tick the traits and set the stars the last session ended with."""
+        saved = self._saved.get("criteria")
+        if not isinstance(saved, dict):
+            return
+        self.required_mode_var.set(saved.get("required_mode", "any"))
+        banned, required = saved.get("banned") or [], saved.get("required") or []
+        for t in banned:
+            if t not in self.banned_known:
+                self.banned_known.append(t)
+        for t in required:
+            if t not in self.required_known:
+                self.required_known.append(t)
+        self._populate_trait_pane("banned")
+        self._populate_trait_pane("required")
+        for t in self.banned_known:
+            self.banned_vars[t].set(t in banned)
+        for t in self.required_known:
+            self.required_vars[t].set(t in required)
+        stars = saved.get("stars_by_slot")
+        if isinstance(stars, dict) and self._saved.get("last_origin") == self.origin_var.get():
+            for slot, stats in stars.items():
+                for stat, n in (stats or {}).items():
+                    if (slot, stat) in self.stars_vars:
+                        self.stars_vars[(slot, stat)].set(str(n))
+
+    def _numbers(self):
+        values = {"Max seeds": to_int(self.max_iters_var.get()),
+                  "Stop after matches": to_int(self.count_var.get()),
+                  "Workers": to_int(self.workers_var.get())}
+        return values, number_errors(values, os.cpu_count() or 1)
+
+    # ── starting / stopping a search ──
+    def _on_search(self):
+        if self._searching or not self._have_game():
+            return
+        criteria = self._gather_criteria()
+        numbers, errors = self._numbers()
+        if errors:
+            messagebox.showerror("Can't search", "\n".join(errors))
+            return
+        # Pre-flight: trivially-passing criteria match every seed immediately.
+        if is_trivial(criteria):
+            if not messagebox.askyesno("Trivial criteria", "No star thresholds and no traits are set.\n"
+                                       "Every seed will match.\n\nSearch anyway?"):
+                return
+        # Pre-flight: hardcoded-stars unsatisfiability (the Gladiators-bear case).
+        # If a slot's stars are fixed by the origin below a required minimum, no
+        # seed can ever match — warn and require confirmation.
+        if self._legends():
+            conflicts = origin_conflicts(self.origin_var.get(), criteria["stars_by_slot"])
             if conflicts:
                 lines = "\n".join(
-                    f"  • Slot {slot}: needs {stat.upper()} ≥ {need}, but the scenario fixes it at {have}"
+                    f"  • Slot {slot}: needs {stat.upper()} ≥ {need}, but the origin fixes it at {have}"
                     for slot, stat, need, have in conflicts
                 )
                 if not messagebox.askyesno(
                     "Unsatisfiable criteria",
-                    f"\"{self.origin_var.get()}\" hardcodes some starting stars, and your "
-                    "criteria ask for more than the scenario can ever produce:\n\n"
-                    f"{lines}\n\n"
-                    "No seed will ever match these. Deploy anyway?",
+                    f"\"{self.origin_var.get()}\" fixes some starting stars below what you ask for:\n\n"
+                    f"{lines}\n\nNo seed will ever match. Search anyway?",
                 ):
-                    self.status_var.set("Deploy cancelled — unsatisfiable criteria.")
                     return
-            stale_note = rewrite_nut(cfg)
-            if stale_note:
-                self._show_notice("⚠ " + stale_note, kind="warn")
-            rebuild_zip()
-            bb = Path(self.bb_path_var.get())
-            if not bb.exists():
-                self.status_var.set(f"⚠ wrote .nut + .zip, but BB data folder not found: {bb}")
-                return
-            dest = copy_to_bb(bb)
-            self._save_settings()             # persist BB path + window state
-            # Verify by reading the deployed zip back — catches a stale source
-            # silently winning (the exact failure that wasted a smoke-test run).
-            deployed_ver = None
+        self._launch(criteria, numbers, seeds=None)
+
+    def _on_check_seed(self):
+        if self._searching or not self._have_game():
+            return
+        seed = self.check_seed_var.get().strip()
+        if not 1 <= len(seed) <= 10:
+            messagebox.showerror("Check a seed", "Type the seed as in the game: 1 to 10 characters.")
+            return
+        numbers, _errors = self._numbers()
+        self._launch(self._gather_criteria(), numbers, seeds=[seed])
+
+    def _launch(self, criteria, numbers, seeds):
+        from bbseed.search import search
+        setup, origin = self.setup_var.get(), self.origin_var.get()
+        profile = O.SETUPS[setup][0]
+        scenario = O.SCENARIO[origin]
+        workers = 1 if seeds else numbers["Workers"] or default_workers()
+        mod_settings = {"mod_legends:GenderEquality": self.sisters_var.get()} if self._legends() else None
+        self._run = {"setup": setup, "origin": origin, "checking": bool(seeds)}
+        self._search_total = len(seeds) if seeds else numbers["Max seeds"]
+        self._stop.clear()
+        self._searching = True
+        self._save_settings()
+        if not self.notice_var.get().startswith("⚠ BB Reroll's in-game mod"):
+            self._clear_notice()
+        self.search_btn.configure(state="disabled")
+        self.check_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
+        self._set_watch_state("waiting")
+        self.watch_var.set(f"loading the game scripts in {workers} worker{'' if workers == 1 else 's'}…")
+        self.status_var.set(f"Checking seed {seeds[0]}" if seeds else
+                            f"Searching {origin} — {setup}, up to {self._search_total:,} seeds.")
+        put = self._events.put
+
+        def run():
             try:
-                deployed_ver = deployed_nut_version(dest)
-            except Exception:
-                pass
-            if deployed_ver and APP_VERSION != "unknown" and deployed_ver != APP_VERSION:
-                self._show_notice(
-                    f"⚠ Deploy verification FAILED — the zip now in BB's data folder is "
-                    f"v{deployed_ver}, but this GUI is v{APP_VERSION}. Something stale "
-                    "overwrote the deploy; check for old copies of the GUI/mod.", kind="error")
-                self.status_var.set(f"✗ Deployed v{deployed_ver} ≠ GUI v{APP_VERSION} — see banner")
-                return
-            ver_txt = f" (v{deployed_ver}, verified)" if deployed_ver else ""
-            self.status_var.set(f"✓ Deployed{ver_txt} → {dest}")
-        except Exception as e:
-            self.status_var.set(f"✗ {e}")
+                search(profile, scenario, criteria, workers=workers, count=numbers["Stop after matches"] or 1,
+                       max_seeds=None if seeds else numbers["Max seeds"], seeds=seeds,
+                       mod_settings=mod_settings,
+                       on_event=lambda kind, payload: put((kind, payload)), should_stop=self._stop.is_set)
+            except Exception as e:      # report instead of dying silently in the thread
+                put(("fatal", f"{type(e).__name__}: {e}"))
+                put(("finished", (0, 0.0, 0, True)))
 
-    @staticmethod
-    def _is_criteria_trivial(cfg) -> bool:
-        any_star = any(any(v > 0 for v in s.values()) for s in cfg["stars_by_slot"].values())
-        return not (any_star or cfg["required"] or cfg["banned"])
+        threading.Thread(target=run, daemon=True).start()
 
-    def _on_scan_log(self):
-        if not BB_LOG.exists():
-            self.status_var.set(f"No log at {BB_LOG}")
-            return
+    def _on_stop(self):
+        self._stop.set()
+        self.status_var.set("Stopping…")
+
+    # ── events from the search ──
+    def _drain_events(self):
         try:
-            text = BB_LOG.read_text(encoding="utf-8", errors="ignore")
-        except Exception as e:
-            self.status_var.set(f"✗ read log: {e}")
-            return
-        text = _strip_html(text)
-        found = set()
-        for m in re.finditer(r'\[BBREROLL\] bro=\d+[^\n]*?traits=([^\s<]*)', text):
-            for t in m.group(1).split(","):
-                if t:
-                    found.add(t)
-        new = 0
-        ignored = 0
-        for t in sorted(found):
-            if t in IGNORE_TRAITS or t.startswith(IGNORE_PREFIXES):
-                ignored += 1
-                continue
-            if t not in self.banned_known and t not in self.required_known:
-                # heuristic: if name looks bad-ish, drop in banned, else required
-                bad_hints = ("fragile","craven","dumb","mad","weak","sick","fear","brute","clumsy","cocky")
-                target = self.banned_known if any(h in t for h in bad_hints) else self.required_known
-                target.append(t)
-                new += 1
-        self._populate_trait_pane("banned")
-        self._populate_trait_pane("required")
-        self.status_var.set(
-            f"Scanned log: {len(found)} unique traits, {new} new added, "
-            f"{ignored} ignored (origin/acquired)."
-        )
+            while True:
+                kind, payload = self._events.get_nowait()
+                handler = getattr(self, "_ev_" + kind, None)
+                if handler:
+                    handler(payload)
+        except queue.Empty:
+            pass
+        finally:
+            self.after(100, self._drain_events)
 
-    def _open_log(self):
-        if BB_LOG.exists():
-            os.startfile(str(BB_LOG))      # type: ignore[attr-defined]
-        else:
-            self.status_var.set(f"No log at {BB_LOG}")
+    def _ev_preparing(self, payload):
+        name, done, total = payload
+        self.watch_var.set(f"reading the game's scripts (first time only) · {name} · {done:,} of {total:,}")
 
-    def _open_github(self):
-        webbrowser.open("https://github.com/Trikpatknd/bb-reroll/releases")
+    def _ev_ready(self, payload):
+        ready, total, info = payload
+        self.watch_var.set(f"loading the game scripts · {ready} of {total} workers ready")
+        legends = info.get("legends_version")
+        self._report_info = {
+            "version": legends or f"Vanilla {info.get('game_version')}",
+            "build_name": info.get("legends_build") if legends else None,
+            "battle_sisters": info.get("battle_sisters") if legends else "n/a (no Legends)",
+            "origin": self._run["origin"],
+            "map_options": {},
+        }
 
-    # ── log watching ──
-    def _start_log_watcher(self):
-        if not BB_LOG.exists():
-            self._set_watch_state("waiting")
-            self.watch_var.set("waiting for log file…")
-            self.after(3000, self._start_log_watcher)   # poll until BB writes log.html
-            return
-        self.watcher = LogWatcher(BB_LOG, self._on_match, self._on_progress,
-                                  self._on_brute_start, self._on_verify_start,
-                                  on_mod_init=self._on_mod_init, on_finish=self._on_finish,
-                                  on_activity=self._on_log_activity,
-                                  on_depcheck=self._on_depcheck,
-                                  on_unexpected=self._on_unexpected,
-                                  on_report_info=self._on_report_info)
-        self.watcher.start()
+    def _ev_progress(self, payload):
+        tested, secs, _found = payload
+        self._set_watch_state("running")
+        rate = tested / secs if secs > 0 else 0.0
+        eta = ""
+        if rate > 0 and self._search_total > tested and not self._run["checking"]:
+            eta = f" · up to {self._fmt_duration((self._search_total - tested) / rate)} left"
+        self.watch_var.set(f"searching · {tested:,} of {self._search_total:,} seeds · {rate:.0f}/s{eta}")
+
+    def _ev_match(self, payload):
+        # the same seed found or checked again replaces its earlier entry
+        self._matches = [m for m in self._matches if not (
+            m["seed"] == payload["seed"] and m["origin"] == self._run["origin"] and m["setup"] == self._run["setup"])]
+        entry = dict(payload, ts=time.time(), origin=self._run["origin"], setup=self._run["setup"],
+                     checked=self._run["checking"], info=dict(self._report_info))
+        self._matches.insert(0, entry)
+        self._render_match_list()
+        self.match_pane.grid()
+        if not entry["checked"]:
+            self._surface_window()   # pull the window to front so the match is seen
+            if notification:
+                try:
+                    notification.notify(title="BB Reroll: match",
+                                        message=f"Seed {entry['seed']} for {entry['origin']}.", timeout=10)
+                except Exception:
+                    pass
+
+    def _ev_error(self, payload):
+        self._run["errors"] = self._run.get("errors", 0) + 1
+        if self._run["errors"] == 1:        # show the first one; a count follows when the run ends
+            self._show_notice(f"A seed could not be evaluated: {payload[:300]}", kind="warn")
+
+    def _ev_fatal(self, payload):
+        self._show_notice(f"The search could not run: {payload[:400]}", kind="error")
+
+    def _ev_finished(self, payload):
+        tested, secs, found, stopped = payload
+        self._searching = False
+        self.search_btn.configure(state="normal")
+        self.check_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
         self._set_watch_state("idle")
-        self.watch_var.set("connected — waiting for brute force")
-        self._tick_watch_state()
-        # If the log was written to recently, BB is plausibly running RIGHT NOW
-        # — arm the mod-not-loaded timer immediately instead of waiting for new
-        # log activity (a BB session idling at the menu writes nothing more, so
-        # the activity-driven path alone never trips the warning).
-        try:
-            if time.time() - BB_LOG.stat().st_mtime < 300 and self._first_activity_ts is None:
-                self._first_activity_ts = time.time()
-        except Exception:
-            pass
-        # Heads-up if BB's engine log has grown large. We can't rotate it from
-        # the sandboxed mod (and the mod now throttles its own per-iter output),
-        # but the user can delete it while BB is closed; it regenerates on next
-        # launch. Advisory only.
-        try:
-            mb = BB_LOG.stat().st_size / (1024 * 1024)
-            if mb >= 50:
-                self._show_notice(
-                    f"Battle Brothers' log.html is large ({mb:.0f} MB). With BB closed you can "
-                    "delete it to reclaim space — it regenerates on next launch.", kind="info")
-        except Exception:
-            pass
+        self.watch_var.set("idle")
+        if self._run["checking"]:
+            self.status_var.set("Seed checked — see the result list.")
+        else:
+            errors = self._run.get("errors", 0)
+            self.status_var.set(
+                f"{'Stopped' if stopped else 'Search finished'}: {tested:,} seed{'' if tested == 1 else 's'} tested "
+                f"in {self._fmt_duration(secs)}, {found} match{'' if found == 1 else 'es'}"
+                f"{f', {errors} could not be evaluated' if errors else ''}.")
+            if not found and not stopped and tested:
+                self._show_notice(f"No seed matched in {tested:,} seeds. Loosen the criteria or raise Max seeds.",
+                                  kind="info")
+        if self._selftest:
+            self._selftest_done(payload)
 
-    def _on_verify_start(self, iter_num, seed):
-        """Mod just entered the confirm-rebuild for a candidate seed (v3.4.6: the
-        loop full-evals stars+traits on the cached world, and a pass triggers one
-        authoritative rebuild). Distinguish from normal scanning with a different
-        LED color and label."""
-        self._last_activity_ts = time.time()
-        self.after(0, lambda: (self._set_watch_state("verifying"),
-                               self.watch_var.set(f"confirming seed {seed} (iter {iter_num})")))
-
-    def _on_brute_start(self):
-        """Watcher saw '[BBREROLL2] brute force start' — a fresh run begins."""
-        self._last_activity_ts = time.time()
-        self._mod_seen = True   # a running loop proves the mod is loaded
-        self._progress_history = []   # don't blend ETA/iter count across runs
-        self.after(0, lambda: (self._set_watch_state("running"),
-                               self.status_var.set("Brute force started.")))
-
-    def _on_log_activity(self):
-        """Any new BB log content. Used only to time the mod-not-loaded check."""
-        if self._first_activity_ts is None:
-            self._first_activity_ts = time.time()
-
-    def _on_finish(self, detail):
-        """Watcher saw the clean-finish marker. The loop is done and BB is now
-        in a half-initialised state — make that prominent."""
-        self._mod_seen = True
-        self.after(0, lambda: (self._show_notice(
-            "Battle Brothers is now in an UNSTABLE state (brute force finished: "
-            + detail + "). Close BB and restart it before playing — it may show a "
-            "crash dialog or return to the menu; either way, do not continue from there.",
-            kind="error"), self._surface_window()))
-
-    def _on_depcheck(self, missing):
-        """Mod's dependency self-check reported missing required mods."""
-        self._mod_seen = True   # our .nut ran — the problem is its dependencies
-        self.after(0, lambda: self._show_notice(
-            f"The mod reports missing required mod(s): {missing}. Install Legends + MSU "
-            "(plus mod_hooks / modern_hooks) into your BB data folder, then restart BB.",
-            kind="error"))
-
-    def _on_unexpected(self, detail):
-        """A non-BBReroll exception surfaced during the run and was passed
-        through to BB's normal error handling (Phase 2 sentinel logic)."""
-        self.after(0, lambda: self._show_notice(
-            "An unexpected error occurred during the run (NOT a BB Reroll finish — "
-            f"likely vanilla/Legends/another mod): {detail[:200]}. BB's normal error "
-            "handling applies; check log.html for details.", kind="error"))
-
-    def _on_mod_init(self, mod_version):
-        """Watcher saw '[BBREROLL] mod queued (vX)'. Confirms the mod loaded and
-        tells us its version; warn if it doesn't match this GUI."""
-        self._mod_seen = True
-        self.mod_version = mod_version
-        self.after(0, lambda: self._apply_version_check(mod_version))
-
-    def _apply_version_check(self, mod_version):
-        if APP_VERSION != "unknown" and mod_version != APP_VERSION:
-            self._show_notice(
-                f"⚠ Version mismatch — this GUI is v{APP_VERSION} but the installed mod is v{mod_version}. "
-                "Rebuild and redeploy (Save & Deploy, or run build_exe.bat) so they match.",
-                kind="warn")
-        elif self.notice_var.get().startswith("⚠ Version mismatch"):
-            self._clear_notice()  # versions agree now — drop a stale mismatch notice
-
-    # ── notice banner (version mismatch / finish / mod-not-loaded) ──
+    # ── notice banner ──
     _NOTICE_COLORS = {
         "warn":  ("#3a2a00", "#ffcf66"),   # amber
         "error": ("#3a1410", "#ff8a6e"),   # red
         "info":  ("#10263a", "#79b8e0"),   # blue
     }
 
-    def _show_notice(self, text: str, kind: str = "warn"):
+    def _show_notice(self, text: str, kind: str = "warn", action=None):
+        """action: (button label, function) shown next to the text, or None."""
         if text in self._dismissed_notices:
             return   # user already ✕'d this exact message this session
         fg, tc = self._NOTICE_COLORS.get(kind, self._NOTICE_COLORS["warn"])
         self.notice_var.set(text)
+        self._notice_action = action[1] if action else None
         try:
             self.notice_banner.configure(fg_color=fg)
             self.notice_label.configure(text_color=tc)
+            if action:
+                self.notice_action_btn.configure(text=action[0])
+                self.notice_action_btn.grid()
+            else:
+                self.notice_action_btn.grid_remove()
             self.notice_banner.grid()
         except Exception:
             pass
 
+    def _on_notice_action(self):
+        if self._notice_action:
+            self._notice_action()
+
     def _dismiss_notice(self):
-        """✕ on the banner (also wired to the match pane's Clear). Sticky: the
-        same text won't re-show this session, so connect-time re-scans of log
-        content that's still on disk can't resurrect a dismissed banner."""
+        """✕ on the banner (also wired to the result pane's Clear). Sticky: the
+        same text won't re-show this session."""
         txt = self.notice_var.get()
         if txt:
             self._dismissed_notices.add(txt)
@@ -1495,51 +1088,17 @@ class App(ctk.CTk):
 
     def _clear_notice(self):
         self.notice_var.set("")
+        self._notice_action = None
         try:
             self.notice_banner.grid_remove()
         except Exception:
             pass
 
-    def _on_match(self, iter_num, seed):
-        self._last_activity_ts = time.time()
-        self.after(0, lambda: self._add_match(iter_num, seed))
-
-    def _on_report_info(self, info):
-        self.after(0, lambda: self._merge_report_info(info))
-
-    def _merge_report_info(self, info):
-        # Map Options and Seed Report Info can arrive in separate watcher chunks;
-        # merge so a later partial parse never wipes an earlier field.
-        for key in ("version", "build_name", "battle_sisters", "origin"):
-            if info.get(key):
-                self._report_info[key] = info[key]
-        if info.get("map_options"):
-            self._report_info["map_options"] = info["map_options"]
-
-    def _on_progress(self, cur, total):
-        now = time.time()
-        self._last_activity_ts = now
-        self._progress_history.append((now, cur))
-        if len(self._progress_history) > 20:
-            self._progress_history.pop(0)
-        eta = ""
-        if len(self._progress_history) >= 2:
-            t0, c0 = self._progress_history[0]
-            t1, c1 = self._progress_history[-1]
-            dt, dc = t1 - t0, c1 - c0
-            if dt > 0 and dc > 0:
-                rate = dc / dt
-                remaining_s = max(0, (total - cur) / rate)
-                eta = f" · ETA {self._fmt_duration(remaining_s)}"
-        msg = f"scanning seeds · iter {cur}/{total}{eta}"
-        self.after(0, lambda: (self._set_watch_state("running"), self.watch_var.set(msg)))
-
-    # ── LED state machine ──
+    # ── LED ──
     _DOT_COLORS = {
-        "idle":      "#6a6e76",   # grey
-        "waiting":   "#c89500",   # amber — log file not visible yet
-        "running":   "#22b14c",   # green — scanning (full stars+traits eval, cached world)
-        "verifying": "#3aa0d9",   # blue  — confirm-rebuild (authoritative re-check of a candidate)
+        "idle":    "#6a6e76",   # grey
+        "waiting": "#c89500",   # amber — the workers are loading the game's scripts
+        "running": "#22b14c",   # green — testing seeds
     }
 
     def _set_watch_state(self, state: str):
@@ -1548,42 +1107,6 @@ class App(ctk.CTk):
             self.watch_dot.configure(text_color=self._DOT_COLORS.get(state, "#6a6e76"))
         except Exception:
             pass
-
-    def _idle_threshold(self) -> float:
-        """Adaptive idle threshold — based on the longest gap between recent
-        progress events, clamped to [20s, 120s]. With LogEvery=10 and ~2s/iter
-        progress events come every ~20s, so a hardcoded 15s would falsely
-        drop the LED to idle every cycle."""
-        if len(self._progress_history) < 2:
-            return 20.0
-        h = self._progress_history
-        intervals = [h[i+1][0] - h[i][0] for i in range(len(h) - 1)]
-        if not intervals:
-            return 20.0
-        return max(20.0, min(120.0, max(intervals) * 1.5))
-
-    def _tick_watch_state(self):
-        """Every 2s, drop the dot to idle if no activity within the adaptive
-        threshold. Re-armed on every event."""
-        try:
-            if self._watch_state in ("running", "verifying") and self._last_activity_ts:
-                if time.time() - self._last_activity_ts > self._idle_threshold():
-                    self._set_watch_state("idle")
-                    self.watch_var.set("idle (no recent activity)")
-            # Mod-not-loaded heuristic (GitHub issue #1): BB has been writing
-            # its log for a while but our init line never appeared → the mod
-            # most likely didn't load (missing Legends / MSU / hooks).
-            if (not self._mod_seen and not self._not_loaded_warned
-                    and self._first_activity_ts
-                    and time.time() - self._first_activity_ts > 60):
-                self._not_loaded_warned = True
-                self._show_notice(
-                    "The mod doesn't appear to be loaded — Battle Brothers is writing its log "
-                    "but no BB Reroll init line has appeared. Check that Legends, MSU and the "
-                    "hooks framework (mod_hooks / modern_hooks) are installed in your BB data "
-                    "folder, then restart BB.", kind="error")
-        finally:
-            self.after(2000, self._tick_watch_state)
 
     @staticmethod
     def _fmt_duration(secs: float) -> str:
@@ -1604,10 +1127,10 @@ class App(ctk.CTk):
             pass
 
     def _repaint_tick(self):
-        """CTk 5.2.x can skip redraws while the window is unfocused (BB holds
-        focus during a reroll) or parked on a different-DPI monitor, leaving it
-        blank/transparent. Force a repaint on a steady cadence so live status
-        stays visible without clicking back into the window."""
+        """CTk 5.2.x can skip redraws while the window is unfocused or parked on a
+        different-DPI monitor, leaving it blank/transparent. Force a repaint on a
+        steady cadence so live status stays visible without clicking back into
+        the window."""
         try:
             self.update_idletasks()
         except Exception:
@@ -1616,10 +1139,10 @@ class App(ctk.CTk):
             self.after(1000, self._repaint_tick)
 
     def _surface_window(self):
-        """Bring the window to the foreground and force a repaint. During a
-        reroll BB is focused, so the GUI is backgrounded and (CTk bug) may be
-        blank — a match/finish would otherwise be invisible. Lift + brief
-        topmost + repaint makes sure the user actually sees it."""
+        """Bring the window to the foreground and force a repaint. A search runs
+        for a while, so the GUI is usually backgrounded and (CTk bug) may be
+        blank — a match would otherwise be invisible. Lift + brief topmost +
+        repaint makes sure the user actually sees it."""
         try:
             self.deiconify()
             self.lift()
@@ -1631,53 +1154,45 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    # ── matches ──
-    def _add_match(self, iter_num: int, seed: str):
-        if any(m["seed"] == seed for m in self._matches):
-            return  # de-dupe re-reads of the same log line
-        self._matches.insert(0, {"seed": seed, "iter": iter_num, "ts": time.time()})
-        self._render_match_list()
-        self.match_pane.grid()
-        self._surface_window()   # pull the window to front so the match is seen
-        if notification:
-            try:
-                notification.notify(title="BB Reroll: MATCH — restart BB",
-                                    message=(f"Seed {seed} at iter {iter_num}. "
-                                             "BB may crash or return to menu — restart it either way, "
-                                             "then enter the seed for a real campaign."),
-                                    timeout=15)
-            except Exception:
-                pass
-
+    # ── results ──
     def _render_match_list(self):
         for w in self.match_list.winfo_children():
             w.destroy()
         if not self._matches:
             self.match_pane.grid_remove()
             return
+        # as tall as its content needs, up to a limit (it scrolls beyond that)
+        wanted = sum(54 + 15 * len(m["roster"]) for m in self._matches)
+        self.match_list.configure(height=max(80, min(230, wanted)))
         for entry in self._matches:
-            row = ctk.CTkFrame(self.match_list, fg_color="#1f6f3a", corner_radius=6)
+            ok = entry.get("failure") is None
+            row = ctk.CTkFrame(self.match_list, fg_color="#1f6f3a" if ok else "#3a3f4a", corner_radius=6)
             row.pack(fill="x", padx=2, pady=2)
             row.grid_columnconfigure(0, weight=1)
-            ctk.CTkLabel(row,
-                         text=f"seed: {entry['seed']}    iter {entry['iter']}",
-                         font=("Segoe UI", 13, "bold"),
-                         text_color="white").grid(row=0, column=0, sticky="w", padx=10, pady=6)
-            ctk.CTkButton(row, text="📋 Copy", width=80, height=28,
-                          fg_color="#155028", hover_color="#0e3d1d",
-                          command=lambda s=entry["seed"]: self._copy_to_clipboard(s)).grid(row=0, column=1, padx=4)
-            share_btn = ctk.CTkButton(row, text="📋 Copy seed share", width=150, height=28,
-                          fg_color="#155028", hover_color="#0e3d1d",
-                          command=lambda e=entry: self._copy_seed_share(e))
-            share_btn.grid(row=0, column=2, padx=4)
+            head = f"seed: {entry['seed']}    {entry['origin']}  ({entry['setup']})"
+            if entry.get("checked"):
+                head += "    (checked — %s)" % ("meets your criteria" if ok else "fails: " + entry["failure"])
+            if not entry.get("stable", True):
+                head += "    ⚠ NOT reproducible — do not rely on it"
+            ctk.CTkLabel(row, text=head, font=("Segoe UI", 13, "bold"), text_color="white").grid(
+                row=0, column=0, sticky="w", padx=10, pady=(6, 0))
+            ctk.CTkButton(row, text="📋 Copy", width=70, height=28, fg_color="#155028", hover_color="#0e3d1d",
+                          command=lambda s=entry["seed"]: self._copy_to_clipboard(s)).grid(row=0, column=1, padx=3, pady=(6, 0))
+            ctk.CTkButton(row, text="📋 Roster", width=80, height=28, fg_color="#155028", hover_color="#0e3d1d",
+                          command=lambda e=entry: self._copy_roster(e)).grid(row=0, column=2, padx=3, pady=(6, 0))
+            share_btn = ctk.CTkButton(row, text="📋 Seed share", width=100, height=28, fg_color="#155028",
+                                      hover_color="#0e3d1d", command=lambda e=entry: self._copy_seed_share(e))
+            share_btn.grid(row=0, column=3, padx=3, pady=(6, 0))
             _attach_tooltip(share_btn,
                             "Copies a ready-to-paste Legends Discord seed-sharing post to the clipboard")
-            ctk.CTkButton(row, text="×", width=32, height=28,
-                          fg_color="transparent", hover_color="#5a1f1f",
-                          command=lambda s=entry["seed"]: self._dismiss_match(s)).grid(row=0, column=3, padx=(0, 6))
+            ctk.CTkButton(row, text="×", width=32, height=28, fg_color="transparent", hover_color="#5a1f1f",
+                          command=lambda e=entry: self._dismiss_match(e)).grid(row=0, column=4, padx=(0, 6), pady=(6, 0))
+            ctk.CTkLabel(row, text="\n".join(roster_lines(entry["roster"])), font=("Consolas", 11), justify="left",
+                         anchor="w", text_color="#e6efe8").grid(row=1, column=0, columnspan=5, sticky="w",
+                                                                padx=12, pady=(2, 8))
 
-    def _dismiss_match(self, seed: str):
-        self._matches = [m for m in self._matches if m["seed"] != seed]
+    def _dismiss_match(self, entry: dict):
+        self._matches = [m for m in self._matches if m is not entry]
         self._render_match_list()
 
     def _clear_matches(self):
@@ -1694,69 +1209,58 @@ class App(ctk.CTk):
         except Exception as e:
             self.status_var.set(f"clipboard error: {e}")
 
-    def _copy_seed_share(self, entry: dict):
-        report = build_seed_report(
-            origin=self.origin_var.get(),
+    def _copy_roster(self, entry: dict):
+        from bbseed.lab import describe
+        text = f"Seed {entry['seed']} — {entry['origin']} — {entry['setup']}\n"
+        text += "\n".join(f"{i}. {describe(b)}" for i, b in enumerate(entry["roster"], 1))
+        self._copy_to_clipboard(text, label=f"Copied the roster of seed {entry['seed']}")
+
+    def _share_report(self, entry: dict) -> str:
+        return build_seed_report(
+            origin=entry["origin"],
             description=self.share_desc_var.get().strip(),
             seed=entry["seed"],
-            report_info=self._report_info,
+            report_info=entry.get("info") or self._report_info,
             tool_version=APP_VERSION,
         )
-        self._copy_to_clipboard(report, label=f"Copied Discord seed share for {entry['seed']}")
-        if not self._report_info.get("version"):
-            self.status_var.set(
-                "Copied — but Version/Battle sisters/Map Options are blank. "
-                "Redeploy the mod (tools\\deploy.py) + restart BB so it logs them.")
 
-    # ── stale mod cleanup ──
-    def _on_clean_stale(self):
-        bb = Path(self.bb_path_var.get())
-        if not bb.exists():
-            self.status_var.set(f"BB data folder not found: {bb}")
-            return
-        active = ZIP_PATH.name  # don't offer to delete the currently-deployed zip
-        candidates = []
-        try:
-            for p in bb.iterdir():
-                if p.is_file() and p.suffix.lower() == ".zip" and "bb_reroll" in p.name.lower() and p.name != active:
-                    candidates.append(p)
-        except Exception as e:
-            self.status_var.set(f"scan failed: {e}")
-            return
-        if not candidates:
-            messagebox.showinfo("Clean stale mods",
-                                f"No stale bb_reroll zips in:\n{bb}\n\n(Currently-deployed: {active})")
-            self.status_var.set("No stale zips found.")
-            return
-        listing = "\n  ".join(p.name for p in candidates)
-        if not messagebox.askyesno(
-            "Clean stale mods",
-            f"Found {len(candidates)} other bb_reroll zip(s) in:\n{bb}\n\n  {listing}\n\nDelete all of them?",
-        ):
-            return
-        deleted = 0
-        for p in candidates:
-            try:
-                p.unlink(); deleted += 1
-            except Exception as e:
-                self.status_var.set(f"delete failed for {p.name}: {e}")
-        self.status_var.set(f"Deleted {deleted} stale zip(s).")
+    def _copy_seed_share(self, entry: dict):
+        self._copy_to_clipboard(self._share_report(entry), label=f"Copied Discord seed share for {entry['seed']}")
+
+    def _open_github(self):
+        webbrowser.open("https://github.com/Trikpatknd/bb-reroll/releases")
 
     # ── settings persistence ──
-    def _load_settings(self):
-        if not SETTINGS_PATH.exists():
-            return
+    @staticmethod
+    def _read_settings() -> dict:
         try:
             data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
         except Exception:
-            return
-        if data.get("bb_path"):
-            self.bb_path_var.set(data["bb_path"])
-        if data.get("geometry"):
+            return {}
+
+    def _saved_list(self, key, default) -> list:
+        """A trait list as the player left it (additions, removals), else the defaults."""
+        saved = self._saved.get(key)
+        if isinstance(saved, list) and all(isinstance(t, str) for t in saved):
+            return list(saved)
+        return list(default)
+
+    def _load_settings(self):
+        data = self._saved
+        # A window size saved by 3.x was made for another layout: only the new one is restored.
+        if data.get("v") == SETTINGS_VERSION and data.get("geometry"):
             try:    self.geometry(data["geometry"])
             except Exception: pass
-        if data.get("last_origin") and data["last_origin"] in {o[0] for o in ORIGINS}:
+        if data.get("setup") in O.SETUPS:
+            self.setup_var.set(data["setup"])
+        if data.get("last_origin") in O.names_for(self.setup_var.get()):
             self.origin_var.set(data["last_origin"])
+        for key, var in (("workers", self.workers_var), ("count", self.count_var), ("max_seeds", self.max_iters_var)):
+            if isinstance(data.get(key), int) and data[key] >= 1:
+                var.set(str(data[key]))
+        if data.get("battle_sisters") in O.BATTLE_SISTERS:
+            self.sisters_var.set(data["battle_sisters"])
         # Layered display-name overrides — only persist deltas from the builtin
         # map so a future TRAIT_NAMES update flows through automatically.
         overrides = data.get("display_overrides") or {}
@@ -1764,6 +1268,9 @@ class App(ctk.CTk):
             for tid, name in overrides.items():
                 if isinstance(tid, str) and isinstance(name, str):
                     self.trait_display[tid] = name
+        if overrides:
+            self._populate_trait_pane("banned")
+            self._populate_trait_pane("required")
 
     def _save_settings(self):
         try:
@@ -1772,26 +1279,111 @@ class App(ctk.CTk):
                 if TRAIT_NAMES.get(tid) != name
             }
             SETTINGS_PATH.write_text(json.dumps({
-                "bb_path":           self.bb_path_var.get(),
+                "v":                 SETTINGS_VERSION,
                 "geometry":          self.geometry(),
+                "setup":             self.setup_var.get(),
+                "game_folder":       self._game_folder,
                 "last_origin":       self.origin_var.get(),
+                "workers":           to_int(self.workers_var.get()),
+                "count":             to_int(self.count_var.get()),
+                "max_seeds":         to_int(self.max_iters_var.get()),
+                "battle_sisters":    self.sisters_var.get(),
                 "display_overrides": overrides,
+                "known_banned":      list(self.banned_known),
+                "known_required":    list(self.required_known),
+                "criteria":          self._gather_criteria(),
             }, indent=2), encoding="utf-8")
         except Exception:
             pass
 
     def _on_close(self):
+        self._stop.set()
         self._save_settings()
         self.destroy()
+
+    # ── unattended self-test (BB_REROLL_SELFTEST=<spec.json>) ──
+    def run_selftest(self, spec: dict):
+        """Drive one search without a human: set the fields from `spec`, press Search,
+        write what happened to spec["out"], optionally close. For automated checks of the
+        GUI and of the built .exe; nothing in normal use reaches this."""
+        self._selftest = spec
+        self._save_settings = lambda: None      # a self-test must not overwrite the player's settings
+
+        def go():
+            self.setup_var.set(spec.get("setup", O.DEFAULT_SETUP))
+            self._on_setup_change()
+            self.origin_var.set(spec["origin"])
+            self._on_origin_change(spec["origin"])
+            for var in self.banned_vars.values():
+                var.set(False)
+            for var in self.required_vars.values():
+                var.set(False)
+            for t in spec.get("banned", []):
+                if t in self.banned_vars:
+                    self.banned_vars[t].set(True)
+            for t in spec.get("required", []):
+                if t in self.required_vars:
+                    self.required_vars[t].set(True)
+            for (slot, stat), var in self.stars_vars.items():
+                var.set(str(spec.get("stars", {}).get(slot, {}).get(stat, 0)))
+            self.max_iters_var.set(str(spec.get("max_seeds", 2000)))
+            self.sisters_var.set(spec.get("battle_sisters", O.BATTLE_SISTERS[1]))
+            self.count_var.set(str(spec.get("count", 2)))
+            self.workers_var.set(str(spec.get("workers", 4)))
+            if spec.get("check"):
+                self.check_seed_var.set(spec["check"])
+                self._on_check_seed()
+            else:
+                self._launch(self._gather_criteria(), self._numbers()[0], seeds=None)
+            if spec.get("stop_after"):
+                self.after(int(spec["stop_after"] * 1000), self._on_stop)
+        self.after(800, go)
+
+    def _selftest_done(self, payload):
+        spec = self._selftest
+        Path(spec["out"]).write_text(json.dumps({
+            "finished": list(payload), "status": self.status_var.get(), "notice": self.notice_var.get(),
+            "title": self.title(), "setups": list(O.SETUPS),
+            "matches": [{"seed": m["seed"], "origin": m["origin"], "stable": m["stable"], "failure": m["failure"],
+                         "checked": m["checked"], "lines": roster_lines(m["roster"])} for m in self._matches],
+            "share": None if not self._matches else self._share_report(self._matches[0]),
+        }, indent=2), encoding="utf-8")
+        if spec.get("screenshot"):          # a picture of the window, to check the layout unattended
+            try:
+                from PIL import ImageGrab
+                self.update()
+                x, y = self.winfo_rootx(), self.winfo_rooty()
+                box = (x, y, x + self.winfo_width(), y + self.winfo_height())
+                try:        # this process is not DPI aware (see main): Tk's pixels are scaled screen pixels
+                    import ctypes
+                    scale = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100.0
+                except Exception:
+                    scale = 1.0
+                ImageGrab.grab(bbox=tuple(int(v * scale) for v in box)).save(spec["screenshot"])
+            except Exception:
+                pass
+        if spec.get("close_after") is not None:
+            self.after(int(spec["close_after"] * 1000), self.destroy)
 
 
 # ─────────────────────── entry ───────────────────────
 
-if __name__ == "__main__":
+def main():
     # Mixed-DPI monitors blank/transparent the CTk canvas when the window crosses
     # between them — CTk's per-monitor auto-rescale is the trigger. Going DPI-unaware
     # lets Windows bitmap-scale instead (slightly softer on a high-DPI monitor, but
     # never blank). Must run before the first window (App) is created.
     ctk.deactivate_automatic_dpi_awareness()
     app = App()
+    spec = os.environ.get("BB_REROLL_SELFTEST")
+    if spec:
+        app.run_selftest(json.loads(Path(spec).read_text(encoding="utf-8")))
     app.mainloop()
+
+
+if __name__ == "__main__":
+    # The search's worker processes are this same program started again (in the .exe:
+    # the .exe itself). freeze_support() turns such a start into a worker and never returns.
+    import multiprocessing
+    multiprocessing.freeze_support()
+    main()

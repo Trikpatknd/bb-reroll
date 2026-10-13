@@ -11,18 +11,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-python tools\embed_nut.py
-if errorlevel 1 (
-    echo Failed to regenerate bbreroll/mod_template.py.
-    exit /b 1
-)
-
-python tools\build_zip.py
-if errorlevel 1 (
-    echo Failed to build mod_bb_reroll_dump.zip.
-    exit /b 1
-)
-
 pyinstaller --noconfirm gui.spec
 if errorlevel 1 (
     echo PyInstaller build failed.
@@ -32,8 +20,8 @@ if errorlevel 1 (
 echo.
 echo ============================================================
 echo Built: dist\bb_reroll_gui.exe
-echo Run it directly; on first Save ^& Deploy it creates mod\
-echo bb_reroll_dump.nut next to the .exe (or in this project dir
-echo in dev mode) and copies the .zip to your BB data folder.
+echo Run it directly. It finds your Battle Brothers install by
+echo itself and reads the game's own files - nothing is copied
+echo into the game and nothing has to be extracted.
 echo ============================================================
 endlocal

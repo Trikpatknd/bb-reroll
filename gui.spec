@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_data_files
 datas  = []
 datas += collect_data_files("customtkinter")   # ship the CTK theme JSON files
 datas += [("VERSION", ".")]                     # single-source version string, read at runtime
+datas += [("bbseed/native_surface.json", "bbseed")]   # the engine functions the offline search stands in for
 
 a = Analysis(
     ["gui.py"],

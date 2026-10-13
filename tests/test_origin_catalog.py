@@ -1,11 +1,7 @@
 """Integrity checks for the per-origin hardcoded-stars catalog and its
-agreement with the GUI's ORIGINS dropdown list."""
-import ast
-from pathlib import Path
-
+agreement with the GUI's ORIGINS list (bbreroll/offline_origins.py)."""
+from bbreroll import offline_origins
 from bbreroll import origin_hardcoded_stars as ohs
-
-ROOT = Path(__file__).resolve().parent.parent
 
 VALID_STATS = {"hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf"}
 # Hard-disabled scenarios (isValid() == false) that must never be offered.
@@ -13,24 +9,12 @@ DISABLED = {"Build your own", "Druid [Legacy]", "Horse Party", "Mage"}
 
 
 def _gui_origins():
-    """ORIGINS list from gui.py via ast — avoids importing customtkinter."""
-    tree = ast.parse((ROOT / "gui.py").read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id == "ORIGINS" for t in node.targets
-        ):
-            return ast.literal_eval(node.value)
-    raise AssertionError("ORIGINS not found in gui.py")
+    return offline_origins.ORIGINS
 
 
 def test_catalog_has_expected_count():
-    # 12 vanilla Legends-hooked + 17 Legends-added + Custom.
-    assert len(ohs.ORIGIN_HARDCODED_STARS) == 30
-
-
-def test_custom_present_and_empty():
-    assert "Custom" in ohs.ORIGIN_HARDCODED_STARS
-    assert ohs.ORIGIN_HARDCODED_STARS["Custom"] == []
+    # 14 vanilla Legends-hooked + 21 Legends-added (Legends 19.4.22).
+    assert len(ohs.ORIGIN_HARDCODED_STARS) == 35
 
 
 def test_disabled_origins_absent():
@@ -52,17 +36,22 @@ def test_slot_keys_and_values_valid():
 def test_catalog_matches_gui_origins():
     gui_names = [name for name, _count in _gui_origins()]
     assert set(gui_names) == set(ohs.ORIGIN_HARDCODED_STARS), \
-        "gui.py ORIGINS and ORIGIN_HARDCODED_STARS keys must match exactly"
+        "ORIGINS and ORIGIN_HARDCODED_STARS keys must match exactly"
     for name in DISABLED:
         assert name not in gui_names
 
 
 def test_slot_count_matches_gui_bro_count():
     """For origins with a fixed bro count in the dropdown, the catalog should
-    list exactly that many slots (Custom has count None and an empty list)."""
+    list exactly that many slots."""
     counts = {name: count for name, count in _gui_origins()}
     for origin, slots in ohs.ORIGIN_HARDCODED_STARS.items():
         count = counts.get(origin)
         if count is None:
-            continue  # Custom / manual
+            continue  # Random Party: 4-6 bros, rolled per seed
         assert len(slots) == count, f"{origin}: catalog has {len(slots)} slots, dropdown says {count}"
+
+
+def test_every_origin_has_a_scenario_script_and_a_brother_count():
+    assert [name for name, _count in _gui_origins()] == list(offline_origins.SCENARIO)
+    assert offline_origins.COUNTS["Peasant Militia"] == 12 and offline_origins.COUNTS["Random Party"] is None

@@ -18,9 +18,10 @@ def test_fully_rolled_snapshot():
         "All 5 slots fully rolled — every stat can be brute-forced."
 
 
-def test_custom_snapshot():
-    assert ohs.summarize("Custom") == \
-        '"Custom" — no fixed roster; consult the scenario directly.'
+def test_origin_without_a_fixed_roster_snapshot():
+    # Random Party rolls 4-6 brothers per seed
+    assert ohs.summarize("Random Party") == \
+        '"Random Party" — no fixed roster; consult the scenario directly.'
 
 
 def test_partial_lists_rolled_slots():

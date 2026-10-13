@@ -1,8 +1,8 @@
-"""Per-origin hardcoded talent stars, sourced from Legends 19.3.24.
+"""Per-origin hardcoded talent stars, sourced from Legends 19.3.24 and re-checked against 19.4.22.
 
-For each origin keyed by its GUI display name (matching ORIGINS in gui.py),
+For each origin keyed by its GUI display name (matching ORIGINS in offline_origins.py),
 the value is a list of per-slot dicts in 1-based order. Each dict maps stat
-short-name (matching STATS in gui.py) to the hardcoded talent-star count the
+short-name (matching STATS in criteria.py) to the hardcoded talent-star count the
 scenario writes via `bros[i].getTalents()[Const.Attributes.X] = N` after
 calling `getTalents().resize(COUNT, 0)`. Empty dict {} = that slot's stars
 are rolled by `fillTalentValues` and the scenario doesn't override them.
@@ -12,8 +12,8 @@ a non-matching requirement on a hardcoded slot will reject every iteration.
 """
 
 ORIGIN_HARDCODED_STARS: dict[str, list[dict[str, int]]] = {
-    "Custom":                    [],  # not a scenario
     # Vanilla origins (Legends-hooked)
+    "A New Company":             [{}, {}, {}],
     "Anatomist":                 [{"res":1,"msk":2,"rsk":2}, {"hp":2,"init":3,"msk":1}, {"res":2,"mdf":3,"rdf":3}],
     "Band of Poachers":          [{"rsk":2,"rdf":1,"init":1}, {"rsk":2,"fat":1,"init":1}, {"rsk":2,"res":1,"init":1}],
     "Beast Slayers":             [{"msk":2,"mdf":2,"init":2}, {"fat":2,"msk":1,"mdf":1}, {"rsk":2,"rdf":1,"fat":1}],
@@ -25,6 +25,7 @@ ORIGIN_HARDCODED_STARS: dict[str, list[dict[str, int]]] = {
     "Northern Raiders":          [{"msk":2,"hp":2,"fat":1}, {"msk":2,"hp":1,"fat":2}, {"msk":1,"mdf":2,"hp":2}, {"res":3}],
     "Oathtakers":                [{"res":3,"msk":1,"rdf":2}, {"init":3,"msk":2,"mdf":1}],
     "Peasant Militia":           [{}] * 12,
+    "Southern Mercenaries":      [{}, {}, {}],  # requires Blazing Deserts DLC
     "Trading Caravan":           [{}, {"msk":2,"mdf":1,"hp":1}],
     # Legends-added origins (4 dropped: Build your own, Druid [Legacy],
     # Horse Party, Mage — all hard-disabled in the BB picker via `isValid()
@@ -40,7 +41,11 @@ ORIGIN_HARDCODED_STARS: dict[str, list[dict[str, int]]] = {
     "Noble":                     [{}, {}, {}, {}, {}, {}],
     "Nomad Tribe":               [{}, {}, {}, {}, {}],
     "Original Beggar Challenge": [{}],
+    "Random Party":              [],  # 4-6 bros rolled per seed — no fixed roster
+    "Random Solo":               [{}],
+    "Random Trio":               [{}, {}, {}],
     "Ranger":                    [{}, {"msk":2,"hp":2}],
+    "Risen Legion":              [{}] * 8,
     "Scaling Beggar Challenge":  [{}],
     "Seer":                      [{}],
     "Sisterhood":                [{}, {}, {}, {}, {}, {}],

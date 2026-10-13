@@ -36,10 +36,19 @@ def test_booleans_render_yes_no():
 
 def test_unknown_info_renders_placeholders_not_crash():
     empty = {"version": None, "build_name": None, "battle_sisters": None, "map_options": {}}
-    out = build_seed_report("Custom", "", "ABCDEFGH12", empty, "3.4.6")
+    out = build_seed_report("Lone Wolf", "", "ABCDEFGH12", empty, "3.4.6")
     assert "Version: (unknown)" in out
     assert "Battle sisters: (unknown)" in out
-    assert "Map Options:\n(unknown)" in out
+
+
+def test_without_map_options_the_post_says_they_do_not_matter():
+    # what the offline search passes: the recruits come from the seed text alone
+    info = {"version": "19.4.22", "build_name": "Bandits & Greenskins", "battle_sisters": "Enabled",
+            "origin": "Trading Caravan", "map_options": {}}
+    out = build_seed_report("Trading Caravan", "", "8633698106", info, "4.0.0")
+    assert "Map Options: any (the starting brothers do not depend on them; the map does)" in out
+    assert "Land Mass Ratio" not in out
+    assert out.endswith("Found with BB Reroll v4.0.0 — github.com/Trikpatknd/bb-reroll")
 
 
 def test_empty_description_leaves_blank_value():
@@ -59,15 +68,14 @@ def test_footer_drops_version_when_unknown():
 
 
 def test_origin_prefers_report_info_over_dropdown_arg():
-    # The real origin logged by the mod must win over the GUI dropdown value.
+    # The origin the search actually ran must win over the GUI dropdown value.
     info = dict(FULL_INFO, origin="Gladiators")
-    out = build_seed_report("Custom", "x", "ABCDEFGH12", info, "3.4.6")
+    out = build_seed_report("Lone Wolf", "x", "ABCDEFGH12", info, "3.4.6")
     assert "Origin: Gladiators" in out
-    assert "Origin: Custom" not in out
+    assert "Origin: Lone Wolf" not in out
 
 
-def test_origin_falls_back_to_dropdown_arg_when_not_logged():
-    # Older log / mod not yet redeployed: no logged origin → use the dropdown.
+def test_origin_falls_back_to_dropdown_arg_when_not_reported():
     info = dict(FULL_INFO)            # FULL_INFO has no "origin" key
     out = build_seed_report("Lone Wolf", "x", "ABCDEFGH12", info, "3.4.6")
     assert "Origin: Lone Wolf" in out

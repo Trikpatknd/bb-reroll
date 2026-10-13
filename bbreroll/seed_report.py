@@ -1,15 +1,18 @@
-"""Assemble the Legends Discord seed-sharing post from parsed game state.
+"""Assemble the Legends Discord seed-sharing post for a seed the search found.
 
 Pure / tkinter-free so it is unit-tested (tests/test_seed_report.py). The GUI
-calls build_seed_report() with the origin (from the dropdown), a free-text
-description, the matched seed, the latest report_info parsed by
-logscan.parse_report_info, and the tool version for the footer.
+calls build_seed_report() with the origin, a free-text description, the seed,
+report_info (what the search's game setup reported: Legends version and build
+name, the Battle Sisters setting) and the tool version for the footer.
+
+Map Options: the starting brothers are rolled from the seed text alone, after
+the map is made — they are the same whatever the Map Options are, so the post
+says so unless the caller knows the options and passes them.
 """
 
 GITHUB_URL = "github.com/Trikpatknd/bb-reroll"
 
-# Order + in-game labels for the Map Options block (all affect world gen, so all
-# matter for reproduction — see the design doc).
+# Order + in-game labels for the Map Options block, used when the caller passes them.
 _MAP_OPTION_LABELS = [
     ("LandRatio", "Land Mass Ratio"),
     ("Water", "Water"),
@@ -21,6 +24,7 @@ _MAP_OPTION_LABELS = [
 ]
 _BOOLEAN_KEYS = {"StackCitadels", "AllTradeLocations"}
 _UNKNOWN = "(unknown)"
+_ANY_MAP = "Map Options: any (the starting brothers do not depend on them; the map does)"
 
 
 def _yes_no(raw) -> str:
@@ -47,16 +51,16 @@ def build_seed_report(origin, description, seed, report_info, tool_version) -> s
         f"Seed: {seed}",
         f"Battle sisters: {report_info.get('battle_sisters') or _UNKNOWN}",
         "",
-        "Map Options:",
     ]
     if map_options:
+        lines.append("Map Options:")
         for key, label in _MAP_OPTION_LABELS:
             if key not in map_options:
                 continue
             raw = map_options[key]
             lines.append(f"{label}: {_yes_no(raw) if key in _BOOLEAN_KEYS else raw}")
     else:
-        lines.append(_UNKNOWN)
+        lines.append(_ANY_MAP)
 
     lines.append("")
     footer = "Found with BB Reroll"
