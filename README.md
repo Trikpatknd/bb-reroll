@@ -1,108 +1,101 @@
 # BB Reroll
 
-Brute-force seed finder for **Battle Brothers + Legends mod**. Search thousands of campaign seeds inside the game until one produces a starting roster that matches your criteria. Configured from a one-window GUI.
+Seed finder for **Battle Brothers** — vanilla or with the **Legends** mod. It searches campaign seeds for a starting roster that matches your criteria (talent stars per brother, banned and required traits) **without running the game**, and shows the full roster of every seed it finds.
+
+The seeds are ordinary campaign seeds. Anyone with the same game version, mods and recruit-related Mod Options gets the same brothers by typing the seed into the New Campaign screen — no mod of ours needed on either side.
+
+> **Coming from 3.x?** The in-game search (type `REROLL`, wait, restart) is gone; 4.0 replaces it. Remove the old `mod_bb_reroll_dump.zip` from `Battle Brothers/data/` — while it is there the game rolls *different* brothers for every seed, so seeds found here would not match. The GUI warns about it and offers to remove it. If you want the old method, use the [3.4.7 release](https://github.com/Trikpatknd/bb-reroll/releases).
 
 ---
 
 ## How it works
 
-1. **Squirrel mod** hooks the new-campaign screen. Type **`REROLL`** in the seed input → instead of starting a campaign, the mod loops through random seeds:
-   - **Scan** (cached world): generate seed → reseed RNG → spawn the chosen origin's roster → full evaluation against your criteria (stars + banned + required). The deterministic reseed makes the cached-world roster identical to a real campaign start with that seed.
-   - **Confirm** (only when a seed passes): rebuild the world from scratch with that seed and re-evaluate — so every declared match is authoritative, with no false positives.
-2. **GUI** generates the mod's config (stars per slot, banned/required traits, origin) and deploys the packaged ZIP to BB's `data/` folder.
-3. **Verified matches** are logged to `Documents\Battle Brothers\log.html`. The GUI tails the log live, fires a desktop notification, and shows the seed in a copy-able banner.
+Battle Brothers creates the starting brothers with its own scripts, from a random generator seeded with the seed text. BB Reroll runs **those same scripts** — the base game's and the installed mods' — in its own interpreter, with a stand-in for the engine underneath, straight from the files of your install:
+
+- the base game's compiled scripts inside `data/data_*.dat`,
+- every mod zip in `data/` (Legends, MSU, Modern Hooks, …), in the versions you actually have.
+
+Nothing is extracted or copied into the game, and no game or mod files are part of this project. The first search after a game update takes about 15 seconds longer: the game's scripts are read once and cached under `%LOCALAPPDATA%\BB Reroll`.
+
+The search runs in parallel worker processes. Every match is rolled a second time on a freshly built game state before it is shown.
+
+### What it was checked against
+
+- **Battle Brothers 1.5.2.3, unmodded** — rosters compared by hand in the real game.
+- **Battle Brothers 1.5.2.3 + Legends 19.4.22 + MSU 1.9.0 + Modern Hooks 0.6.0** — 96 real campaign starts (every searchable origin, two seeds each, plus searched and letter seeds) logged by the game and reproduced on every field: names, backgrounds, talents, traits, stats and gear.
+
+Other versions are read the same way and will usually just work, but they are unverified until someone compares a seed in the game. Seeds are specific to the game version and mod versions: an update that changes how recruits are rolled changes what every seed gives.
 
 ---
 
 ## Requirements
 
-### Battle Brothers side (must be installed in `Battle Brothers/data/` before BB Reroll will do anything)
-
-- **Battle Brothers 1.5.1.8** (vanilla)
-- **Legends mod 19.3.24 or later** — tested through 19.3.27; the spawn mechanism (`onSpawnAssets` + reseed) was re-checked against 19.3.41 and is intact. Caveat: BB Reroll hooks a fixed list of origin scenario classes, so if Legends renames or removes one, that origin silently loses its deterministic reseed and its results can't be guaranteed to reproduce. This already happened to `legends_mage_scenario` (dropped sometime after 19.3.27). Pin Legends if you want to be safe, and re-check the hook list after Legends updates.
-- **MSU** (Modular Squirrel Utilities) — Legends dependency
-- **mod_hooks** — class-hooking framework used by Legends and BB Reroll
-- **modern_hooks** — newer hook framework, also a Legends dependency
-
-If any of these are missing or a substantially different version of Legends is installed, BB will start but our mod's queued init never fires (no `[BBREROLL] mod queued (vX.Y.Z)` line in `log.html`). Grab the latest matching versions from the Legends Nexus page.
-
-### Build side
-
-- Python 3.10+
-- See `requirements.txt`
+- Windows 10/11
+- Battle Brothers installed (Steam installs are found automatically; otherwise point the GUI at the game folder)
+- To build: Python 3.10+ (see `requirements.txt`)
+- About 0.8 GB of memory per search worker with Legends (less for the unmodded game)
 
 ## Install
 
-Build from source — keeps you off deprecated prebuilt binaries.
+Build from source:
 
-1. Install the BB-side mods listed above into `Battle Brothers/data/`. **This is the step most often forgotten** — without Legends + MSU + the hook frameworks, the rest does nothing.
-2. Install Python 3.10+ and clone this repo.
-3. Run `build_exe.bat` (Windows) or `pip install -r requirements.txt && pyinstaller --noconfirm gui.spec`. Output: `dist/bb_reroll_gui.exe`.
-4. Double-click the .exe. The GUI opens.
-5. **Save & Deploy** copies `mod_bb_reroll_dump.zip` into your BB `data/` folder (auto-detected on Steam installs; otherwise click Browse…).
+```powershell
+git clone https://github.com/Trikpatknd/bb-reroll.git
+cd bb-reroll
+build_exe.bat
+# → dist\bb_reroll_gui.exe
+```
 
-For dev mode (no build), `python gui.py` runs the GUI directly.
+Put the `.exe` anywhere and double-click it. For dev mode (no build): `pip install -r requirements.txt` and `python gui.py`.
 
 ---
 
 ## Use
 
-1. **Origin** dropdown — pick yours. Brother count auto-fills.
-2. **Stars grid** — 0 = don't care, 1-3 = minimum stars. Row `*` is the default; numeric rows override per-slot. Numeric rows of all zeros fall back to `*`. Cells with non-zero star requirements (your active criteria) highlight amber. The info panel above the grid shows which stars are hardcoded by the chosen origin — those pre-fill when you pick an origin so the brute-force baseline is visible at a glance.
-3. **Banned / Required traits** — tick the trait IDs you care about. `🔍 Scan log` picks up any new trait IDs from your last play sessions.
-4. **💾 Save & Deploy** — writes the mod and copies it into BB.
-5. Launch BB → New Campaign → pick your origin → type **`REROLL`** as the seed → Start.
-6. Watch the GUI's status line:
-   - Green LED = scanning seeds
-   - Blue LED = confirming a candidate (rebuilding the world to verify the match)
-   - On match: green banner with seed + 📋 Copy. Desktop notification fires.
-7. **After a match, BB is in a half-initialized state.** It may pop a "critical exception" dialog, OR it may silently return to the main menu — both outcomes are expected and depend on BB build / mod stack / RNG. Don't try to continue from there.
-8. **Quit BB completely** (Alt+F4 if needed), relaunch, start a new campaign with the same origin, paste the matched seed → Start. The bros will match the verified fingerprint.
+1. **Game setup** — `Legends` (your game with the mods in its data folder) or `Vanilla` (your game without mods). Only what is installed is offered; the **Game folder…** button shows what was found and lets you pick another install.
+2. **Origin** — the brother count fills in by itself.
+3. **Stars grid** — 0 = don't care, 1-3 = minimum stars. Row `*` is the rule for every brother; a numbered row replaces it for that brother (a numbered row of all zeros falls back to `*`). With Legends, the stars an origin fixes for a brother are shown above the grid and pre-filled.
+4. **Banned / Required traits** — tick what matters. No brother may have a banned trait; every brother needs one (`any`) or all (`all`) of the required ones. Traits can be renamed, removed and added.
+5. **Battle sisters** — set it as in the game's Mod Options (Legends only); it changes who is rolled.
+6. **▶ Search** — the status line shows progress and speed; **■ Stop** ends it. Matches appear in the result list with their roster, a **Copy** button for the seed, **Roster** for the full details and **Seed share** for a ready-made Legends Discord post.
+7. Start a New Campaign with the same origin and type the seed **exactly as shown**.
 
-⚠ Don't change Mod → Map Options between the brute force run and starting the real campaign. World gen reads those settings, so different settings = different world = different trait roll for the same seed.
+**Check a seed** shows the roster any seed gives for the chosen setup and origin — handy for a seed someone shared. Seed text is case-sensitive in the game (`SEEDTEST` and `seedtest` are different seeds); the search only produces digit seeds, so there is nothing to mistype.
 
----
+Speed with Legends is about 3 seeds per second per worker; each worker takes ~15 seconds to load the game's scripts.
 
-## Star spec
-
-The grid translates per slot to specs like `msk2 mdf2 fat3`. Stat keys:
+### Star keys
 
 | Key | Stat |
 |---|---|
 | `hp` | Hitpoints |
 | `fat` | Fatigue |
-| `res` | Bravery (Resolve) |
+| `res` | Resolve |
 | `init` | Initiative |
 | `msk` | Melee Skill |
 | `rsk` | Ranged Skill |
 | `mdf` | Melee Defense |
 | `rdf` | Ranged Defense |
 
----
+### Command line
 
-## Build from source
+The search is also a command-line tool:
 
 ```powershell
-git clone https://github.com/Trikpatknd/bb-reroll.git
-cd bb-reroll
-pip install -r requirements.txt
-build_exe.bat
-# → dist\bb_reroll_gui.exe
-```
-
-After editing `mod\bb_reroll_dump.nut`, regenerate the embedded template:
-```powershell
-python tools\embed_nut.py
+python -m bbseed.search --profile legends --origin trader_scenario --stars 1 "res2 fat2" --ban dumb --count 3
+python -m bbseed.search --profile vanilla --origin early_access_scenario --show 1234567890
+python -m bbseed.search --profile legends --list-origins
 ```
 
 ---
 
-## Caveats
+## Limits
 
-- Brute force leaves BB in a half-initialized state. **You must restart BB** before starting a real campaign with the discovered seed.
-- Strict criteria (e.g. 3 stars in 3 stats on every bro + specific trait) can take very long. Slot 1 with `msk2 mdf2` and "any good trait" is usually findable in minutes; tighter criteria push toward hours.
-- BB Squirrel sandbox blocks file I/O from mods, so an in-GUI "Stop" button isn't possible. Use `MaxIters` to bound a run.
-- The mod ships hooks for 38 known scenarios. If you pick an origin not in that list, brute force will fall back to a hardcoded Davkul roster.
+- **Deserters is not offered.** Its recruits are created after a step that depends on the generated map, so the seed text alone does not decide them.
+- **Mod Options**: only Legends' Battle Sisters can be set. Every other mod setting is taken at the mod's default; if you changed one that affects recruits, results can differ.
+- **The origin list is fixed** (Legends 19.4.22). An origin added by another mod is not listed.
+- **Other mods** are loaded as they are installed. A mod that needs engine functions the stand-in does not model stops the search with a load error instead of giving wrong results.
+- The game's **Map Options do not affect the starting brothers** (they are rolled from the seed after the map is made), only the map itself.
 
 ---
 
@@ -114,32 +107,28 @@ bb_reroll/
 ├── VERSION                       # single source of truth for the version
 ├── gui.py                        # GUI entry point
 ├── gui.spec                      # PyInstaller spec
-├── build_exe.bat                 # one-click build (regenerates artefacts + runs PyInstaller)
+├── build_exe.bat                 # one-click build
 ├── requirements.txt              # runtime deps (requirements-dev.txt for tests)
-├── deploy_config.example.json    # copy to deploy_config.json for tools/deploy.py
-├── bbreroll/                     # helper package
-│   ├── logscan.py                #   log-line recognition (watcher + tail scan)
-│   ├── origin_hardcoded_stars.py #   per-origin hardcoded talent stars
-│   └── trait_names.py            #   trait ID → display name (130 entries)
-├── tools/
-│   ├── buildutil.py              #   shared version-stamping helpers
-│   ├── embed_nut.py              #   regenerate bbreroll/mod_template.py from the .nut
-│   ├── build_zip.py              #   regenerate mod/mod_bb_reroll_dump.zip (+ manifest)
-│   └── deploy.py                 #   build + copy the zip into BB (refuses on main)
-├── tests/                        # pytest suite (python -m pytest)
-└── mod/
-    └── bb_reroll_dump.nut        # Squirrel mod source
-
-# generated at build time (gitignored):
-#   bbreroll/mod_template.py
-#   mod/mod_bb_reroll_dump.zip
-#   dist/bb_reroll_gui.exe
+├── bbreroll/                     # GUI helpers (tkinter-free, unit-tested)
+│   ├── criteria.py               #   criteria model, default trait lists, pre-search checks
+│   ├── offline_origins.py        #   game setups found on this PC, origins and their scenario scripts
+│   ├── origin_hardcoded_stars.py #   per-origin hardcoded talent stars (Legends)
+│   ├── seed_report.py            #   Discord seed-share post formatter
+│   └── trait_names.py            #   trait ID → display name
+├── bbseed/                       # the search: the game's campaign-start scripts, run without the game
+│   ├── rng.py                    #   the game's seeded random generator
+│   ├── sq/                       #   Squirrel interpreter (source text and compiled scripts)
+│   ├── engine.py, world.py       #   stand-in for the engine's native side
+│   ├── gamedata.py, profiles.py  #   finds the install, reads its script archives, defines the setups
+│   ├── lab.py                    #   Lab(profile).roster(seed, origin)
+│   └── search.py                 #   the parallel search (+ command line)
+└── tests/                        # pytest suite (python -m pytest)
 ```
 
-The v3.3.0-stable rollback target lives in the `v3.3.0-stable` git tag rather than a checked-in backup directory.
+Tests that need the game (`tests/test_offline_game.py`, part of `tests/test_offline_origins.py`) are skipped when it is not installed.
 
 ---
 
 ## Acknowledgements
 
-Brute-force loop pattern inspired by `mod_seedfinder` (credit: Discord user **mmgru**). This project generalizes it to evaluate the chosen origin's actual starting roster via `scenario.onSpawnAssets()`, reseeds RNG deterministically per seed, and wraps everything in a GUI.
+The idea of brute-forcing seeds for a starting roster comes from `mod_seedfinder` (credit: Discord user **mmgru**), which BB Reroll 1.x–3.x built on inside the game. The layout of the game's compiled script files follows the public Squirrel 3.0.4 sources and the documentation of Adam Milazzo's Battle Brothers mod kit.
