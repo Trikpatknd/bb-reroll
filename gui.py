@@ -552,29 +552,31 @@ class App(ctk.CTk):
                                         "and origin. Write the seed exactly as in the game. Upper case and lower "
                                         "case letters are different.")
 
-        # Results — scrollable list. Hidden until a result comes in.
-        self.match_pane = _panel(self, row=5, column=0, sticky="ew", padx=10, pady=4)
+        # Results — scrollable list. Hidden until a result comes in. While shown it shares the
+        # window's spare height with the traits row and the list fills what its panel gets: a
+        # list taller than the space left would run past the bottom of the window, and scrolling
+        # to its end would show nothing.
+        self.match_pane = _panel(self, row=5, column=0, sticky="nsew", padx=10, pady=4)
         self.match_pane.grid_columnconfigure(0, weight=1)
+        self.match_pane.grid_rowconfigure(2, weight=1)
+        # one line above the list: title, the seed-post description, Clear (the list keeps the height)
         match_head = ctk.CTkFrame(self.match_pane, fg_color="transparent")
-        match_head.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 0))
-        match_head.grid_columnconfigure(0, weight=1)
+        match_head.grid(row=0, column=0, sticky="ew", padx=14, pady=(8, 0))
+        match_head.grid_columnconfigure(2, weight=1)
         self.match_title = _title(match_head, "RESULTS")
-        self.match_title.grid(row=0, column=0, sticky="w")
-        _button(match_head, "Clear", self._clear_matches, kind="ghost", width=64, height=26).grid(
-            row=0, column=1, sticky="e")
-        _hint(self.match_pane, "These are normal campaign seeds. Start a new campaign with the same game version, "
-                               "mods, origin and recruit Mod Options. Then write the seed exactly as shown.").grid(
-            row=1, column=0, sticky="ew", padx=14, pady=(2, 6))
-        desc_frame = ctk.CTkFrame(self.match_pane, fg_color="transparent")
-        desc_frame.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 4))
-        desc_frame.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(desc_frame, text="Description for the seed post", font=(FONT, 11),
-                     text_color=PALETTE["muted"]).grid(row=0, column=0, sticky="w")
+        self.match_title.grid(row=0, column=0, sticky="w", padx=(0, 16))
+        ctk.CTkLabel(match_head, text="Description for the seed post", font=(FONT, 11),
+                     text_color=PALETTE["muted"]).grid(row=0, column=1, sticky="w")
         self.share_desc_var = ctk.StringVar(value="")
-        _entry(desc_frame, self.share_desc_var, 200, placeholder="For example: two melee brothers with 3 stars").grid(
-            row=0, column=1, sticky="ew", padx=(8, 0))
+        _entry(match_head, self.share_desc_var, 200, placeholder="For example: two melee brothers with 3 stars").grid(
+            row=0, column=2, sticky="ew", padx=(8, 8))
+        _button(match_head, "Clear", self._clear_matches, kind="ghost", width=64, height=26).grid(
+            row=0, column=3, sticky="e")
+        _attach_tooltip(self.match_title, "These are normal campaign seeds. Start a new campaign with the same game "
+                                          "version, mods, origin and recruit Mod Options. Then write the seed exactly "
+                                          "as shown.")
         self.match_list = ctk.CTkScrollableFrame(self.match_pane, height=140, fg_color="transparent")
-        self.match_list.grid(row=3, column=0, sticky="ew", padx=8, pady=(2, 8))
+        self.match_list.grid(row=2, column=0, sticky="nsew", padx=8, pady=(4, 8))
         self.match_pane.grid_remove()
 
         # Reusable notice banner — hidden until something needs attention (the old
@@ -1728,6 +1730,13 @@ class App(ctk.CTk):
         from bbseed.lab import perk_text, roll_text
         for w in self.match_list.winfo_children():
             w.destroy()
+        # the results row stretches only while it is shown (an empty row with weight takes space too).
+        # When the window is too short for everything, grid takes the missing height from the rows
+        # with weight, in proportion to it: the traits row (weight 4) gives up most of it, down to its
+        # title line — Clear gives it back — so the results keep a usable list.
+        shown = bool(self._matches)
+        self.grid_rowconfigure(3, weight=4 if shown else 1, minsize=60 if shown else 170)
+        self.grid_rowconfigure(5, weight=1 if shown else 0)
         if not self._matches:
             self.match_pane.grid_remove()
             return

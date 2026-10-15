@@ -126,3 +126,32 @@ def test_a_fixed_star_is_locked_and_no_condition(app, calls):
     app.stars_vars[("*", "res")].set("1")
     criteria = app._gather_criteria()
     assert "2" not in criteria["stars_by_slot"], "a locked row must not replace row All"
+
+
+def test_the_last_result_can_be_scrolled_into_view(app):
+    # 2026-10-15: in a 980x940 window the result list ran past the bottom of the window, so
+    # scrolling to its end showed nothing; the last of three seeds could not be seen
+    app._catalogs.pop("legends", None)
+    app.origin_var.set("The Free Company")
+    app._on_origin_change("The Free Company")
+    app.deiconify()
+    app.geometry("980x940+40+40")
+    roster = [{"name": "Bro %d" % i, "background": "background.sellsword", "background_name": "Sellsword",
+               "stars": {"hp": 1}, "trait_names": [], "traits": []} for i in range(5)]
+    try:
+        for n in range(3):
+            app._run = {"origin": "The Free Company", "setup": "Legends", "checking": True}
+            app._ev_match({"seed": "000000000%d" % n, "roster": roster, "stable": True, "failure": None})
+        pump(app, lambda: False, 1.0)
+        canvas = app.match_list._parent_canvas
+        canvas.yview_moveto(1.0)
+        pump(app, lambda: False, 0.3)
+        bottom = lambda w: w.winfo_rooty() + w.winfo_height()
+        window = bottom(app)
+        last = app.match_list.winfo_children()[-1]
+        assert bottom(canvas) <= window, "the list must end inside the window"
+        assert bottom(last) <= bottom(canvas) + 2, "scrolled to the end, the last result is in view"
+        assert canvas.winfo_height() >= 60, "the list keeps a usable height"
+    finally:
+        app._clear_matches()
+        app.withdraw()
