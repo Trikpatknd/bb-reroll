@@ -55,6 +55,13 @@ def test_a_slot_row_replaces_the_star_row():
     assert L.problems(BEGGAR, {"*": {"hp": 1}, "1": {"msk": 2}}) == []
 
 
+def test_random_stars_per_brother():
+    assert L.random_stars(BERSERKER) == [2]
+    assert L.random_stars(INQUISITION) == [0, 1]
+    assert L.random_stars([dict(slot(4, 3), varied=True)]) == [None]
+    assert L.random_stars(None) == []
+
+
 def test_fixed_stars_are_locked_cells_but_not_on_varied_slots():
     assert L.locked_cells(INQUISITION) == {("1", "hp"): 3, ("1", "res"): 3, ("1", "msk"): 2,
                                            ("2", "res"): 3, ("2", "rsk"): 3}

@@ -114,6 +114,13 @@ def default_workers() -> int:
     return max(1, min(8, (os.cpu_count() or 2) // 2))
 
 
+# The numeric search settings: their names in the window and the keys of App._numbers() — one
+# constant each, so renaming a label cannot break the search start again.
+SEEDS_TO_TEST = "Seeds to test"
+MATCHES_TO_FIND = "Matches to find"
+WORKERS = "Workers"
+
+
 # ─────────────────────── look ───────────────────────
 # One calm dark palette and one font. Colour marks meaning only: blue = the main action,
 # amber = a star requirement, teal = a stat-roll requirement, green / red = good / bad.
@@ -126,6 +133,10 @@ PALETTE = {
     "accent": "#2f6fde", "accent_hover": "#2559b8",
     "danger": "#c45454", "danger_hover": "#3a2426",
     "star": "#e0aa45", "star_btn": "#c79430", "on_colour": "#17181a",
+    # closed grid cells, one look per reason
+    "never": "#202225", "never_text": "#4c5158",          # the brother never gets this
+    "fixed": "#3a3121", "fixed_text": "#d8b062",          # the origin sets this star
+    "full": "#29303d", "full_text": "#73839c",            # all his random stars are in use
     "roll": "#3aa596", "roll_btn": "#2f897c",
     "card": "#202a24", "card_border": "#2f7a4b", "card_other": "#25272b", "card_other_border": "#4a4e55",
     "tooltip": "#26282c", "tooltip_border": "#4a4e55",
@@ -356,6 +367,8 @@ class App(ctk.CTk):
         self.stars_widgets:          dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
         # stars the origin fixes: shown, locked, and no condition (the brother always has them)
         self._locked:                dict[tuple[str, str], int] = {}
+        self._row_picks: list = []                  # per brother: random stars he gets (None: not known)
+        self._cell_top: dict[tuple[str, str], int] = {}     # the highest value each open cell offers
         # stat rolls: the least tier per stat ("any" / "mid" / "high"), same rows as the stars
         self.tiers_vars:             dict[tuple[str, str], ctk.StringVar] = {}
         self.tiers_widgets:          dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
@@ -452,11 +465,11 @@ class App(ctk.CTk):
         self.sisters_menu = _field(line_a, "Battle sisters", lambda p: _menu(
             p, list(O.BATTLE_SISTERS), self.sisters_var, 170),
             tooltip="Legends only. Use the same setting as in the Mod Options of the game. It changes the brothers.")
-        seeds = _field(line_b, "Seeds to test", lambda p: _entry(p, self.max_iters_var, 110))
+        seeds = _field(line_b, SEEDS_TO_TEST, lambda p: _entry(p, self.max_iters_var, 110))
         _attach_tooltip(seeds, "The search stops after it tests this number of seeds.")
-        matches = _field(line_b, "Matches to find", lambda p: _entry(p, self.count_var, 70))
+        matches = _field(line_b, MATCHES_TO_FIND, lambda p: _entry(p, self.count_var, 70))
         _attach_tooltip(matches, "The search stops when it finds this number of matching seeds.")
-        workers = _field(line_b, "Workers", lambda p: _entry(p, self.workers_var, 60))
+        workers = _field(line_b, WORKERS, lambda p: _entry(p, self.workers_var, 60))
         _attach_tooltip(workers, f"The number of search processes that run at the same time. This computer has "
                                  f"{os.cpu_count() or 1} processor threads. With Legends, each process uses "
                                  f"approximately 0.8 GB of memory and needs approximately 15 seconds to start.")
@@ -480,10 +493,21 @@ class App(ctk.CTk):
                                               font=(FONT, 11), text_color=PALETTE["star"])
         self.origin_info_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(4, 2))
         self.stars_frame = ctk.CTkFrame(cond, fg_color="transparent")
-        self.stars_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
+        self.stars_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 4))
         self.tiers_frame = ctk.CTkFrame(cond, fg_color="transparent")
         self.tiers_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
         self.tiers_frame.grid_remove()
+        # why a stars cell is closed: one colour per reason
+        self.stars_legend = ctk.CTkFrame(cond, fg_color="transparent")
+        self.stars_legend.grid(row=4, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 10))
+        for face, text, label in (("fixed", "fixed_text", "Fixed by the origin"),
+                                  ("full", "full_text", "All random stars of the brother are in use"),
+                                  ("never", "never_text", "Not possible for this brother")):
+            ctk.CTkLabel(self.stars_legend, text="3" if face == "fixed" else "0", width=26, height=20,
+                         corner_radius=4, fg_color=PALETTE[face], text_color=PALETTE[text],
+                         font=(FONT, 11)).pack(side="left", padx=(0, 6))
+            ctk.CTkLabel(self.stars_legend, text=label, font=(FONT, 11), text_color=PALETTE["muted"]).pack(
+                side="left", padx=(0, 18))
 
         # Traits — two scrollable columns
         traits_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -753,13 +777,26 @@ class App(ctk.CTk):
     _GRID_HELP = {
         "Stars": "Select the minimum number of stars for each stat (0 = no condition).\n"
                  "Row All is for each brother. Rows 1, 2, 3 ... are for one brother and replace row All for him.\n"
-                 "Grey cells: this brother cannot get stars in this stat.",
+                 "The colour of a closed cell shows why it is closed (see below the grid).",
         "Stat rolls": "Select the minimum roll for each stat: mid = middle third or better, high = top third.\n"
                       "The thirds are of the values that the background of the brother can roll. "
                       "The background sets most of a stat; the seed changes it only in this range.\n"
-                      "Row All is for each brother. Grey cells: the seed cannot change this stat for this brother.",
+                      "Row All is for each brother. Dark cells: the seed cannot change this stat for this brother.",
     }
     _SET_ROW = "Set row"
+
+    # closed cells: why they are closed decides their look (legend under the grid)
+    _CLOSED = {"never": ("never", "never_text"), "fixed": ("fixed", "fixed_text"), "full": ("full", "full_text")}
+
+    def _close_cell(self, widget, reason):
+        """Disable a grid cell and give it the look of its reason: "never" (the brother never gets
+        it), "fixed" (the origin sets it) or "full" (his random stars are all in use)."""
+        face, text = self._CLOSED[reason]
+        try:
+            widget.configure(state="disabled", fg_color=PALETTE[face], button_color=PALETTE[face],
+                             button_hover_color=PALETTE[face], text_color_disabled=PALETTE[text])
+        except Exception:
+            pass
 
     def _style_cell(self, widget, active_fg, active_btn, active):
         try:
@@ -773,14 +810,44 @@ class App(ctk.CTk):
             pass
 
     def _on_star_changed(self, slot: str, stat: str, *_):
-        widget = self.stars_widgets.get((slot, stat))
-        if widget is not None and (slot, stat) not in self._locked:
-            self._style_cell(widget, PALETTE["star"], PALETTE["star_btn"],
-                             (to_int(self.stars_vars[(slot, stat)].get()) or 0) > 0)
+        key = (slot, stat)
+        widget = self.stars_widgets.get(key)
+        if widget is None or key in self._locked or self._cell_top.get(key, 0) == 0:
+            return          # a closed cell keeps the look of its reason
+        if str(widget.cget("state")) == "disabled":
+            return          # closed because the brother's random stars are in use
+        self._style_cell(widget, PALETTE["star"], PALETTE["star_btn"], (to_int(self.stars_vars[key].get()) or 0) > 0)
+        self._limit_random_stars(slot)
+
+    def _limit_random_stars(self, slot):
+        """A brother gets random stars in only so many stats (Berserker: 2, besides his fixed HP and
+        MSK). When his own row asks for that many, his other open cells can only stay 0: they turn
+        grey until one of the asked stats is set back to 0. Row All covers brothers with different
+        numbers, so it stays open (the check before the search covers it)."""
+        if slot == "*" or not self._row_picks:
+            return
+        n = int(slot)
+        if n > len(self._row_picks) or self._row_picks[n - 1] is None:
+            return
+        picks = self._row_picks[n - 1]
+        open_cells = [stat for stat in STATS if (slot, stat) not in self._locked
+                      and self._cell_top.get((slot, stat), 0) > 0]
+        if any((slot, stat) not in self.stars_widgets for stat in open_cells):
+            return          # the row is still being built
+        asked = [stat for stat in open_cells if (to_int(self.stars_vars[(slot, stat)].get()) or 0) > 0]
+        full = len(asked) >= picks
+        for stat in open_cells:
+            if stat not in asked:
+                widget = self.stars_widgets[(slot, stat)]
+                if full:
+                    self._close_cell(widget, "full")
+                elif str(widget.cget("state")) == "disabled":
+                    widget.configure(state="normal")
+                    self._style_cell(widget, PALETTE["star"], PALETTE["star_btn"], False)
 
     def _on_tier_changed(self, slot: str, stat: str, *_):
         widget = self.tiers_widgets.get((slot, stat))
-        if widget is not None:
+        if widget is not None and len(widget.cget("values")) > 1:     # a closed cell keeps its look
             self._style_cell(widget, PALETTE["roll"], PALETTE["roll_btn"],
                              self.tiers_vars[(slot, stat)].get() in ("mid", "high"))
 
@@ -790,7 +857,7 @@ class App(ctk.CTk):
         self.grid_title.configure(text="STAT ROLLS" if rolls else "STARS")
         self.grid_help.configure(text=self._GRID_HELP[mode])
         for widget, show in ((self.stars_frame, not rolls), (self.origin_info_label, not rolls),
-                             (self.tiers_frame, rolls)):
+                             (self.stars_legend, not rolls), (self.tiers_frame, rolls)):
             widget.grid() if show else widget.grid_remove()
 
     def _grid_header(self, frame):
@@ -848,6 +915,8 @@ class App(ctk.CTk):
                 self.tiers_widgets[(slot, stat)] = w
                 v.trace_add("write", lambda *_a, s=slot, t=stat: self._on_tier_changed(s, t))
                 self._on_tier_changed(slot, stat)
+                if len(options) == 1:
+                    self._close_cell(w, "never")
             self._row_setter(self.tiers_frame, ri, slot, ["high", "mid", "any"], self._set_roll_row)
 
     def _schedule_grid_rebuild(self):
@@ -878,6 +947,8 @@ class App(ctk.CTk):
         # a star the origin fixes is shown but locked, like a cell the brother can never get
         facts = self._slot_facts(self.origin_var.get())
         was_locked, self._locked = self._locked, self._locked_for(self.origin_var.get(), facts)
+        self._row_picks = star_limits.random_stars(facts)       # per brother: how many random stars
+        self._cell_top = {}
         self._grid_header(self.stars_frame)
         for ri, slot in enumerate(["*"] + [str(i) for i in range(1, n + 1)], start=1):
             self._row_label(self.stars_frame, ri, slot)
@@ -887,10 +958,12 @@ class App(ctk.CTk):
                     v = ctk.StringVar(value=str(self._locked[key]))
                     self.stars_vars[key] = v
                     w = _menu(self.stars_frame, [v.get()], v, 66, state="disabled")
+                    self._close_cell(w, "fixed")
                     w.grid(row=ri, column=j + 1, padx=2, pady=2)
                     self.stars_widgets[key] = w
                     continue
                 top = star_limits.cell_max(facts, slot, stat)
+                self._cell_top[key] = top
                 value = "0" if key in was_locked else prior.get(key, "0")
                 if to_int(value) is not None and to_int(value) > top:
                     value = str(top)
@@ -902,6 +975,9 @@ class App(ctk.CTk):
                 self.stars_widgets[(slot, stat)] = w
                 v.trace_add("write", lambda *_a, s=slot, t=stat: self._on_star_changed(s, t))
                 self._on_star_changed(slot, stat)
+                if top == 0:
+                    self._close_cell(w, "never")
+            self._limit_random_stars(slot)
             # no "Set row" here: a brother gets stars in only 2 to 4 stats, so a full row never matches
         self._rebuild_tiers_grid(n, facts)
 
@@ -1215,9 +1291,9 @@ class App(ctk.CTk):
                         self.tiers_vars[(slot, stat)].set(level)
 
     def _numbers(self):
-        values = {"Seeds to test": to_int(self.max_iters_var.get()),
-                  "Matches to find": to_int(self.count_var.get()),
-                  "Workers": to_int(self.workers_var.get())}
+        values = {SEEDS_TO_TEST: to_int(self.max_iters_var.get()),
+                  MATCHES_TO_FIND: to_int(self.count_var.get()),
+                  WORKERS: to_int(self.workers_var.get())}
         return values, number_errors(values, os.cpu_count() or 1)
 
     # ── starting / stopping a search ──
@@ -1276,10 +1352,10 @@ class App(ctk.CTk):
         setup, origin = self.setup_var.get(), self.origin_var.get()
         profile = O.SETUPS[setup][0]
         scenario = O.SCENARIO[origin]
-        workers = 1 if seeds else numbers["Workers"] or default_workers()
+        workers = 1 if seeds else numbers[WORKERS] or default_workers()
         mod_settings = {"mod_legends:GenderEquality": self.sisters_var.get()} if self._legends() else None
         self._run = {"setup": setup, "origin": origin, "checking": bool(seeds)}
-        self._search_total = len(seeds) if seeds else numbers["Max seeds"]
+        self._search_total = len(seeds) if seeds else numbers[SEEDS_TO_TEST]
         self._stop.clear()
         self._searching = True
         self._save_settings()
@@ -1296,8 +1372,8 @@ class App(ctk.CTk):
 
         def run():
             try:
-                search(profile, scenario, criteria, workers=workers, count=numbers["Stop after matches"] or 1,
-                       max_seeds=None if seeds else numbers["Max seeds"], seeds=seeds,
+                search(profile, scenario, criteria, workers=workers, count=numbers[MATCHES_TO_FIND] or 1,
+                       max_seeds=None if seeds else numbers[SEEDS_TO_TEST], seeds=seeds,
                        mod_settings=mod_settings,
                        on_event=lambda kind, payload: put((kind, payload)), should_stop=self._stop.is_set)
             except Exception as e:      # report instead of dying silently in the thread

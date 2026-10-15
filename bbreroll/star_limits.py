@@ -73,6 +73,12 @@ def prefill(slots):
     return {str(n): dict(facts["fixed"]) for n, facts in enumerate(slots or (), 1) if facts["fixed"]}
 
 
+def random_stars(slots):
+    """Per brother slot: in how many stats the roll gives him stars, besides his fixed ones;
+    None for a slot whose background changes from seed to seed (no safe limit)."""
+    return [None if facts.get("varied") else facts["picks"] for facts in slots or ()]
+
+
 def locked_cells(slots):
     """{(slot number (str), stat): stars} — grid cells the origin fixes on every seed. The grid
     shows them but they cannot be changed and are no condition (the brother always has them).
