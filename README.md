@@ -56,9 +56,10 @@ Put the `.exe` anywhere and double-click it. For dev mode (no build): `pip insta
 2. **Origin** — the brother count fills in by itself. Origins that other installed mods add to the game's menu are listed too.
 3. **Stars grid** — 0 = no condition, 1-3 = minimum stars. Row **All** is for every brother; a numbered row is for one brother and replaces row All for him (a numbered row of all zeros uses row All). Above the grid you see what each brother of the origin gets — fixed stars, how many random stars, stats that never get stars. Each cell only offers what is possible: cells a brother can never get and the stars the origin fixes are grey and locked (fixed stars are shown with their value; they are no condition, so row All still applies to that brother). Conditions no seed can meet (more starred stats than a brother can have, a stat he never gets stars in, a fixed star asked higher) are named before the search starts.
    **Stat rolls** (switch above the grid) — the least a base stat's roll may be: *mid* = the middle third or better, *high* = the top third **of what that brother's background can roll**. The background sets most of a stat (a Minstrel always has 55 melee skill); the seed only moves it inside that range, so this is what a search can actually choose. Cells for stats the seed cannot move for that brother are greyed. **Set row** at the end of a row sets the whole row at once, e.g. every stat to *high*. Results show each brother's rolls under **Details**, e.g. `MSK 48 high (45-50)`.
+   **Backgrounds** (third switch) — the background a brother must have. Most origins always give the same backgrounds (the view lists them); some let the seed pick a brother's background from a list: Legends' Free Company, Random Party / Trio / Solo and both games' Peasant Militia. For those, each brother whose background varies gets a menu with exactly the backgrounds his list holds, and row **Any brother** (two or more varied brothers) asks that at least one brother has the background. Together with **Stat rolls** this asks for strong stats outright: a *high* roll is high for that background, so *Hedge Knight* + *MSK high* is a strong fighter.
 4. **Banned / Required traits** — tick what matters. No brother may have a banned trait; every brother needs one (`any`) or all (`all`) of the required ones. Hover a trait to see what it does, from the game's own tooltip (▲ good, ▼ bad). Traits can be renamed, removed and added.
 5. **Battle sisters** — set it as in the game's Mod Options (Legends only); it changes who is rolled.
-6. **▶ Search** — searches until **Seeds to test** are tested or **Matches to find** are found. The status line shows progress, speed and, after a few hundred seeds, an estimate like *Approximately 1 in 3,400 seeds matches*. If a brother has not matched his conditions once in 300 seeds, a notice says so. **■ Stop** ends it. Matches appear in the result list with their roster and the buttons **Copy seed**, **Copy roster** (full details), **Copy seed post** (a ready-made Legends Discord post with every brother's stars, the game version and the installed mods, so others can tell whether the seed works for them) and **Details** (each brother's stat rolls and, with Legends, perk groups).
+6. **▶ Search** — searches until **Seeds to test** are tested or **Matches to find** are found. The status line shows progress, speed and, after a few hundred seeds, an estimate like *Approximately 1 in 3,400 seeds matches*. If a brother (or row Any brother) has not matched once in 300 seeds, a notice says so. **■ Stop** ends it. Matches appear in the result list with their roster and the buttons **Copy seed**, **Copy roster** (full details), **Copy seed post** (a ready-made Legends Discord post with every brother's background and stars, the game version and the installed mods, so others can tell whether the seed works for them) and **Details** (each brother's stat rolls and, with Legends, perk groups).
 7. Start a New Campaign with the same origin and type the seed **exactly as shown**.
 
 The program texts follow the writing rules of ASD-STE100 (Simplified Technical English).
@@ -89,9 +90,11 @@ The search is also a command-line tool:
 ```powershell
 python -m bbseed.search --profile legends --origin trader_scenario --stars 1 "res2 fat2" --ban dumb --count 3
 python -m bbseed.search --profile legends --origin trader_scenario --tier 1 "msk:high hp:mid" --count 3
+python -m bbseed.search --profile legends --origin legends_free_company_scenario --background 3 "hedge_knight swordmaster" --tier 3 "msk:high"
+python -m bbseed.search --profile legends --origin legend_random_party_scenario --background any hedge_knight
 python -m bbseed.search --profile vanilla --origin early_access_scenario --show 1234567890
 python -m bbseed.search --profile legends --list-origins
-python -m bbseed.catalog --profile legends     # what each origin's brothers can get (stars), per slot
+python -m bbseed.catalog --profile legends     # what each origin's brothers can get (stars, backgrounds), per slot
 ```
 
 ---
@@ -101,7 +104,7 @@ python -m bbseed.catalog --profile legends     # what each origin's brothers can
 - **Deserters is not offered.** Its recruits are created after a step that depends on the generated map, so the seed text alone does not decide them.
 - **Vanilla's "Random" origin is not offered**: the game picks the origin with a random draw before the seed is used, so a seed cannot decide it. Pick the origin itself instead.
 - **Mod Options**: only Legends' Battle Sisters can be set. Every other mod setting is taken at the mod's default; if you changed one that affects recruits, results can differ.
-- **Origins whose backgrounds change from seed to seed** (Legends' Random Party/Solo/Trio, Free Company, Peasant Militia) get no limits in the stars grid: what they can roll is only what a sample of seeds showed.
+- **Origins whose backgrounds change from seed to seed** (Legends' Random Party/Solo/Trio, Free Company, Peasant Militia) get no limits in the stars grid: what they can roll is only what a sample of seeds showed. Their background menus are exact: they hold the lists the origin picks from (a list the sample seeds never used, like Random Party's rare second list, can only show up when a brother who shares the first list used it).
 - **Other mods** are loaded as they are installed. A mod that needs engine functions the stand-in does not model stops the search with a load error instead of giving wrong results.
 - The game's **Map Options do not affect the starting brothers** (they are rolled from the seed after the map is made), only the map itself.
 
@@ -122,6 +125,7 @@ bb_reroll/
 │   ├── offline_origins.py        #   game setups found on this PC, origins and their scenario scripts
 │   ├── origin_hardcoded_stars.py #   per-origin fixed talent stars (Legends; fallback until the catalog exists)
 │   ├── star_limits.py            #   what stars each brother can get → grid limits, info text, impossible criteria
+│   ├── backgrounds.py            #   which backgrounds each brother can get → Backgrounds view, impossible criteria
 │   ├── seed_report.py            #   Discord seed-share post formatter
 │   └── trait_names.py            #   trait ID → display name
 ├── bbseed/                       # the search: the game's campaign-start scripts, run without the game
@@ -131,7 +135,7 @@ bb_reroll/
 │   ├── gamedata.py, profiles.py  #   finds the install, reads its script archives, defines the setups
 │   ├── lab.py                    #   Lab(profile).roster(seed, origin), perk groups, installed mods
 │   ├── search.py                 #   the parallel search + match-odds estimate (+ command line)
-│   ├── talents.py                #   which stars the talent roll makes and which ones an origin fixes
+│   ├── talents.py                #   which stars the talent roll makes, which ones an origin fixes, background lists
 │   ├── rolls.py                  #   each stat roll's place in what the background can roll (low/mid/high)
 │   ├── traits.py                 #   what each trait does, from the game's tooltips
 │   └── catalog.py                #   per installed game: origins, star facts, trait effects (cached)
