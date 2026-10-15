@@ -49,20 +49,21 @@ def problems(slots, stars_by_slot):
         for stat in too_high:
             top = facts["max"][stat]
             why = ("never gets %s stars" % stat.upper() if top == 0 else
-                   "has %s fixed at %d" % (stat.upper(), top) if stat in facts["fixed"] else
-                   "gets at most %d %s stars" % (top, stat.upper()))
-            out.append("Brother %d %s — you ask for %d." % (n, why, need[stat]))
+                   "always has %d %s stars" % (top, stat.upper()) if stat in facts["fixed"] else
+                   "gets a maximum of %d %s stars" % (top, stat.upper()))
+            out.append("Brother %d %s. Your condition is %d." % (n, why, need[stat]))
         if too_high:
             continue        # one reason per brother is enough
         if len(need) > facts["most"]:
-            out.append("Brother %d can have stars in at most %d stats — you ask for %d." % (n, facts["most"], len(need)))
+            out.append("Brother %d can have stars in a maximum of %d stats. Your conditions use %d stats." % (
+                n, facts["most"], len(need)))
             continue
         rolled = [s for s in need if not (s in facts["fixed"] and facts["fixed"][s] >= need[s])]
         if len(rolled) > facts["picks"]:
             fixed = ", ".join("%s %d" % (s.upper(), v) for s, v in facts["fixed"].items())
-            out.append("Brother %d: the roll stars only %d stat%s%s — you ask for %d (%s)." % (
+            out.append("Brother %d gets random stars in only %d stat%s%s. Your conditions need %d (%s)." % (
                 n, facts["picks"], "" if facts["picks"] == 1 else "s",
-                " besides the fixed %s" % fixed if fixed else "", len(rolled),
+                " in addition to the fixed %s" % fixed if fixed else "", len(rolled),
                 ", ".join(s.upper() for s in rolled)))
     return out
 
@@ -70,6 +71,14 @@ def problems(slots, stars_by_slot):
 def prefill(slots):
     """{slot number (str): {stat: stars}} — the stars an origin fixes, to pre-fill the grid."""
     return {str(n): dict(facts["fixed"]) for n, facts in enumerate(slots or (), 1) if facts["fixed"]}
+
+
+def locked_cells(slots):
+    """{(slot number (str), stat): stars} — grid cells the origin fixes on every seed. The grid
+    shows them but they cannot be changed and are no condition (the brother always has them).
+    Slots whose background changes from seed to seed have none."""
+    return {(str(n), stat): value for n, facts in enumerate(slots or (), 1) if not facts.get("varied")
+            for stat, value in facts["fixed"].items()}
 
 
 def cell_max(slots, slot, stat):
@@ -111,9 +120,8 @@ def roll_problems(slots, tiers_by_slot):
         want = tiers_by_slot.get(str(n)) or tiers_by_slot.get("*") or {}
         fixed = [s for s, level in want.items() if level in ("mid", "high") and s not in facts["spread"]]
         if fixed:
-            out.append("Brother %d's %s %s always the same — the seed cannot make %s better." % (
-                n, ", ".join(s.upper() for s in fixed), "is" if len(fixed) == 1 else "are",
-                "it" if len(fixed) == 1 else "them"))
+            out.append("The seed cannot change %s of brother %d. %s the same value at all times." % (
+                ", ".join(s.upper() for s in fixed), n, "This stat has" if len(fixed) == 1 else "These stats have"))
     return out
 
 
@@ -124,28 +132,29 @@ def describe(slots, sizes=None):
     texts = []
     for facts in slots:
         if facts.get("varied"):
-            texts.append("background varies by seed — stars in up to %d stats seen" % facts["most"])
+            texts.append("the background changes with the seed (seen: stars in a maximum of %d stats)" % facts["most"])
             continue
-        fixed = "  ".join("%s %d" % (s.upper(), v) for s, v in facts["fixed"].items())
+        fixed = ", ".join("%s %d" % (s.upper(), v) for s, v in facts["fixed"].items())
         never = [s.upper() for s in STATS if facts["max"][s] == 0]
-        parts = []
-        if fixed:
-            parts.append("fixed %s" % fixed)
-        if facts["picks"]:
-            parts.append("%s%d rolled" % ("+ " if fixed else "", facts["picks"]))
-        elif not fixed:
-            parts.append("no stars")
-        text = " ".join(parts)
+        random = "%d random star%s" % (facts["picks"], "" if facts["picks"] == 1 else "s")
+        if fixed and facts["picks"]:
+            text = "fixed stars %s, and %s" % (fixed, random)
+        elif fixed:
+            text = "fixed stars %s" % fixed
+        elif facts["picks"]:
+            text = random
+        else:
+            text = "no stars"
         if facts["picks"] and never:
-            text += "  · never %s" % " ".join(never)
+            text += ". Never on %s" % ", ".join(never)
         texts.append(text)
     lines = []
     if sizes and len(sizes) > 1:
-        lines.append("Roster size varies: %s brothers." % ", ".join(str(s) for s in sizes))
+        lines.append("The number of brothers changes with the seed: %s." % ", ".join(str(s) for s in sizes))
     first = 0
     for n in range(1, len(texts) + 1):        # brothers in a row with the same facts share a line
         if n == len(texts) or texts[n] != texts[first]:
-            label = "Brother %d" % (first + 1) if n - first == 1 else "Brothers %d–%d" % (first + 1, n)
+            label = "Brother %d" % (first + 1) if n - first == 1 else "Brothers %d-%d" % (first + 1, n)
             lines.append("%s: %s" % (label, texts[first]))
             first = n
     return "\n".join(lines)

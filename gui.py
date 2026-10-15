@@ -67,7 +67,7 @@ from bbreroll import offline_origins as O
 from bbreroll import star_limits
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
-    roster_lines, sanitize_trait, to_int,
+    explain_failure, roster_lines, sanitize_trait, to_int,
 )
 from bbreroll.seed_report import build_seed_report
 
@@ -114,27 +114,135 @@ def default_workers() -> int:
     return max(1, min(8, (os.cpu_count() or 2) // 2))
 
 
-def _attach_tooltip(widget, text):
-    """Hover tooltip (CTk has none) that cannot get stuck: it goes away when the mouse
-    leaves, on any click or loss of focus, when the widget is destroyed, and by itself
-    after 6 s. `text` may be a function, asked each time the tooltip is shown; it may give
-    a list of (line, colour or None, bold?) instead of one text, or nothing (no tooltip).
-    Not for dropdowns: once their list opens the widget never hears the mouse leave."""
-    state = {"win": None, "job": None}
+# ─────────────────────── look ───────────────────────
+# One calm dark palette and one font. Colour marks meaning only: blue = the main action,
+# amber = a star requirement, teal = a stat-roll requirement, green / red = good / bad.
+FONT = "Segoe UI"
+PALETTE = {
+    "bg": "#1d1e21", "panel": "#26282c", "panel_border": "#35383d",
+    "field": "#1b1c1f", "field_border": "#41454b",
+    "control": "#32353a", "control_btn": "#3b3f45", "control_hover": "#464a51",
+    "text": "#e4e6e9", "muted": "#9aa1ab", "faint": "#636973",
+    "accent": "#2f6fde", "accent_hover": "#2559b8",
+    "danger": "#c45454", "danger_hover": "#3a2426",
+    "star": "#e0aa45", "star_btn": "#c79430", "on_colour": "#17181a",
+    "roll": "#3aa596", "roll_btn": "#2f897c",
+    "card": "#202a24", "card_border": "#2f7a4b", "card_other": "#25272b", "card_other_border": "#4a4e55",
+    "tooltip": "#26282c", "tooltip_border": "#4a4e55",
+    "good": "#6fd38a", "bad": "#ff8a7a",
+}
+STAT_NAMES = {"hp": "Hitpoints", "fat": "Fatigue", "res": "Resolve", "init": "Initiative",
+              "msk": "Melee skill", "rsk": "Ranged skill", "mdf": "Melee defense", "rdf": "Ranged defense"}
 
-    def hide(_event=None):
-        if state["job"] is not None:
+
+def _panel(parent, **grid):
+    frame = ctk.CTkFrame(parent, fg_color=PALETTE["panel"], border_width=1, border_color=PALETTE["panel_border"],
+                         corner_radius=8)
+    if grid:
+        frame.grid(**grid)
+    return frame
+
+
+def _title(parent, text, **kw):
+    return ctk.CTkLabel(parent, text=text, font=(FONT, 12, "bold"), text_color=PALETTE["text"], **kw)
+
+
+def _hint(parent, text="", wrap=880, **kw):
+    return ctk.CTkLabel(parent, text=text, font=(FONT, 11), text_color=PALETTE["muted"], justify="left",
+                        anchor="w", wraplength=wrap, **kw)
+
+
+def _button(parent, text, command, kind="secondary", **kw):
+    """kind: "primary" (the main action), "secondary", "ghost" (outline, quiet) or "danger"."""
+    style = {
+        "primary": dict(fg_color=PALETTE["accent"], hover_color=PALETTE["accent_hover"], text_color="white"),
+        "secondary": dict(fg_color=PALETTE["control"], hover_color=PALETTE["control_hover"],
+                          text_color=PALETTE["text"]),
+        "ghost": dict(fg_color="transparent", hover_color=PALETTE["control"], text_color=PALETTE["muted"],
+                      border_width=1, border_color=PALETTE["panel_border"]),
+        "danger": dict(fg_color="transparent", hover_color=PALETTE["danger_hover"], text_color=PALETTE["danger"],
+                       border_width=1, border_color=PALETTE["danger"]),
+    }[kind]
+    style.update(kw)
+    style.setdefault("height", 30)
+    style.setdefault("font", (FONT, 12))
+    return ctk.CTkButton(parent, text=text, command=command, text_color_disabled=PALETTE["faint"], **style)
+
+
+def _menu(parent, values, variable, width, command=None, **kw):
+    return ctk.CTkOptionMenu(parent, values=values, variable=variable, width=width, command=command, height=28,
+                             font=(FONT, 12), dropdown_font=(FONT, 12),
+                             fg_color=PALETTE["control"], button_color=PALETTE["control_btn"],
+                             button_hover_color=PALETTE["control_hover"], text_color=PALETTE["text"],
+                             text_color_disabled=PALETTE["faint"], dropdown_fg_color=PALETTE["panel"],
+                             dropdown_hover_color=PALETTE["control_hover"], dropdown_text_color=PALETTE["text"],
+                             **kw)
+
+
+def _entry(parent, variable, width, placeholder=None):
+    return ctk.CTkEntry(parent, textvariable=variable, width=width, height=28, font=(FONT, 12),
+                        placeholder_text=placeholder, fg_color=PALETTE["field"], border_color=PALETTE["field_border"],
+                        border_width=1, text_color=PALETTE["text"], placeholder_text_color=PALETTE["faint"])
+
+
+def _field(parent, label, widget_factory, tooltip=None):
+    """A label above its control, packed from the left."""
+    box = ctk.CTkFrame(parent, fg_color="transparent")
+    box.pack(side="left", padx=(0, 18))
+    lab = ctk.CTkLabel(box, text=label, font=(FONT, 11), text_color=PALETTE["muted"], anchor="w")
+    lab.pack(anchor="w")
+    widget = widget_factory(box)
+    widget.pack(anchor="w")
+    if tooltip:
+        _attach_tooltip(lab, tooltip)
+    return widget
+
+
+def _attach_tooltip(widget, text):
+    """Hover tooltip (CTk has none) that cannot get stuck. It is a plain Tk window (a
+    CTkToplevel does delayed focus and lift work of its own), it goes away when the mouse
+    leaves, on any click, when the widget is destroyed and after 8 s, and while it is open it
+    checks every 150 ms that the pointer is still on the widget — a CTk widget is made of
+    several inner widgets, so its enter / leave events can come in the wrong order.
+    `text` may be a function, asked each time the tooltip is shown; it may give a list of
+    (line, colour or None, bold?) instead of one text, or nothing (no tooltip).
+    Not for dropdowns: once their list opens the widget never hears the mouse leave."""
+    import tkinter as tk
+    state = {"win": None, "jobs": []}
+
+    def cancel_jobs():
+        for job in state["jobs"]:
             try:
-                widget.after_cancel(state["job"])
+                widget.after_cancel(job)
             except Exception:
                 pass
-            state["job"] = None
+        state["jobs"] = []
+
+    def hide(_event=None):
+        cancel_jobs()
         if state["win"] is not None:
             try:
                 state["win"].destroy()
             except Exception:
                 pass
             state["win"] = None
+
+    def pointer_inside():
+        try:
+            x, y = widget.winfo_pointerxy()
+            left, top = widget.winfo_rootx(), widget.winfo_rooty()
+            return (widget.winfo_viewable() and left <= x < left + widget.winfo_width()
+                    and top <= y < top + widget.winfo_height())
+        except Exception:
+            return False
+
+    def watch():
+        if state["win"] is None:
+            return
+        if not pointer_inside():
+            hide()
+            return
+        state["jobs"].append(widget.after(150, watch))
 
     def show(_event=None):
         if state["win"] is not None:
@@ -143,28 +251,27 @@ def _attach_tooltip(widget, text):
             content = text() if callable(text) else text
             if not content:
                 return
-            win = ctk.CTkToplevel(widget)
+            win = tk.Toplevel(widget)
+            win.withdraw()
             win.overrideredirect(True)
-            win.geometry(f"+{widget.winfo_rootx() + 20}+{widget.winfo_rooty() + widget.winfo_height() + 6}")
             win.attributes("-topmost", True)
-            if isinstance(content, str):
-                ctk.CTkLabel(win, text=content, font=("Segoe UI", 11),
-                             fg_color="#222222", corner_radius=6, wraplength=420, justify="left").pack(padx=8, pady=4)
-            else:
-                box = ctk.CTkFrame(win, fg_color="#222222", corner_radius=6)
-                box.pack(padx=0, pady=0)
-                for line, colour, bold in content:
-                    ctk.CTkLabel(box, text=line, font=("Segoe UI", 11, "bold" if bold else "normal"),
-                                 text_color=colour, wraplength=420, justify="left", anchor="w",
-                                 ).pack(fill="x", padx=10, pady=(4 if bold else 0, 0))
-                ctk.CTkFrame(box, height=6, fg_color="transparent").pack()
+            win.configure(bg=PALETTE["tooltip_border"])
+            box = ctk.CTkFrame(win, fg_color=PALETTE["tooltip"], corner_radius=0)
+            box.pack(padx=1, pady=1)
+            lines = [(content, PALETTE["text"], False)] if isinstance(content, str) else content
+            for i, (line, colour, bold) in enumerate(lines):
+                ctk.CTkLabel(box, text=line, font=(FONT, 11, "bold" if bold else "normal"),
+                             text_color=colour or PALETTE["text"], wraplength=420, justify="left", anchor="w",
+                             ).pack(fill="x", padx=10, pady=(6 if i == 0 else 0, 6 if i == len(lines) - 1 else 0))
+            win.geometry(f"+{widget.winfo_rootx() + 12}+{widget.winfo_rooty() + widget.winfo_height() + 6}")
+            win.deiconify()
             state["win"] = win
-            state["job"] = widget.after(6000, hide)
+            state["jobs"] = [widget.after(8000, hide), widget.after(150, watch)]
         except Exception:
-            state["win"] = None
+            hide()
 
     widget.bind("<Enter>", show, add="+")
-    for sequence in ("<Leave>", "<ButtonPress>", "<FocusOut>", "<Destroy>"):
+    for sequence in ("<Leave>", "<ButtonPress>", "<Destroy>"):
         widget.bind(sequence, hide, add="+")
 
 
@@ -176,19 +283,19 @@ class _TraitEditDialog(ctk.CTkToplevel):
 
     def __init__(self, parent, current_display: str, current_id: str):
         super().__init__(parent)
-        self.title("Edit trait")
+        self.title("Change trait")
         self.geometry("440x210")
         self.resizable(False, False)
         self.transient(parent)
         self.result = None
 
-        ctk.CTkLabel(self, text="Display name (label shown in the GUI):",
+        ctk.CTkLabel(self, text="Name in the list:",
                      anchor="w").pack(fill="x", padx=14, pady=(14, 2))
         self._display = ctk.CTkEntry(self, width=400)
         self._display.pack(fill="x", padx=14)
         self._display.insert(0, current_display)
 
-        ctk.CTkLabel(self, text="Trait ID (the game's snake_case name, e.g. legend_heavy):",
+        ctk.CTkLabel(self, text="Trait ID in the game (for example legend_heavy):",
                      anchor="w").pack(fill="x", padx=14, pady=(10, 2))
         self._tid = ctk.CTkEntry(self, width=400)
         self._tid.pack(fill="x", padx=14)
@@ -221,9 +328,9 @@ class App(ctk.CTk):
         super().__init__()
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
-        self.title(f"BB Reroll v{APP_VERSION} — offline seed search")
-        self.geometry("980x940")
-        self.minsize(900, 820)
+        self.title(f"BB Reroll {APP_VERSION} - Seed search")
+        self.geometry("1000x960")
+        self.minsize(960, 820)
 
         self._saved = self._read_settings()
         self._game_folder = None
@@ -242,19 +349,16 @@ class App(ctk.CTk):
         self.sisters_var    = ctk.StringVar(value=O.BATTLE_SISTERS[1])
         self.check_seed_var = ctk.StringVar(value="")
         self.status_var     = ctk.StringVar(value="Ready.")
-        self.watch_var      = ctk.StringVar(value="idle")
+        self.watch_var      = ctk.StringVar(value="Idle")
         self._watch_state   = "idle"
 
         self.stars_vars:             dict[tuple[str, str], ctk.StringVar] = {}
         self.stars_widgets:          dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
-        # Default CTk colors captured at widget construction so we can restore
-        # them when a cell's value returns to 0. Cells with value > 0 get the
-        # active highlight palette applied to fg_color/button_color/text_color.
-        self.stars_widget_defaults:  dict[tuple[str, str], dict] = {}
+        # stars the origin fixes: shown, locked, and no condition (the brother always has them)
+        self._locked:                dict[tuple[str, str], int] = {}
         # stat rolls: the least tier per stat ("any" / "mid" / "high"), same rows as the stars
         self.tiers_vars:             dict[tuple[str, str], ctk.StringVar] = {}
         self.tiers_widgets:          dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
-        self.tiers_widget_defaults:  dict[tuple[str, str], dict] = {}
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
         self.required_vars: dict[str, ctk.BooleanVar] = {}
         self.banned_known   = self._saved_list("known_banned", DEFAULT_BANNED)
@@ -303,147 +407,140 @@ class App(ctk.CTk):
 
     # ── UI build ──
     def _build_ui(self):
+        self.configure(fg_color=PALETTE["bg"])
         self.grid_columnconfigure(0, weight=1)
         # Only the traits row carries the vertical stretch; it must not collapse
         # when the result list grows.
-        self.grid_rowconfigure(2, weight=1, minsize=190)
+        self.grid_rowconfigure(3, weight=1, minsize=170)
 
-        # Top: what to search. Two independent rows (their columns need not line up).
-        top = ctk.CTkFrame(self)
-        top.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
-        row_a = ctk.CTkFrame(top, fg_color="transparent")
-        row_a.pack(fill="x", padx=4, pady=(8, 4))
-        row_b = ctk.CTkFrame(top, fg_color="transparent")
-        row_b.pack(fill="x", padx=4, pady=(0, 8))
+        # Header: name, what it does, the game that was found
+        head = ctk.CTkFrame(self, fg_color="transparent")
+        head.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 4))
+        head.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(head, text="BB Reroll", font=(FONT, 20, "bold"), text_color=PALETTE["text"]).grid(
+            row=0, column=0, sticky="w")
+        ctk.CTkLabel(head, text=f"v{APP_VERSION}", font=(FONT, 11), text_color=PALETTE["faint"]).grid(
+            row=0, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
+        _hint(head, "Find campaign seeds that give the starting brothers you want.").grid(
+            row=1, column=0, columnspan=2, sticky="w")
+        self.found_var = ctk.StringVar(value=O.found_short())
+        found = ctk.CTkLabel(head, textvariable=self.found_var, font=(FONT, 11), text_color=PALETTE["muted"])
+        found.grid(row=0, column=2, rowspan=2, sticky="e", padx=(0, 10))
+        _attach_tooltip(found, lambda: O.found_text(details=True))
+        folder_btn = _button(head, "Game folder", self._on_game_folder, kind="secondary", width=110)
+        folder_btn.grid(row=0, column=3, rowspan=2, sticky="e")
+        _attach_tooltip(folder_btn, lambda: O.found_text(details=True) + "\n\nBB Reroll reads the game files and the "
+                        "mod files where they are. It does not copy or change them. Click to select a different "
+                        "game folder.")
+        _button(head, "Updates", self._open_github, kind="ghost", width=80).grid(
+            row=0, column=4, rowspan=2, sticky="e", padx=(8, 0))
 
-        def label(parent, text, first=False):
-            ctk.CTkLabel(parent, text=text).pack(side="left", padx=(4 if first else 16, 4))
-
-        label(row_a, "Game setup:", first=True)
-        self.setup_menu = ctk.CTkOptionMenu(row_a, values=list(O.SETUPS) or ["(game not found)"],
-                                            variable=self.setup_var, width=160, command=self._on_setup_change)
-        self.setup_menu.pack(side="left")
-        label(row_a, "Origin:")
-        self.origin_menu = ctk.CTkOptionMenu(row_a, values=O.names_for(self.setup_var.get()), width=230,
-                                             variable=self.origin_var, command=self._on_origin_change)
-        self.origin_menu.pack(side="left")
-        label(row_a, "Brothers:")
-        ctk.CTkEntry(row_a, textvariable=self.bro_count_var, width=50).pack(side="left")
+        # What to search: labels above their controls
+        settings = _panel(self, row=1, column=0, sticky="ew", padx=10, pady=4)
+        line_a = ctk.CTkFrame(settings, fg_color="transparent")
+        line_a.pack(fill="x", padx=14, pady=(10, 4))
+        line_b = ctk.CTkFrame(settings, fg_color="transparent")
+        line_b.pack(fill="x", padx=14, pady=(0, 12))
+        self.setup_menu = _field(line_a, "Game setup", lambda p: _menu(
+            p, list(O.SETUPS) or ["(no game)"], self.setup_var, 150, command=self._on_setup_change))
+        self.origin_menu = _field(line_a, "Origin", lambda p: _menu(
+            p, O.names_for(self.setup_var.get()), self.origin_var, 230, command=self._on_origin_change))
+        bros = _field(line_a, "Brothers", lambda p: _entry(p, self.bro_count_var, 60))
+        _attach_tooltip(bros, "The number of brothers that the origin starts with. "
+                              "BB Reroll sets it when you select an origin.")
         self.bro_count_var.trace_add("write", lambda *_: self._schedule_grid_rebuild())
-        folder_btn = ctk.CTkButton(row_a, text="Game folder…", width=110, fg_color="#3a3f4a", hover_color="#4a505c",
-                                   command=self._on_game_folder)
-        folder_btn.pack(side="right", padx=(8, 4))
-        _attach_tooltip(folder_btn, lambda: O.found_text(details=True) + "\n\nThe search reads the game's own files "
-                        "and these mod zips where they are — nothing has to be extracted. Click to choose another install.")
+        self.sisters_menu = _field(line_a, "Battle sisters", lambda p: _menu(
+            p, list(O.BATTLE_SISTERS), self.sisters_var, 170),
+            tooltip="Legends only. Use the same setting as in the Mod Options of the game. It changes the brothers.")
+        seeds = _field(line_b, "Seeds to test", lambda p: _entry(p, self.max_iters_var, 110))
+        _attach_tooltip(seeds, "The search stops after it tests this number of seeds.")
+        matches = _field(line_b, "Matches to find", lambda p: _entry(p, self.count_var, 70))
+        _attach_tooltip(matches, "The search stops when it finds this number of matching seeds.")
+        workers = _field(line_b, "Workers", lambda p: _entry(p, self.workers_var, 60))
+        _attach_tooltip(workers, f"The number of search processes that run at the same time. This computer has "
+                                 f"{os.cpu_count() or 1} processor threads. With Legends, each process uses "
+                                 f"approximately 0.8 GB of memory and needs approximately 15 seconds to start.")
 
-        label(row_b, "Max seeds:", first=True)
-        ctk.CTkEntry(row_b, textvariable=self.max_iters_var, width=100).pack(side="left")
-        label(row_b, "Stop after matches:")
-        ctk.CTkEntry(row_b, textvariable=self.count_var, width=60).pack(side="left")
-        label(row_b, "Workers:")
-        workers = ctk.CTkEntry(row_b, textvariable=self.workers_var, width=50)
-        workers.pack(side="left")
-        _attach_tooltip(workers, f"Parallel processes (this PC has {os.cpu_count() or 1} CPU threads). With Legends "
-                                 "each one needs about 0.8 GB of memory and ~15 s to load.")
-        label(row_b, "Battle sisters:")
-        self.sisters_menu = ctk.CTkOptionMenu(row_b, values=list(O.BATTLE_SISTERS), variable=self.sisters_var, width=170)
-        self.sisters_menu.pack(side="left")
-        ctk.CTkLabel(row_b, text="(as in the game's Mod Options)",
-                     font=("Segoe UI", 11), text_color="#9aa3b0").pack(side="left", padx=(8, 4))
-
-        # Stars grid
-        stars_outer = ctk.CTkFrame(self)
-        stars_outer.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
-        stars_outer.grid_columnconfigure(0, weight=1)
-        self.grid_title = ctk.CTkLabel(stars_outer, text=self._GRID_TITLES["Stars"], font=("Segoe UI", 13, "bold"))
-        self.grid_title.grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2))
-        # Stars and stat rolls share the space: one grid at a time, both always count
+        # Conditions: stars or stat rolls (one grid at a time; both always count)
+        cond = _panel(self, row=2, column=0, sticky="ew", padx=10, pady=4)
+        cond.grid_columnconfigure(0, weight=1)
+        self.grid_title = _title(cond, "STARS")
+        self.grid_title.grid(row=0, column=0, sticky="w", padx=14, pady=(10, 0))
         self.grid_mode_var = ctk.StringVar(value="Stars")
-        ctk.CTkSegmentedButton(stars_outer, values=["Stars", "Stat rolls"], variable=self.grid_mode_var,
-                               command=self._on_grid_mode).grid(row=0, column=1, sticky="e", padx=10, pady=(6, 2))
+        ctk.CTkSegmentedButton(cond, values=["Stars", "Stat rolls"], variable=self.grid_mode_var,
+                               command=self._on_grid_mode, font=(FONT, 12), height=28,
+                               fg_color=PALETTE["control"], selected_color=PALETTE["accent"],
+                               selected_hover_color=PALETTE["accent_hover"], unselected_color=PALETTE["control"],
+                               unselected_hover_color=PALETTE["control_hover"], text_color=PALETTE["text"],
+                               ).grid(row=0, column=1, sticky="e", padx=14, pady=(10, 0))
+        self.grid_help = _hint(cond, self._GRID_HELP["Stars"])
+        self.grid_help.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=(2, 0))
         self.origin_info_var = ctk.StringVar(value="")
-        self.origin_info_label = ctk.CTkLabel(
-            stars_outer,
-            textvariable=self.origin_info_var,
-            justify="left",
-            anchor="w",
-            font=("Consolas", 11),
-            text_color="#9aa3b0",
-        )
-        self.origin_info_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
-        self.rolls_info_label = ctk.CTkLabel(
-            stars_outer, justify="left", anchor="w", font=("Segoe UI", 11), text_color="#9aa3b0", wraplength=880,
-            text=("Where a brother's base stat landed in what HIS background can roll — mid = middle third or "
-                  "better, high = top third. The background sets most of a stat; the seed only moves it within "
-                  "that range. Greyed: the seed cannot change that stat for that brother."))
-        self.rolls_info_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
-        self.rolls_info_label.grid_remove()
-        self.stars_frame = ctk.CTkFrame(stars_outer, fg_color="transparent")
-        self.stars_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
-        self.tiers_frame = ctk.CTkFrame(stars_outer, fg_color="transparent")
-        self.tiers_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+        self.origin_info_label = ctk.CTkLabel(cond, textvariable=self.origin_info_var, justify="left", anchor="w",
+                                              font=(FONT, 11), text_color=PALETTE["star"])
+        self.origin_info_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(4, 2))
+        self.stars_frame = ctk.CTkFrame(cond, fg_color="transparent")
+        self.stars_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
+        self.tiers_frame = ctk.CTkFrame(cond, fg_color="transparent")
+        self.tiers_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
         self.tiers_frame.grid_remove()
 
         # Traits — two scrollable columns
         traits_row = ctk.CTkFrame(self, fg_color="transparent")
-        traits_row.grid(row=2, column=0, sticky="nsew", padx=10, pady=5)
-        traits_row.grid_columnconfigure(0, weight=1)
-        traits_row.grid_columnconfigure(1, weight=1)
-
-        self._build_trait_pane(traits_row, 0, "BANNED  (any of these on a bro = fail)",
+        traits_row.grid(row=3, column=0, sticky="nsew", padx=10, pady=4)
+        traits_row.grid_columnconfigure(0, weight=1, uniform="traits")
+        traits_row.grid_columnconfigure(1, weight=1, uniform="traits")
+        traits_row.grid_rowconfigure(0, weight=1)
+        self._build_trait_pane(traits_row, 0, "BANNED TRAITS",
+                               "A brother with one of these traits does not match.",
                                self.banned_known, self.banned_vars, "banned")
-        self._build_trait_pane(traits_row, 1, "REQUIRED  (at least one per bro)",
+        self._build_trait_pane(traits_row, 1, "REQUIRED TRAITS",
+                               "Each brother must have one of these traits (any) or all of them (all).",
                                self.required_known, self.required_vars, "required")
 
         # Action bar
-        actions = ctk.CTkFrame(self)
-        actions.grid(row=3, column=0, sticky="ew", padx=10, pady=(5, 5))
-        actions.grid_columnconfigure(99, weight=1)
-        self.search_btn = ctk.CTkButton(actions, text="▶ Search", height=36, command=self._on_search)
-        self.search_btn.grid(row=0, column=0, padx=8, pady=8)
-        self.stop_btn = ctk.CTkButton(actions, text="■ Stop", height=36, width=90, state="disabled",
-                                      fg_color="#7a2a2a", hover_color="#5a1f1f", command=self._on_stop)
-        self.stop_btn.grid(row=0, column=1, padx=8, pady=8)
-        ctk.CTkLabel(actions, text="Check a seed:").grid(row=0, column=2, padx=(24, 4))
-        entry = ctk.CTkEntry(actions, textvariable=self.check_seed_var, width=130)
-        entry.grid(row=0, column=3, padx=4)
+        actions = _panel(self, row=4, column=0, sticky="ew", padx=10, pady=4)
+        actions.grid_columnconfigure(2, weight=1)
+        self.search_btn = _button(actions, "▶  Search", self._on_search, kind="primary", width=140, height=34,
+                                  font=(FONT, 13, "bold"))
+        self.search_btn.grid(row=0, column=0, padx=(12, 6), pady=10)
+        self.stop_btn = _button(actions, "■  Stop", self._on_stop, kind="danger", width=90, height=34,
+                                state="disabled")
+        self.stop_btn.grid(row=0, column=1, padx=6, pady=10)
+        ctk.CTkLabel(actions, text="Check a seed", font=(FONT, 12), text_color=PALETTE["muted"]).grid(
+            row=0, column=3, padx=(0, 8))
+        entry = _entry(actions, self.check_seed_var, 130, placeholder="Seed")
+        entry.grid(row=0, column=4, padx=0)
         entry.bind("<Return>", lambda _e: self._on_check_seed())
-        self.check_btn = ctk.CTkButton(actions, text="Show its roster", height=36, command=self._on_check_seed)
-        self.check_btn.grid(row=0, column=4, padx=8, pady=8)
-        _attach_tooltip(self.check_btn, "Shows the starting roster this seed gives for the chosen game setup "
-                                        "and origin — type it exactly as in the game (capitals matter).")
-        ctk.CTkButton(actions, text="↗ Check for updates", height=36,
-                      fg_color="transparent", border_width=1,
-                      command=self._open_github).grid(row=0, column=99, padx=8, pady=8, sticky="e")
+        self.check_btn = _button(actions, "Show roster", self._on_check_seed, kind="secondary", width=110, height=34)
+        self.check_btn.grid(row=0, column=5, padx=(8, 12), pady=10)
+        _attach_tooltip(self.check_btn, "Show the starting brothers that this seed gives for the selected game setup "
+                                        "and origin. Write the seed exactly as in the game. Upper case and lower "
+                                        "case letters are different.")
 
         # Results — scrollable list. Hidden until a result comes in.
-        self.match_pane = ctk.CTkFrame(self)
-        self.match_pane.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.match_pane = _panel(self, row=5, column=0, sticky="ew", padx=10, pady=4)
         self.match_pane.grid_columnconfigure(0, weight=1)
         match_head = ctk.CTkFrame(self.match_pane, fg_color="transparent")
-        match_head.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 0))
+        match_head.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 0))
         match_head.grid_columnconfigure(0, weight=1)
-        self.match_title = ctk.CTkLabel(match_head, text="RESULTS (this session)",
-                                        font=("Segoe UI", 12, "bold"))
+        self.match_title = _title(match_head, "RESULTS")
         self.match_title.grid(row=0, column=0, sticky="w")
-        ctk.CTkButton(match_head, text="Clear", width=60, height=24,
-                      command=self._clear_matches).grid(row=0, column=1, sticky="e")
-        ctk.CTkLabel(self.match_pane,
-                     text=("These are ordinary campaign seeds: start a New Campaign with the same game version, "
-                           "mods, origin and recruit-related Mod Options, and type the seed exactly as shown."),
-                     font=("Segoe UI", 11), text_color="#79b8e0", anchor="w", justify="left", wraplength=880,
-                     ).grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
+        _button(match_head, "Clear", self._clear_matches, kind="ghost", width=64, height=26).grid(
+            row=0, column=1, sticky="e")
+        _hint(self.match_pane, "These are normal campaign seeds. Start a new campaign with the same game version, "
+                               "mods, origin and recruit Mod Options. Then write the seed exactly as shown.").grid(
+            row=1, column=0, sticky="ew", padx=14, pady=(2, 6))
         desc_frame = ctk.CTkFrame(self.match_pane, fg_color="transparent")
-        desc_frame.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 2))
+        desc_frame.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 4))
         desc_frame.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(desc_frame, text="Brief description (for the Legends Discord seed post):",
-                     font=("Segoe UI", 11)).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(desc_frame, text="Description for the seed post", font=(FONT, 11),
+                     text_color=PALETTE["muted"]).grid(row=0, column=0, sticky="w")
         self.share_desc_var = ctk.StringVar(value="")
-        ctk.CTkEntry(desc_frame, textvariable=self.share_desc_var).grid(
-            row=0, column=1, sticky="ew", padx=(6, 0))
-
+        _entry(desc_frame, self.share_desc_var, 200, placeholder="For example: two melee brothers with 3 stars").grid(
+            row=0, column=1, sticky="ew", padx=(8, 0))
         self.match_list = ctk.CTkScrollableFrame(self.match_pane, height=140, fg_color="transparent")
-        self.match_list.grid(row=4, column=0, sticky="ew", padx=8, pady=(2, 8))
+        self.match_list.grid(row=3, column=0, sticky="ew", padx=8, pady=(2, 8))
         self.match_pane.grid_remove()
 
         # Reusable notice banner — hidden until something needs attention (the old
@@ -451,78 +548,70 @@ class App(ctk.CTk):
         # One strip, recolored per severity, with an optional action button and a ✕ to
         # dismiss. Dismissal is sticky per message text for this GUI session.
         self.notice_var = ctk.StringVar(value="")
-        self.notice_banner = ctk.CTkFrame(self, fg_color="#3a2a00", corner_radius=6)
-        self.notice_banner.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 5))
+        self.notice_banner = ctk.CTkFrame(self, fg_color="#3a2a00", corner_radius=8, border_width=1)
+        self.notice_banner.grid(row=6, column=0, sticky="ew", padx=10, pady=4)
         self.notice_banner.grid_columnconfigure(0, weight=1)
-        self.notice_label = ctk.CTkLabel(self.notice_banner, textvariable=self.notice_var,
-                                         font=("Segoe UI", 12, "bold"),
-                                         anchor="w", justify="left", wraplength=760,
-                                         text_color="#ffcf66")
-        self.notice_label.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=6)
-        self.notice_action_btn = ctk.CTkButton(self.notice_banner, text="", width=90, height=24,
-                                               command=self._on_notice_action)
-        self.notice_action_btn.grid(row=0, column=1, sticky="ne", padx=(0, 6), pady=6)
+        self.notice_label = ctk.CTkLabel(self.notice_banner, textvariable=self.notice_var, font=(FONT, 12),
+                                         anchor="w", justify="left", wraplength=760, text_color="#ffcf66")
+        self.notice_label.grid(row=0, column=0, sticky="ew", padx=(14, 4), pady=8)
+        self.notice_action_btn = _button(self.notice_banner, "", self._on_notice_action, kind="secondary",
+                                         width=90, height=26)
+        self.notice_action_btn.grid(row=0, column=1, sticky="ne", padx=(0, 6), pady=8)
         self.notice_action_btn.grid_remove()
-        self.notice_close = ctk.CTkButton(self.notice_banner, text="✕", width=28, height=24,
-                                          fg_color="transparent", border_width=1,
-                                          command=self._dismiss_notice)
-        self.notice_close.grid(row=0, column=2, sticky="ne", padx=(0, 8), pady=6)
+        self.notice_close = _button(self.notice_banner, "✕", self._dismiss_notice, kind="ghost", width=28, height=26)
+        self.notice_close.grid(row=0, column=2, sticky="ne", padx=(0, 10), pady=8)
         self.notice_banner.grid_remove()
 
-        status = ctk.CTkFrame(self)
-        status.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 10))
+        # Status bar
+        status = ctk.CTkFrame(self, fg_color="transparent")
+        status.grid(row=7, column=0, sticky="ew", padx=14, pady=(2, 8))
         status.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(status, textvariable=self.status_var, anchor="w").grid(row=0, column=0, sticky="ew", padx=10, pady=4)
-
-        # Right side: colored LED + "Search: <text>"
+        ctk.CTkLabel(status, textvariable=self.status_var, anchor="w", font=(FONT, 12),
+                     text_color=PALETTE["text"]).grid(row=0, column=0, sticky="ew")
         right = ctk.CTkFrame(status, fg_color="transparent")
-        right.grid(row=0, column=1, sticky="e", padx=10, pady=4)
-        self.watch_dot = ctk.CTkLabel(right, text="●", font=("Segoe UI", 16, "bold"),
-                                      text_color="#6a6e76", width=14)
-        self.watch_dot.pack(side="left")
-        ctk.CTkLabel(right, text=" Search: ").pack(side="left")
-        ctk.CTkLabel(right, textvariable=self.watch_var).pack(side="left")
+        right.grid(row=0, column=1, sticky="e")
+        self.watch_dot = ctk.CTkLabel(right, text="●", font=(FONT, 14), text_color="#6a6e76", width=14)
+        self.watch_dot.pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(right, textvariable=self.watch_var, font=(FONT, 12), text_color=PALETTE["muted"]).pack(side="left")
 
-    def _build_trait_pane(self, parent, col, title, known_list, vars_dict, kind):
-        pane = ctk.CTkFrame(parent)
-        pane.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 5, 5 if col == 0 else 0))
+    def _build_trait_pane(self, parent, col, title, help_text, known_list, vars_dict, kind):
+        pane = _panel(parent)
+        pane.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 4, 4 if col == 0 else 0))
         pane.grid_rowconfigure(2, weight=1)
         pane.grid_columnconfigure(0, weight=1)
 
-        # Title row — title on left, mode selector on right for "required" pane
+        # Title row: title on the left, the bulk buttons (and, for "required", any / all) on the right
         title_row = ctk.CTkFrame(pane, fg_color="transparent")
-        title_row.grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 2))
+        title_row.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 0))
         title_row.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(title_row, text=title, font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w")
+        _title(title_row, title).grid(row=0, column=0, sticky="w")
+        bulk = ctk.CTkFrame(title_row, fg_color="transparent")
+        bulk.grid(row=0, column=1, sticky="e")
         if kind == "required":
-            ctk.CTkLabel(title_row, text="match:", font=("Segoe UI", 11)).grid(row=0, column=1, padx=(8, 4))
-            ctk.CTkOptionMenu(title_row, values=["any", "all"], width=80,
-                              variable=self.required_mode_var).grid(row=0, column=2, sticky="e")
-
-        # Header buttons: bulk check/uncheck
-        hdr = ctk.CTkFrame(pane, fg_color="transparent")
-        hdr.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
-        ctk.CTkButton(hdr, text="✓ All",  width=70, height=26,
-                      command=lambda k=kind: self._bulk_check(k, True)).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(hdr, text="☐ None", width=70, height=26,
-                      command=lambda k=kind: self._bulk_check(k, False)).pack(side="left", padx=4)
-        ctk.CTkButton(hdr, text="↺ Invert", width=70, height=26,
-                      command=lambda k=kind: self._bulk_invert(k)).pack(side="left", padx=4)
-        ctk.CTkLabel(hdr, text="(hover: effects · ✏ rename · × remove)", text_color="#7a8290",
-                     font=("Segoe UI", 10)).pack(side="right", padx=(4, 0))
+            ctk.CTkSegmentedButton(bulk, values=["any", "all"], variable=self.required_mode_var, width=90, height=26,
+                                   font=(FONT, 11), fg_color=PALETTE["control"], selected_color=PALETTE["accent"],
+                                   selected_hover_color=PALETTE["accent_hover"],
+                                   unselected_color=PALETTE["control"], unselected_hover_color=PALETTE["control_hover"],
+                                   text_color=PALETTE["text"]).pack(side="left", padx=(0, 10))
+        for text, command in (("All", lambda k=kind: self._bulk_check(k, True)),
+                              ("None", lambda k=kind: self._bulk_check(k, False)),
+                              ("Invert", lambda k=kind: self._bulk_invert(k))):
+            _button(bulk, text, command, kind="ghost", width=54, height=24, font=(FONT, 11)).pack(side="left", padx=2)
+        _hint(pane, help_text + " Point to a trait to see its effects.", wrap=420).grid(
+            row=1, column=0, sticky="ew", padx=14, pady=(2, 2))
 
         # Scrollable list
         sf = ctk.CTkScrollableFrame(pane, fg_color="transparent")
-        sf.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
+        sf.grid(row=2, column=0, sticky="nsew", padx=8, pady=2)
 
         # Add-custom row at bottom
         add_row = ctk.CTkFrame(pane, fg_color="transparent")
-        add_row.grid(row=3, column=0, sticky="ew", padx=8, pady=(2, 8))
+        add_row.grid(row=3, column=0, sticky="ew", padx=12, pady=(2, 10))
         add_row.grid_columnconfigure(0, weight=1)
-        entry = ctk.CTkEntry(add_row, placeholder_text=f"add custom {kind} trait…")
-        entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ctk.CTkButton(add_row, text="+", width=32,
-                      command=lambda: self._add_custom_trait(kind, entry)).grid(row=0, column=1)
+        entry = _entry(add_row, None, 100, placeholder="Trait ID, for example iron_jaw")
+        entry.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        _button(add_row, "Add", lambda: self._add_custom_trait(kind, entry), kind="secondary", width=56,
+                height=28).grid(row=0, column=1)
         entry.bind("<Return>", lambda _e: self._add_custom_trait(kind, entry))
 
         setattr(self, f"_{kind}_scroll", sf)
@@ -551,20 +640,24 @@ class App(ctk.CTk):
             row.pack(fill="x", padx=2, pady=0)
             row.grid_columnconfigure(0, weight=1)
 
-            cb = ctk.CTkCheckBox(row, text=self._display_for(trait), variable=v)
-            cb.grid(row=0, column=0, sticky="w", padx=(2, 4))
+            cb = ctk.CTkCheckBox(row, text=self._display_for(trait), variable=v, font=(FONT, 12),
+                                 text_color=PALETTE["text"], fg_color=PALETTE["accent"],
+                                 hover_color=PALETTE["accent_hover"], border_color=PALETTE["faint"],
+                                 border_width=2, checkbox_width=18, checkbox_height=18, corner_radius=4)
+            cb.grid(row=0, column=0, sticky="w", padx=(2, 4), pady=1)
             _attach_tooltip(cb, lambda t=trait: self._trait_tooltip(t))
-            ctk.CTkButton(row, text="✏", width=26, height=22,
-                          fg_color="transparent", hover_color="#2b3441",
-                          command=lambda t=trait, k=kind: self._edit_trait(k, t)
-                          ).grid(row=0, column=1, padx=1)
-            ctk.CTkButton(row, text="×", width=26, height=22,
-                          fg_color="transparent", hover_color="#5a1f1f",
-                          text_color="#d97676",
-                          command=lambda t=trait, k=kind: self._remove_trait(k, t)
-                          ).grid(row=0, column=2, padx=(1, 2))
+            edit = ctk.CTkButton(row, text="✏", width=24, height=22, font=(FONT, 11), fg_color="transparent",
+                                 hover_color=PALETTE["control"], text_color=PALETTE["faint"],
+                                 command=lambda t=trait, k=kind: self._edit_trait(k, t))
+            edit.grid(row=0, column=1, padx=1)
+            _attach_tooltip(edit, "Change the name or the trait ID")
+            remove = ctk.CTkButton(row, text="✕", width=24, height=22, font=(FONT, 11), fg_color="transparent",
+                                   hover_color=PALETTE["danger_hover"], text_color=PALETTE["faint"],
+                                   command=lambda t=trait, k=kind: self._remove_trait(k, t))
+            remove.grid(row=0, column=2, padx=(1, 2))
+            _attach_tooltip(remove, "Remove this trait from the list")
 
-    _EFFECT_COLOURS = {"+": "#6fd38a", "-": "#ff8a7a", "": "#c9d1d9"}
+    _EFFECT_COLOURS = {"+": PALETTE["good"], "-": PALETTE["bad"], "": "#c9d1d9"}
 
     def _trait_tooltip(self, trait):
         """What a trait does, from the game's own tooltip: [(line, colour, bold)], or None when
@@ -577,7 +670,7 @@ class App(ctk.CTk):
             mark = {"+": "▲ ", "-": "▼ "}.get(e["sign"], "• ")
             lines.append((mark + e["text"], self._EFFECT_COLOURS[e["sign"]], False))
         if not found["effects"]:
-            lines.append((found["description"] or "No effects listed in the game's tooltip.", "#9aa3b0", False))
+            lines.append((found["description"] or "The game tooltip shows no effects.", PALETTE["muted"], False))
         return lines
 
     def _pane_ctx(self, kind):
@@ -603,7 +696,7 @@ class App(ctk.CTk):
         if trait in vars_dict:
             del vars_dict[trait]
         self._populate_trait_pane(kind)
-        self.status_var.set(f"Removed '{trait}' from {kind}.")
+        self.status_var.set(f"Trait {self._display_for(trait)} is removed from the {kind} list.")
 
     def _edit_trait(self, kind, trait):
         """Two-field edit dialog: display name (what the user sees) + trait ID
@@ -615,10 +708,10 @@ class App(ctk.CTk):
             return
         new_display, new_id = dlg.result
         if not new_id:
-            self.status_var.set("Trait ID can't be empty.")
+            self.status_var.set("The trait ID cannot be empty.")
             return
         if new_id != trait and new_id in known_list:
-            self.status_var.set(f"'{new_id}' is already in the {kind} list.")
+            self.status_var.set(f"{new_id} is already in the {kind} list.")
             return
         was_checked = vars_dict.get(trait, ctk.BooleanVar(value=True)).get()
         if new_id != trait:
@@ -634,9 +727,9 @@ class App(ctk.CTk):
         self.trait_display[new_id] = new_display or id_to_display(new_id)
         self._populate_trait_pane(kind)
         if new_id != trait:
-            self.status_var.set(f"Renamed '{trait}' → '{new_id}' ({new_display}).")
+            self.status_var.set(f"The trait ID {trait} is now {new_id} ({new_display}).")
         else:
-            self.status_var.set(f"Display name for '{trait}' set to '{new_display}'.")
+            self.status_var.set(f"The name of {trait} is now {new_display}.")
 
     def _add_custom_trait(self, kind, entry: ctk.CTkEntry):
         raw  = entry.get()
@@ -644,7 +737,7 @@ class App(ctk.CTk):
         entry.delete(0, "end")
         if not name:
             if raw.strip():
-                self.status_var.set(f"Trait '{raw}' has no valid characters (use letters, digits, _).")
+                self.status_var.set(f"{raw} is not a trait ID. Use only letters, digits and _.")
             return
         _, known_list, vars_dict = self._pane_ctx(kind)
         if name in known_list:
@@ -655,65 +748,82 @@ class App(ctk.CTk):
         if name in vars_dict:
             vars_dict[name].set(True)
 
-    # ── stars grid (rebuilds when brother count changes) ──
-    # Non-zero cells highlight the whole CTkOptionMenu box; zero cells use the
-    # widget's CTk-theme defaults captured at construction time.
-    _STAR_ACTIVE_FG   = "#ffc857"   # amber face
-    _STAR_ACTIVE_BTN  = "#d4a64a"   # darker amber for the dropdown chevron
-    _STAR_ACTIVE_TEXT = "#1a1a1a"   # near-black for contrast on amber
+    # ── stars grid and stat-rolls grid (rebuilt when the brother count or the origin changes) ──
+    # A cell is neutral until it asks for something: amber for stars, teal for stat rolls.
+    _GRID_HELP = {
+        "Stars": "Select the minimum number of stars for each stat (0 = no condition).\n"
+                 "Row All is for each brother. Rows 1, 2, 3 ... are for one brother and replace row All for him.\n"
+                 "Grey cells: this brother cannot get stars in this stat.",
+        "Stat rolls": "Select the minimum roll for each stat: mid = middle third or better, high = top third.\n"
+                      "The thirds are of the values that the background of the brother can roll. "
+                      "The background sets most of a stat; the seed changes it only in this range.\n"
+                      "Row All is for each brother. Grey cells: the seed cannot change this stat for this brother.",
+    }
+    _SET_ROW = "Set row"
+
+    def _style_cell(self, widget, active_fg, active_btn, active):
+        try:
+            if active:
+                widget.configure(fg_color=active_fg, button_color=active_btn, button_hover_color=active_btn,
+                                 text_color=PALETTE["on_colour"])
+            else:
+                widget.configure(fg_color=PALETTE["control"], button_color=PALETTE["control_btn"],
+                                 button_hover_color=PALETTE["control_hover"], text_color=PALETTE["text"])
+        except Exception:
+            pass
 
     def _on_star_changed(self, slot: str, stat: str, *_):
         widget = self.stars_widgets.get((slot, stat))
-        if widget is None:
-            return
-        try:
-            active = int(self.stars_vars[(slot, stat)].get() or "0") > 0
-        except ValueError:
-            active = False
-        try:
-            if active:
-                widget.configure(
-                    fg_color=self._STAR_ACTIVE_FG,
-                    button_color=self._STAR_ACTIVE_BTN,
-                    text_color=self._STAR_ACTIVE_TEXT,
-                )
-            else:
-                d = self.stars_widget_defaults.get((slot, stat))
-                if d:
-                    widget.configure(**d)
-        except Exception:
-            pass
-
-    _GRID_TITLES = {
-        "Stars": "STARS  (0 = don't care, 1-3 = minimum stars.  A numeric slot row with all zeros falls back to "
-                 "the * default rule.)",
-        "Stat rolls": "STAT ROLLS  (any / mid / high = the least a stat's roll may be.  A numeric row replaces *.)",
-    }
-    _TIER_ACTIVE_FG = "#4fb3a6"     # teal face for a stat-roll requirement
-    _TIER_ACTIVE_BTN = "#3a8a80"
-
-    def _on_grid_mode(self, mode=None):
-        mode = self.grid_mode_var.get()
-        self.grid_title.configure(text=self._GRID_TITLES.get(mode, ""))
-        rolls = mode == "Stat rolls"
-        for widget, show in ((self.stars_frame, not rolls), (self.origin_info_label, not rolls),
-                             (self.tiers_frame, rolls), (self.rolls_info_label, rolls)):
-            widget.grid() if show else widget.grid_remove()
+        if widget is not None and (slot, stat) not in self._locked:
+            self._style_cell(widget, PALETTE["star"], PALETTE["star_btn"],
+                             (to_int(self.stars_vars[(slot, stat)].get()) or 0) > 0)
 
     def _on_tier_changed(self, slot: str, stat: str, *_):
         widget = self.tiers_widgets.get((slot, stat))
-        if widget is None:
-            return
-        try:
-            if self.tiers_vars[(slot, stat)].get() in ("mid", "high"):
-                widget.configure(fg_color=self._TIER_ACTIVE_FG, button_color=self._TIER_ACTIVE_BTN,
-                                 text_color=self._STAR_ACTIVE_TEXT)
-            else:
-                d = self.tiers_widget_defaults.get((slot, stat))
-                if d:
-                    widget.configure(**d)
-        except Exception:
-            pass
+        if widget is not None:
+            self._style_cell(widget, PALETTE["roll"], PALETTE["roll_btn"],
+                             self.tiers_vars[(slot, stat)].get() in ("mid", "high"))
+
+    def _on_grid_mode(self, mode=None):
+        mode = self.grid_mode_var.get()
+        rolls = mode == "Stat rolls"
+        self.grid_title.configure(text="STAT ROLLS" if rolls else "STARS")
+        self.grid_help.configure(text=self._GRID_HELP[mode])
+        for widget, show in ((self.stars_frame, not rolls), (self.origin_info_label, not rolls),
+                             (self.tiers_frame, rolls)):
+            widget.grid() if show else widget.grid_remove()
+
+    def _grid_header(self, frame):
+        """Column titles (full stat names on hover) and the "Set row" column."""
+        ctk.CTkLabel(frame, text="", width=46).grid(row=0, column=0)
+        for j, stat in enumerate(STATS):
+            head = ctk.CTkLabel(frame, text=stat.upper(), font=(FONT, 11, "bold"), text_color=PALETTE["muted"])
+            head.grid(row=0, column=j + 1, padx=2, pady=(0, 2))
+            _attach_tooltip(head, STAT_NAMES[stat])
+        head = ctk.CTkLabel(frame, text="", font=(FONT, 11, "bold"), text_color=PALETTE["muted"])
+        head.grid(row=0, column=len(STATS) + 1, padx=(12, 2))
+
+    def _row_label(self, frame, row, slot):
+        label = ctk.CTkLabel(frame, text="All" if slot == "*" else slot, width=46, anchor="w",
+                             font=(FONT, 12, "bold"), text_color=PALETTE["muted"] if slot == "*" else PALETTE["text"])
+        label.grid(row=row, column=0, padx=(4, 2), pady=2)
+        if slot == "*":
+            _attach_tooltip(label, "Row All applies to each brother that has no row of his own.")
+
+    def _row_setter(self, frame, row, slot, values, apply):
+        """A menu at the end of a row that sets each cell of the row to one value."""
+        var = ctk.StringVar(value=self._SET_ROW)
+        menu = _menu(frame, values, var, 86, command=lambda value, s=slot, v=var: (apply(s, value),
+                                                                                    v.set(self._SET_ROW)))
+        menu.configure(fg_color=PALETTE["panel"], button_color=PALETTE["panel"], text_color=PALETTE["muted"])
+        menu.grid(row=row, column=len(STATS) + 1, padx=(12, 2), pady=2)
+
+    def _set_roll_row(self, slot, value):
+        """Each cell of a stat-rolls row to `value`; cells the seed cannot change stay "any"."""
+        for stat in STATS:
+            widget = self.tiers_widgets.get((slot, stat))
+            if widget is not None and value in widget.cget("values"):
+                self.tiers_vars[(slot, stat)].set(value)
 
     def _rebuild_tiers_grid(self, n, facts):
         """The stat-rolls grid: same rows as the stars grid; a cell offers only "any" where the seed
@@ -723,15 +833,9 @@ class App(ctk.CTk):
             w.destroy()
         self.tiers_vars.clear()
         self.tiers_widgets.clear()
-        self.tiers_widget_defaults.clear()
-        ctk.CTkLabel(self.tiers_frame, text="slot", width=50,
-                     font=("Segoe UI", 11, "bold")).grid(row=0, column=0, padx=2, pady=2)
-        for j, stat in enumerate(STATS):
-            ctk.CTkLabel(self.tiers_frame, text=stat.upper(), width=46,
-                         font=("Segoe UI", 11, "bold")).grid(row=0, column=j + 1, padx=2, pady=2)
+        self._grid_header(self.tiers_frame)
         for ri, slot in enumerate(["*"] + [str(i) for i in range(1, n + 1)], start=1):
-            ctk.CTkLabel(self.tiers_frame, text=slot, width=50, text_color="#aab2c0" if slot == "*" else None,
-                         font=("Segoe UI", 11, "bold")).grid(row=ri, column=0, padx=2, pady=2)
+            self._row_label(self.tiers_frame, ri, slot)
             for j, stat in enumerate(STATS):
                 options = star_limits.roll_options(facts, slot, stat)
                 value = prior.get((slot, stat), "any")
@@ -739,15 +843,12 @@ class App(ctk.CTk):
                     value = "any"
                 v = ctk.StringVar(value=value)
                 self.tiers_vars[(slot, stat)] = v
-                w = ctk.CTkOptionMenu(self.tiers_frame, values=options, variable=v, width=64,
-                                      state="normal" if len(options) > 1 else "disabled")
+                w = _menu(self.tiers_frame, options, v, 66, state="normal" if len(options) > 1 else "disabled")
                 w.grid(row=ri, column=j + 1, padx=2, pady=2)
                 self.tiers_widgets[(slot, stat)] = w
-                self.tiers_widget_defaults[(slot, stat)] = {
-                    "fg_color": w.cget("fg_color"), "button_color": w.cget("button_color"),
-                    "text_color": w.cget("text_color")}
                 v.trace_add("write", lambda *_a, s=slot, t=stat: self._on_tier_changed(s, t))
                 self._on_tier_changed(slot, stat)
+            self._row_setter(self.tiers_frame, ri, slot, ["high", "mid", "any"], self._set_roll_row)
 
     def _schedule_grid_rebuild(self):
         """Debounce: typing a count or picking an origin writes bro_count_var
@@ -767,45 +868,41 @@ class App(ctk.CTk):
             w.destroy()
         self.stars_vars.clear()
         self.stars_widgets.clear()
-        self.stars_widget_defaults.clear()
 
         try:
             n = max(1, min(20, int(self.bro_count_var.get() or "1")))
         except ValueError:
             n = 5
 
-        # column headers
-        ctk.CTkLabel(self.stars_frame, text="slot", width=50,
-                     font=("Segoe UI", 11, "bold")).grid(row=0, column=0, padx=2, pady=2)
-        for j, stat in enumerate(STATS):
-            ctk.CTkLabel(self.stars_frame, text=stat.upper(), width=46,
-                         font=("Segoe UI", 11, "bold")).grid(row=0, column=j + 1, padx=2, pady=2)
-
-        # a cell offers only what that brother can get at all (when the origin's facts are known)
+        # a cell offers only what that brother can get at all (when the origin's facts are known);
+        # a star the origin fixes is shown but locked, like a cell the brother can never get
         facts = self._slot_facts(self.origin_var.get())
-        rows = ["*"] + [str(i) for i in range(1, n + 1)]
-        for ri, slot in enumerate(rows, start=1):
-            ctk.CTkLabel(self.stars_frame, text=slot, width=50,
-                         text_color="#aab2c0" if slot == "*" else None,
-                         font=("Segoe UI", 11, "bold")).grid(row=ri, column=0, padx=2, pady=2)
+        was_locked, self._locked = self._locked, self._locked_for(self.origin_var.get(), facts)
+        self._grid_header(self.stars_frame)
+        for ri, slot in enumerate(["*"] + [str(i) for i in range(1, n + 1)], start=1):
+            self._row_label(self.stars_frame, ri, slot)
             for j, stat in enumerate(STATS):
+                key = (slot, stat)
+                if key in self._locked:
+                    v = ctk.StringVar(value=str(self._locked[key]))
+                    self.stars_vars[key] = v
+                    w = _menu(self.stars_frame, [v.get()], v, 66, state="disabled")
+                    w.grid(row=ri, column=j + 1, padx=2, pady=2)
+                    self.stars_widgets[key] = w
+                    continue
                 top = star_limits.cell_max(facts, slot, stat)
-                value = prior.get((slot, stat), "0")
+                value = "0" if key in was_locked else prior.get(key, "0")
                 if to_int(value) is not None and to_int(value) > top:
                     value = str(top)
                 v = ctk.StringVar(value=value)
                 self.stars_vars[(slot, stat)] = v
-                w = ctk.CTkOptionMenu(self.stars_frame, values=[str(i) for i in range(top + 1)],
-                                      variable=v, width=50, state="normal" if top > 0 else "disabled")
+                w = _menu(self.stars_frame, [str(i) for i in range(top + 1)], v, 66,
+                          state="normal" if top > 0 else "disabled")
                 w.grid(row=ri, column=j + 1, padx=2, pady=2)
                 self.stars_widgets[(slot, stat)] = w
-                self.stars_widget_defaults[(slot, stat)] = {
-                    "fg_color":     w.cget("fg_color"),
-                    "button_color": w.cget("button_color"),
-                    "text_color":   w.cget("text_color"),
-                }
                 v.trace_add("write", lambda *_a, s=slot, t=stat: self._on_star_changed(s, t))
                 self._on_star_changed(slot, stat)
+            # no "Set row" here: a brother gets stars in only 2 to 4 stats, so a full row never matches
         self._rebuild_tiers_grid(n, facts)
 
     # ── game setup / origin ──
@@ -838,41 +935,29 @@ class App(ctk.CTk):
         # this also cancels the debounced rebuild the bro_count_var write just
         # scheduled.
         self._rebuild_stars_grid()
+        # a new origin starts with empty brother rows (row All stays; locked cells show the origin's stars)
+        for key, var in self.stars_vars.items():
+            if key[0] != "*" and key not in self._locked:
+                var.set("0")
         facts = self._slot_facts(value)
         if facts is not None:
-            for (slot, _stat), var in self.stars_vars.items():
-                if slot != "*":
-                    var.set("0")
-            for slot, fixed in star_limits.prefill(facts).items():
-                for stat, n in fixed.items():
-                    if (slot, stat) in self.stars_vars:
-                        self.stars_vars[(slot, stat)].set(str(n))
-            self.origin_info_var.set(star_limits.describe(facts, sizes))
+            self.origin_info_var.set(f"What {value} gives:\n" + star_limits.describe(facts, sizes))
         elif self._legends():
-            self._apply_hardcoded_stars(value)
             self._refresh_origin_info()
         else:
-            # The table of origin-fixed stars describes Legends: nothing is pre-filled.
-            for (slot, _stat), var in self.stars_vars.items():
-                if slot != "*":
-                    var.set("0")
-            self.origin_info_var.set(f"{self.setup_var.get()}: stars an origin fixes are not pre-filled here.")
+            self.origin_info_var.set("The fixed stars of this origin are not known yet.")
         if facts is None and self._catalog_progress:
             self.origin_info_var.set((self.origin_info_var.get() + "\n" + self._catalog_progress).strip())
 
-    def _apply_hardcoded_stars(self, origin: str):
-        """Reset numeric slots, then pre-fill the origin's hardcoded stars."""
-        slots = ORIGIN_HARDCODED_STARS.get(origin, [])
-        # Wipe any leftover values on numeric slots; preserve the "*" row,
-        # which is a user-defined universal default, not origin-specific.
-        for (slot, stat), var in self.stars_vars.items():
-            if slot != "*":
-                var.set("0")
-        for slot_idx, hardcoded in enumerate(slots, start=1):
-            for stat, value in hardcoded.items():
-                key = (str(slot_idx), stat)
-                if key in self.stars_vars:
-                    self.stars_vars[key].set(str(value))
+    def _locked_for(self, origin, facts):
+        """{(slot, stat): stars} the origin fixes: from the game's facts, else (Legends, until the
+        catalog is there) from the built-in table."""
+        if facts is not None:
+            return star_limits.locked_cells(facts)
+        if self._legends():
+            return {(str(n), stat): value for n, fixed in enumerate(ORIGIN_HARDCODED_STARS.get(origin, []), 1)
+                    for stat, value in fixed.items()}
+        return {}
 
     # ── what each origin can roll (bbseed/catalog.py) ──
     def _profile(self):
@@ -904,11 +989,11 @@ class App(ctk.CTk):
             try:
                 found = catalog.load(profile)
                 if found is None and may_build:
-                    put(("catalog_progress", "Working out what each origin can roll (first time only)…"))
+                    put(("catalog_progress", "Reading what each origin can roll. This occurs one time only."))
                     found = catalog.build(profile, workers=workers, should_stop=stop.is_set,
                                           on_event=lambda kind, payload: put(("catalog_event", (kind, payload))))
             except Exception as e:      # the search works without it: only the extra checks are missing
-                put(("catalog_progress", f"Could not work out what the origins can roll: {type(e).__name__}: {e}"))
+                put(("catalog_progress", f"Cannot read what the origins can roll: {type(e).__name__}: {e}"))
             put(("catalog_done", (profile, found)))
 
         threading.Thread(target=run, daemon=True).start()
@@ -917,23 +1002,23 @@ class App(ctk.CTk):
         self._catalog_progress = text
         if self._slot_facts(self.origin_var.get()) is None:
             base = self.origin_info_var.get().split("\n")
-            kept = [line for line in base if not line.startswith(("Working out", "Could not work out"))]
+            kept = [line for line in base if not line.startswith(("Reading what", "Cannot read what"))]
             self.origin_info_var.set("\n".join(kept + [text]).strip())
 
     def _ev_catalog_event(self, payload):
         kind, data = payload
         if kind == "preparing":
             name, done, total = data
-            self._ev_catalog_progress(f"Working out what each origin can roll: reading the game's scripts "
-                                      f"(first time only) · {done:,} of {total:,}")
+            self._ev_catalog_progress(f"Reading what each origin can roll (one time only): game scripts, "
+                                      f"{done:,} of {total:,}")
         elif kind == "ready":
-            self._ev_catalog_progress(f"Working out what each origin can roll (first time only): "
-                                      f"loading · {data[0]} of {data[1]} workers ready")
+            self._ev_catalog_progress(f"Reading what each origin can roll (one time only): "
+                                      f"{data[0]} of {data[1]} workers are ready")
         elif kind == "origin":
-            self._ev_catalog_progress(f"Working out what each origin can roll (first time only): "
+            self._ev_catalog_progress(f"Reading what each origin can roll (one time only): "
                                       f"{data[0]} of {data[1]} origins")
         elif kind == "fatal":
-            self._ev_catalog_progress(f"Could not work out what the origins can roll: {str(data)[:200]}")
+            self._ev_catalog_progress(f"Cannot read what the origins can roll: {str(data)[:200]}")
 
     def _ev_catalog_done(self, payload):
         profile, found = payload
@@ -961,13 +1046,8 @@ class App(ctk.CTk):
         sizes = star_limits.sizes_for(self._catalog(), O.SCENARIO.get(origin))
         if len(sizes) == 1 and self.bro_count_var.get() != str(sizes[0]):
             self.bro_count_var.set(str(sizes[0]))
-        self._rebuild_stars_grid()
-        for slot, fixed in star_limits.prefill(facts).items():
-            for stat, n in fixed.items():
-                var = self.stars_vars.get((slot, stat))
-                if var is not None and to_int(var.get()) == 0:
-                    var.set(str(n))
-        self.origin_info_var.set(star_limits.describe(facts, sizes))
+        self._rebuild_stars_grid()          # also locks the stars the origin fixes
+        self.origin_info_var.set(f"What {origin} gives:\n" + star_limits.describe(facts, sizes))
 
     def _refresh_origin_info(self):
         try:
@@ -979,7 +1059,9 @@ class App(ctk.CTk):
         if O.FOUND is None:
             self.status_var.set(O.found_text())
         else:
-            self.status_var.set(f"{O.found_text()}. Pick an origin and criteria, then Search.")
+            self.status_var.set("Ready. Select an origin and set the conditions. Then click Search.")
+        if hasattr(self, "found_var"):
+            self.found_var.set(O.found_short())
 
     # ── the game's folder ──
     def _restore_game_folder(self):
@@ -1005,11 +1087,11 @@ class App(ctk.CTk):
         from bbseed import gamedata
         start = str(O.FOUND["data"].parent) if O.FOUND else None
         chosen = filedialog.askdirectory(parent=self, initialdir=start, mustexist=True,
-                                         title="Select the Battle Brothers folder (the one that contains \"data\")")
+                                         title="Select the Battle Brothers folder (the folder with the \"data\" folder)")
         if not chosen:
             return
         if gamedata.as_data_dir(chosen) is None:
-            messagebox.showerror("Game folder", f"No game files (data\\data_001.dat) in\n{chosen}")
+            messagebox.showerror("Game folder", f"There are no game files (data\\data_001.dat) in\n{chosen}")
             return
         self._game_folder = chosen
         os.environ["BBSEED_GAME_DATA"] = chosen
@@ -1025,15 +1107,15 @@ class App(ctk.CTk):
     def _have_game(self) -> bool:
         if self.setup_var.get() in O.SETUPS:
             return True
-        messagebox.showerror("Game not found", "Battle Brothers was not found on this PC.\n\n"
-                             "Click \"Game folder…\" and select the folder the game is installed in.")
+        messagebox.showerror("Game not found", "BB Reroll cannot find Battle Brothers on this computer.\n\n"
+                             "Click \"Game folder\". Then select the folder of the game.")
         return False
 
     # ── the old in-game mod (BB Reroll 3.x) ──
     def _warn_old_mod(self):
         text = O.reroll_mod_warning()
         if text:
-            self._show_notice("⚠ " + text, kind="warn", action=("Remove it", self._on_remove_old_mod))
+            self._show_notice("⚠ " + text, kind="warn", action=("Remove", self._on_remove_old_mod))
 
     def _on_remove_old_mod(self):
         names = list((O.FOUND or {}).get("reroll_mod") or [])
@@ -1041,9 +1123,10 @@ class App(ctk.CTk):
             return
         data = O.FOUND["data"]
         listing = "\n  ".join(names)
-        if not messagebox.askyesno("Remove the old in-game mod",
-                                   f"Delete from\n{data}\n\n  {listing}\n\n"
-                                   "(BB Reroll 3.x's in-game search mod. Restart Battle Brothers afterwards.)"):
+        if not messagebox.askyesno("Remove the old mod",
+                                   f"Delete these files from\n{data}?\n\n  {listing}\n\n"
+                                   "This is the in-game search mod of BB Reroll 3. "
+                                   "Start Battle Brothers again after this."):
             return
         failed = []
         for name in names:
@@ -1054,9 +1137,10 @@ class App(ctk.CTk):
         O.refresh()
         self._clear_notice()
         if failed:
-            self._show_notice("Could not delete (is Battle Brothers running?): " + "; ".join(failed), kind="error")
+            self._show_notice("Cannot delete the file. Make sure that Battle Brothers is closed. "
+                              + "; ".join(failed), kind="error")
         else:
-            self.status_var.set("Removed the old in-game mod. Restart Battle Brothers if it is running.")
+            self.status_var.set("The old mod is removed. If Battle Brothers is open, start it again.")
 
     # ── criteria ──
     def _gather_criteria(self) -> dict:
@@ -1068,6 +1152,8 @@ class App(ctk.CTk):
         for slot in ["*"] + [str(i) for i in range(1, n + 1)]:
             entry = {}
             for stat in STATS:
+                if (slot, stat) in self._locked:
+                    continue        # the origin's own star: no condition, and it must not replace row All
                 try:
                     val = int(self.stars_vars.get((slot, stat), ctk.StringVar(value="0")).get())
                 except ValueError:
@@ -1119,7 +1205,7 @@ class App(ctk.CTk):
         if isinstance(stars, dict) and self._saved.get("last_origin") == self.origin_var.get():
             for slot, stats in stars.items():
                 for stat, n in (stats or {}).items():
-                    if (slot, stat) in self.stars_vars:
+                    if (slot, stat) in self.stars_vars and (slot, stat) not in self._locked:
                         self.stars_vars[(slot, stat)].set(str(n))
         tiers = saved.get("tiers_by_slot")
         if isinstance(tiers, dict) and self._saved.get("last_origin") == self.origin_var.get():
@@ -1129,8 +1215,8 @@ class App(ctk.CTk):
                         self.tiers_vars[(slot, stat)].set(level)
 
     def _numbers(self):
-        values = {"Max seeds": to_int(self.max_iters_var.get()),
-                  "Stop after matches": to_int(self.count_var.get()),
+        values = {"Seeds to test": to_int(self.max_iters_var.get()),
+                  "Matches to find": to_int(self.count_var.get()),
                   "Workers": to_int(self.workers_var.get())}
         return values, number_errors(values, os.cpu_count() or 1)
 
@@ -1141,12 +1227,12 @@ class App(ctk.CTk):
         criteria = self._gather_criteria()
         numbers, errors = self._numbers()
         if errors:
-            messagebox.showerror("Can't search", "\n".join(errors))
+            messagebox.showerror("Cannot search", "\n".join(errors))
             return
         # Pre-flight: trivially-passing criteria match every seed immediately.
         if is_trivial(criteria):
-            if not messagebox.askyesno("Trivial criteria", "No star thresholds and no traits are set.\n"
-                                       "Every seed will match.\n\nSearch anyway?"):
+            if not messagebox.askyesno("No conditions", "You set no stars, no stat rolls and no traits. "
+                                       "Each seed matches.\n\nSearch?"):
                 return
         # Pre-flight: criteria no seed can meet — stars an origin fixes lower, stats a brother never
         # gets stars in, more starred stats than he can have (the game's own facts, when known).
@@ -1155,22 +1241,22 @@ class App(ctk.CTk):
             found = (star_limits.problems(facts, criteria["stars_by_slot"])
                      + star_limits.roll_problems(facts, criteria["tiers_by_slot"]))
             if found and not messagebox.askyesno(
-                    "Impossible criteria",
-                    f"No seed can ever match these criteria for \"{self.origin_var.get()}\":\n\n"
-                    + "\n".join(f"  • {p}" for p in found) + "\n\nSearch anyway?"):
+                    "Impossible conditions",
+                    f"No seed can match these conditions for {self.origin_var.get()}:\n\n"
+                    + "\n".join(f"  • {p}" for p in found) + "\n\nSearch?"):
                 return
         # Without them: hardcoded-stars unsatisfiability from the built-in table (the Gladiators-bear case).
         elif self._legends():
             conflicts = origin_conflicts(self.origin_var.get(), criteria["stars_by_slot"])
             if conflicts:
                 lines = "\n".join(
-                    f"  • Slot {slot}: needs {stat.upper()} ≥ {need}, but the origin fixes it at {have}"
+                    f"  • Brother {slot} needs {need} {stat.upper()} stars or more. The origin sets {have}."
                     for slot, stat, need, have in conflicts
                 )
                 if not messagebox.askyesno(
-                    "Unsatisfiable criteria",
-                    f"\"{self.origin_var.get()}\" fixes some starting stars below what you ask for:\n\n"
-                    f"{lines}\n\nNo seed will ever match. Search anyway?",
+                    "Impossible conditions",
+                    f"{self.origin_var.get()} sets some stars lower than your conditions:\n\n"
+                    f"{lines}\n\nNo seed can match. Search?",
                 ):
                     return
         self._launch(criteria, numbers, seeds=None)
@@ -1180,7 +1266,7 @@ class App(ctk.CTk):
             return
         seed = self.check_seed_var.get().strip()
         if not 1 <= len(seed) <= 10:
-            messagebox.showerror("Check a seed", "Type the seed as in the game: 1 to 10 characters.")
+            messagebox.showerror("Check a seed", "Write the seed as in the game: 1 to 10 characters.")
             return
         numbers, _errors = self._numbers()
         self._launch(self._gather_criteria(), numbers, seeds=[seed])
@@ -1197,15 +1283,15 @@ class App(ctk.CTk):
         self._stop.clear()
         self._searching = True
         self._save_settings()
-        if not self.notice_var.get().startswith("⚠ BB Reroll's in-game mod"):
+        if self._notice_action != self._on_remove_old_mod:      # that warning stays until it is handled
             self._clear_notice()
         self.search_btn.configure(state="disabled")
         self.check_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self._set_watch_state("waiting")
-        self.watch_var.set(f"loading the game scripts in {workers} worker{'' if workers == 1 else 's'}…")
-        self.status_var.set(f"Checking seed {seeds[0]}" if seeds else
-                            f"Searching {origin} — {setup}, up to {self._search_total:,} seeds.")
+        self.watch_var.set(f"Loading the game scripts in {workers} worker{'' if workers == 1 else 's'}")
+        self.status_var.set(f"Checking seed {seeds[0]}." if seeds else
+                            f"Searching {origin} ({setup}): a maximum of {self._search_total:,} seeds.")
         put = self._events.put
 
         def run():
@@ -1222,7 +1308,7 @@ class App(ctk.CTk):
 
     def _on_stop(self):
         self._stop.set()
-        self.status_var.set("Stopping…")
+        self.status_var.set("Stopping.")
 
     # ── events from the search ──
     def _drain_events(self):
@@ -1239,11 +1325,11 @@ class App(ctk.CTk):
 
     def _ev_preparing(self, payload):
         name, done, total = payload
-        self.watch_var.set(f"reading the game's scripts (first time only) · {name} · {done:,} of {total:,}")
+        self.watch_var.set(f"Reading the game scripts (one time only): {done:,} of {total:,}")
 
     def _ev_ready(self, payload):
         ready, total, info = payload
-        self.watch_var.set(f"loading the game scripts · {ready} of {total} workers ready")
+        self.watch_var.set(f"Loading: {ready} of {total} workers are ready")
         legends = info.get("legends_version")
         self._report_info = {
             "version": legends or f"Vanilla {info.get('game_version')}",
@@ -1262,8 +1348,8 @@ class App(ctk.CTk):
         rate = tested / secs if secs > 0 else 0.0
         eta = ""
         if rate > 0 and self._search_total > tested and not self._run["checking"]:
-            eta = f" · up to {self._fmt_duration((self._search_total - tested) / rate)} left"
-        self.watch_var.set(f"searching · {tested:,} of {self._search_total:,} seeds · {rate:.0f}/s{eta}")
+            eta = f", {self._fmt_duration((self._search_total - tested) / rate)} or less to go"
+        self.watch_var.set(f"Searching: {tested:,} of {self._search_total:,} seeds, {rate:.0f}/s{eta}")
         if self._run["checking"]:
             return
         hint = self._odds_text(odds, rate)
@@ -1275,20 +1361,20 @@ class App(ctk.CTk):
         if never and odds.get("tested", 0) >= 300 and not self._run.get("warned_never"):
             self._run["warned_never"] = True
             who = ", ".join(str(n) for n in never)
-            self._show_notice(f"Brother {who} has not met the criteria once in {odds['tested']:,} seeds — "
-                              f"this may never match. Loosen what you ask of {'him' if len(never) == 1 else 'them'}.",
-                              kind="info")
+            self._show_notice(f"Brother {who} did not match the conditions in {odds['tested']:,} seeds. "
+                              f"Possibly no seed matches. Use easier conditions for "
+                              f"{'this brother' if len(never) == 1 else 'these brothers'}.", kind="info")
 
     def _odds_text(self, odds, rate):
-        """'About 1 in 3,400 seeds matches — one every ~1m15s at this speed.' (or nothing yet)"""
+        """'Approximately 1 in 3,400 seeds matches (...). At this speed, that is 1 match in ...' (or nothing)"""
         chance, tested = odds.get("chance"), odds.get("tested", 0)
         if not chance or tested < 100:
             return ""
         one_in = 1 / chance
-        text = f"About 1 in {one_in:,.0f} seeds matches (estimated from {tested:,} seeds)"
+        text = f"Approximately 1 in {one_in:,.0f} seeds matches (from {tested:,} seeds)."
         if rate > 0:
-            text += f" — one every ~{self._fmt_duration(one_in / rate)} at this speed"
-        return text + "."
+            text += f" At this speed, that is 1 match in approximately {self._fmt_duration(one_in / rate)}."
+        return text
 
     def _ev_match(self, payload):
         # the same seed found or checked again replaces its earlier entry
@@ -1304,17 +1390,17 @@ class App(ctk.CTk):
             if notification:
                 try:
                     notification.notify(title="BB Reroll: match",
-                                        message=f"Seed {entry['seed']} for {entry['origin']}.", timeout=10)
+                                        message=f"Seed {entry['seed']} matches ({entry['origin']}).", timeout=10)
                 except Exception:
                     pass
 
     def _ev_error(self, payload):
         self._run["errors"] = self._run.get("errors", 0) + 1
         if self._run["errors"] == 1:        # show the first one; a count follows when the run ends
-            self._show_notice(f"A seed could not be evaluated: {payload[:300]}", kind="warn")
+            self._show_notice(f"BB Reroll cannot test a seed: {payload[:300]}", kind="warn")
 
     def _ev_fatal(self, payload):
-        self._show_notice(f"The search could not run: {payload[:400]}", kind="error")
+        self._show_notice(f"The search cannot start: {payload[:400]}", kind="error")
 
     def _ev_finished(self, payload):
         tested, secs, found, stopped = payload
@@ -1323,25 +1409,26 @@ class App(ctk.CTk):
         self.check_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self._set_watch_state("idle")
-        self.watch_var.set("idle")
+        self.watch_var.set("Idle")
         if self._run["checking"]:
-            self.status_var.set("Seed checked — see the result list.")
+            self.status_var.set("The seed check is complete. See the results.")
         else:
             errors = self._run.get("errors", 0)
             self.status_var.set(
-                f"{'Stopped' if stopped else 'Search finished'}: {tested:,} seed{'' if tested == 1 else 's'} tested "
+                f"{'Stopped' if stopped else 'Search complete'}: {tested:,} seed{'' if tested == 1 else 's'} tested "
                 f"in {self._fmt_duration(secs)}, {found} match{'' if found == 1 else 'es'}"
-                f"{f', {errors} could not be evaluated' if errors else ''}."
+                f"{f', {errors} could not be tested' if errors else ''}."
                 + (f" {self._run['odds_text']}" if not found and self._run.get("odds_text") else ""))
             if not found and not stopped and tested:
                 never = self._run.get("never") or []
                 if never:
                     who = ", ".join(str(n) for n in never)
-                    self._show_notice(f"No seed matched in {tested:,} seeds: brother {who} never met the criteria. "
-                                      f"Loosen what you ask of {'him' if len(never) == 1 else 'them'}.", kind="info")
+                    self._show_notice(f"No seed matched in {tested:,} seeds. Brother {who} never matched the "
+                                      f"conditions. Use easier conditions for "
+                                      f"{'this brother' if len(never) == 1 else 'these brothers'}.", kind="info")
                 else:
-                    self._show_notice(f"No seed matched in {tested:,} seeds. Loosen the criteria or raise Max seeds.",
-                                      kind="info")
+                    self._show_notice(f"No seed matched in {tested:,} seeds. Use easier conditions or test more "
+                                      f"seeds.", kind="info")
         if self._selftest:
             self._selftest_done(payload)
 
@@ -1460,51 +1547,58 @@ class App(ctk.CTk):
             self.match_pane.grid_remove()
             return
         # as tall as its content needs, up to a limit (it scrolls beyond that)
-        wanted = sum(54 + 15 * len(m["roster"]) * (6 if m.get("show_perks") else 1) for m in self._matches)
-        self.match_list.configure(height=max(80, min(300, wanted)))
+        wanted = sum(64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1) for m in self._matches)
+        self.match_list.configure(height=max(90, min(300, wanted)))
         for entry in self._matches:
             ok = entry.get("failure") is None
-            row = ctk.CTkFrame(self.match_list, fg_color="#1f6f3a" if ok else "#3a3f4a", corner_radius=6)
-            row.pack(fill="x", padx=2, pady=2)
-            row.grid_columnconfigure(0, weight=1)
-            head = f"seed: {entry['seed']}    {entry['origin']}  ({entry['setup']})"
+            card = ctk.CTkFrame(self.match_list, corner_radius=8, border_width=1,
+                                fg_color=PALETTE["card"] if ok else PALETTE["card_other"],
+                                border_color=PALETTE["card_border"] if ok else PALETTE["card_other_border"])
+            card.pack(fill="x", padx=2, pady=3)
+            card.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(card, text=f"Seed {entry['seed']}", font=(FONT, 14, "bold"), text_color=PALETTE["text"]).grid(
+                row=0, column=0, sticky="w", padx=(12, 8), pady=(8, 0))
+            sub = f"{entry['origin']} · {entry['setup']}"
             if entry.get("checked"):
-                head += "    (checked — %s)" % ("meets your criteria" if ok else "fails: " + entry["failure"])
+                sub += ("  ·  Checked: matches the conditions" if ok else
+                        "  ·  Checked: " + explain_failure(entry["failure"], self._display_for))
+            ctk.CTkLabel(card, text=sub, font=(FONT, 12), text_color=PALETTE["muted"] if ok else PALETTE["bad"],
+                         anchor="w").grid(row=0, column=1, sticky="w", pady=(8, 0))
+            buttons = ctk.CTkFrame(card, fg_color="transparent")
+            buttons.grid(row=0, column=2, sticky="e", padx=(4, 8), pady=(8, 0))
+            _button(buttons, "Copy seed", lambda s=entry["seed"]: self._copy_to_clipboard(s), width=84, height=26,
+                    font=(FONT, 11)).pack(side="left", padx=2)
+            _button(buttons, "Copy roster", lambda e=entry: self._copy_roster(e), width=90, height=26,
+                    font=(FONT, 11)).pack(side="left", padx=2)
+            share_btn = _button(buttons, "Copy seed post", lambda e=entry: self._copy_seed_share(e), width=108,
+                                height=26, font=(FONT, 11))
+            share_btn.pack(side="left", padx=2)
+            _attach_tooltip(share_btn, "Copy a seed post for the Legends Discord to the clipboard.")
+            has_details = any(b.get("perk_groups") or b.get("rolls") for b in entry["roster"])
+            if has_details:
+                details = _button(buttons, "Hide details" if entry.get("show_perks") else "Details",
+                                  lambda e=entry: self._toggle_perks(e), width=92, height=26, font=(FONT, 11))
+                details.pack(side="left", padx=2)
+                _attach_tooltip(details, "Show the stat rolls of each brother and, with Legends, his perk trees.")
+            remove = _button(buttons, "✕", lambda e=entry: self._dismiss_match(e), kind="ghost", width=28, height=26,
+                             font=(FONT, 11))
+            remove.pack(side="left", padx=(6, 0))
+            _attach_tooltip(remove, "Remove this result from the list.")
             if not entry.get("stable", True):
-                head += "    ⚠ NOT reproducible — do not rely on it"
-            ctk.CTkLabel(row, text=head, font=("Segoe UI", 13, "bold"), text_color="white").grid(
-                row=0, column=0, sticky="w", padx=10, pady=(6, 0))
-            ctk.CTkButton(row, text="📋 Copy", width=70, height=28, fg_color="#155028", hover_color="#0e3d1d",
-                          command=lambda s=entry["seed"]: self._copy_to_clipboard(s)).grid(row=0, column=1, padx=3, pady=(6, 0))
-            ctk.CTkButton(row, text="📋 Roster", width=80, height=28, fg_color="#155028", hover_color="#0e3d1d",
-                          command=lambda e=entry: self._copy_roster(e)).grid(row=0, column=2, padx=3, pady=(6, 0))
-            share_btn = ctk.CTkButton(row, text="📋 Seed share", width=100, height=28, fg_color="#155028",
-                                      hover_color="#0e3d1d", command=lambda e=entry: self._copy_seed_share(e))
-            share_btn.grid(row=0, column=3, padx=3, pady=(6, 0))
-            _attach_tooltip(share_btn,
-                            "Copies a ready-to-paste Legends Discord seed-sharing post to the clipboard")
-            ctk.CTkButton(row, text="×", width=32, height=28, fg_color="transparent", hover_color="#5a1f1f",
-                          command=lambda e=entry: self._dismiss_match(e)).grid(row=0, column=5, padx=(0, 6), pady=(6, 0))
-            has_perks = any(b.get("perk_groups") or b.get("rolls") for b in entry["roster"])
-            if has_perks:
-                perks_btn = ctk.CTkButton(row, text="▾ Details" if entry.get("show_perks") else "▸ Details",
-                                          width=86, height=28, fg_color="#155028", hover_color="#0e3d1d",
-                                          command=lambda e=entry: self._toggle_perks(e))
-                perks_btn.grid(row=0, column=4, padx=3, pady=(6, 0))
-                _attach_tooltip(perks_btn, "Each brother's stat rolls (where they landed in what his background "
-                                           "can roll) and, with Legends, his perk trees")
-            ctk.CTkLabel(row, text="\n".join(roster_lines(entry["roster"])), font=("Consolas", 11), justify="left",
-                         anchor="w", text_color="#e6efe8").grid(row=1, column=0, columnspan=6, sticky="w",
-                                                                padx=12, pady=(2, 8))
-            if has_perks and entry.get("show_perks"):
+                ctk.CTkLabel(card, text="⚠ This result is not stable. Do not use it.", font=(FONT, 12, "bold"),
+                             text_color=PALETTE["bad"]).grid(row=1, column=0, columnspan=3, sticky="w", padx=12)
+            ctk.CTkLabel(card, text="\n".join(roster_lines(entry["roster"])), font=("Consolas", 11), justify="left",
+                         anchor="w", text_color=PALETTE["text"]).grid(row=2, column=0, columnspan=3, sticky="w",
+                                                                      padx=12, pady=(4, 10))
+            if has_details and entry.get("show_perks"):
                 lines = []
                 for i, b in enumerate(entry["roster"], 1):
-                    lines.append(f"{i:2d}. {b['name']} — rolls: {roll_text(b) or 'unknown'}")
+                    lines.append(f"{i:2d}. {b['name']}. Rolls: {roll_text(b) or 'not known'}")
                     if perk_text(b):
-                        lines.append(f"      perk trees: {perk_text(b)}")
-                text = "\n".join(lines)
-                ctk.CTkLabel(row, text=text, font=("Segoe UI", 11), justify="left", anchor="w", wraplength=860,
-                             text_color="#cfe3d4").grid(row=2, column=0, columnspan=6, sticky="w", padx=12, pady=(0, 8))
+                        lines.append(f"      Perk trees: {perk_text(b)}")
+                ctk.CTkLabel(card, text="\n".join(lines), font=(FONT, 11), justify="left", anchor="w", wraplength=880,
+                             text_color=PALETTE["muted"]).grid(row=3, column=0, columnspan=3, sticky="w",
+                                                               padx=12, pady=(0, 10))
 
     def _toggle_perks(self, entry: dict):
         entry["show_perks"] = not entry.get("show_perks")
@@ -1524,15 +1618,15 @@ class App(ctk.CTk):
             self.clipboard_clear()
             self.clipboard_append(text)
             self.update()
-            self.status_var.set(label or f"Copied: {text}")
+            self.status_var.set(label or f"Seed {text} is copied.")
         except Exception as e:
-            self.status_var.set(f"clipboard error: {e}")
+            self.status_var.set(f"Cannot copy: {e}")
 
     def _copy_roster(self, entry: dict):
         from bbseed.lab import describe
         text = f"Seed {entry['seed']} — {entry['origin']} — {entry['setup']}\n"
         text += "\n".join(f"{i}. {describe(b)}" for i, b in enumerate(entry["roster"], 1))
-        self._copy_to_clipboard(text, label=f"Copied the roster of seed {entry['seed']}")
+        self._copy_to_clipboard(text, label=f"The roster of seed {entry['seed']} is copied.")
 
     def _share_report(self, entry: dict) -> str:
         return build_seed_report(
@@ -1545,7 +1639,7 @@ class App(ctk.CTk):
         )
 
     def _copy_seed_share(self, entry: dict):
-        self._copy_to_clipboard(self._share_report(entry), label=f"Copied Discord seed share for {entry['seed']}")
+        self._copy_to_clipboard(self._share_report(entry), label=f"The seed post for seed {entry['seed']} is copied.")
 
     def _open_github(self):
         webbrowser.open("https://github.com/Trikpatknd/bb-reroll/releases")
@@ -1651,7 +1745,8 @@ class App(ctk.CTk):
                 if t in self.required_vars:
                     self.required_vars[t].set(True)
             for (slot, stat), var in self.stars_vars.items():
-                var.set(str(spec.get("stars", {}).get(slot, {}).get(stat, 0)))
+                if (slot, stat) not in self._locked:
+                    var.set(str(spec.get("stars", {}).get(slot, {}).get(stat, 0)))
             for (slot, stat), var in self.tiers_vars.items():
                 var.set(spec.get("tiers", {}).get(slot, {}).get(stat, "any"))
             if spec.get("grid"):
@@ -1662,7 +1757,9 @@ class App(ctk.CTk):
             self.count_var.set(str(spec.get("count", 2)))
             self.workers_var.set(str(spec.get("workers", 4)))
             self.share_desc_var.set(spec.get("description", ""))
-            if spec.get("check"):
+            if spec.get("search") is False:     # a picture of the window only: no search
+                self.after(1000, lambda: self._selftest_done((0, 0.0, 0, False)))
+            elif spec.get("check"):
                 self.check_seed_var.set(spec["check"])
                 self._on_check_seed()
             else:
@@ -1691,6 +1788,13 @@ class App(ctk.CTk):
         if spec.get("screenshot"):          # a picture of the window, to check the layout unattended
             try:
                 from PIL import ImageGrab
+                # the picture is of the screen: this window must be on top (the player's own BB Reroll
+                # window can be open at the same place)
+                self.deiconify()
+                self.lift()
+                self.attributes("-topmost", True)
+                self.update()
+                time.sleep(0.4)
                 self.update()
                 x, y = self.winfo_rootx(), self.winfo_rooty()
                 box = (x, y, x + self.winfo_width(), y + self.winfo_height())

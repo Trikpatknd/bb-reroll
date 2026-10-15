@@ -22,26 +22,26 @@ INQUISITION[0]["max"].update({"hp": 3, "res": 3, "msk": 2})
 
 def test_four_starred_stats_are_impossible_for_the_scaling_beggar():
     out = L.problems(BEGGAR, {"*": {"msk": 1, "mdf": 1, "fat": 1, "rsk": 1}})
-    assert out == ["Brother 1 can have stars in at most 3 stats — you ask for 4."]
+    assert out == ["Brother 1 can have stars in a maximum of 3 stats. Your conditions use 4 stats."]
 
 
 def test_a_stat_the_slot_never_gets():
-    assert L.problems(BEGGAR, {"1": {"hp": 1}}) == ["Brother 1 never gets HP stars — you ask for 1."]
+    assert L.problems(BEGGAR, {"1": {"hp": 1}}) == ["Brother 1 never gets HP stars. Your condition is 1."]
 
 
 def test_a_fixed_stat_cannot_be_raised():
     out = L.problems(INQUISITION, {"1": {"msk": 3}})
-    assert out == ["Brother 1 has MSK fixed at 2 — you ask for 3."]
+    assert out == ["Brother 1 always has 2 MSK stars. Your condition is 3."]
 
 
 def test_the_roll_cannot_star_more_than_its_picks_besides_the_fixed_stars():
     # four stats is not too many for the berserker, but three of them would have to be rolled
     out = L.problems(BERSERKER, {"1": {"hp": 3, "fat": 1, "res": 1, "init": 1}})
-    assert out == ["Brother 1: the roll stars only 2 stats besides the fixed HP 3, MSK 3 — you ask for 3 "
-                   "(FAT, RES, INIT)."]
+    assert out == ["Brother 1 gets random stars in only 2 stats in addition to the fixed HP 3, MSK 3. "
+                   "Your conditions need 3 (FAT, RES, INIT)."]
     out = L.problems(BERSERKER, {"1": {"fat": 1, "res": 1, "init": 1}})
-    assert out == ["Brother 1: the roll stars only 2 stats besides the fixed HP 3, MSK 3 — you ask for 3 "
-                   "(FAT, RES, INIT)."]
+    assert out == ["Brother 1 gets random stars in only 2 stats in addition to the fixed HP 3, MSK 3. "
+                   "Your conditions need 3 (FAT, RES, INIT)."]
 
 
 def test_possible_criteria_have_no_problems():
@@ -55,6 +55,13 @@ def test_a_slot_row_replaces_the_star_row():
     assert L.problems(BEGGAR, {"*": {"hp": 1}, "1": {"msk": 2}}) == []
 
 
+def test_fixed_stars_are_locked_cells_but_not_on_varied_slots():
+    assert L.locked_cells(INQUISITION) == {("1", "hp"): 3, ("1", "res"): 3, ("1", "msk"): 2,
+                                           ("2", "res"): 3, ("2", "rsk"): 3}
+    assert L.locked_cells(BEGGAR) == {}
+    assert L.locked_cells([dict(slot(3, 2, {"hp": 1}), varied=True)]) == {}
+
+
 def test_prefill_and_cell_limits():
     assert L.prefill(INQUISITION) == {"1": {"hp": 3, "res": 3, "msk": 2}, "2": {"res": 3, "rsk": 3}}
     assert L.cell_max(BEGGAR, "1", "hp") == 0 and L.cell_max(BEGGAR, "1", "msk") == 3
@@ -65,18 +72,20 @@ def test_prefill_and_cell_limits():
 
 def test_describe_groups_brothers_with_the_same_facts():
     militia = [slot(3, 3)] * 12
-    assert L.describe(militia) == "Brothers 1–12: 3 rolled"
-    assert L.describe(BERSERKER) == "Brother 1: fixed HP 3  MSK 3 + 2 rolled"
-    assert L.describe(BEGGAR) == "Brother 1: 3 rolled  · never HP RES"
-    assert L.describe(INQUISITION, sizes=[3]) == ("Brother 1: fixed HP 3  RES 3  MSK 2\n"
-                                                  "Brother 2: fixed RES 3  RSK 3 + 1 rolled")
+    assert L.describe(militia) == "Brothers 1-12: 3 random stars"
+    assert L.describe(BERSERKER) == "Brother 1: fixed stars HP 3, MSK 3, and 2 random stars"
+    assert L.describe(BEGGAR) == "Brother 1: 3 random stars. Never on HP, RES"
+    assert L.describe(INQUISITION, sizes=[3]) == ("Brother 1: fixed stars HP 3, RES 3, MSK 2\n"
+                                                  "Brother 2: fixed stars RES 3, RSK 3, and 1 random star")
+    assert L.describe(BEGGAR, sizes=[4, 5]).startswith("The number of brothers changes with the seed: 4, 5.")
 
 
 def test_a_brother_whose_background_varies_is_never_ruled_out():
     party = [dict(slot(4, 3, never=("hp",)), varied=True)]
     assert L.problems(party, {"1": {"hp": 3, "fat": 1, "res": 1, "init": 1, "msk": 1}}) == []
     assert L.cell_max(party, "1", "hp") == 3
-    assert L.describe(party) == "Brother 1: background varies by seed — stars in up to 4 stats seen"
+    assert L.describe(party) == ("Brother 1: the background changes with the seed "
+                                 "(seen: stars in a maximum of 4 stats)")
 
 
 def test_roll_cells_offer_only_what_the_seed_can_move():
@@ -86,7 +95,7 @@ def test_roll_cells_offer_only_what_the_seed_can_move():
     assert L.roll_options(slots, "*", "res") == ["any", "mid", "high"]
     assert L.roll_options([slot(3, 3)], "1", "res") == ["any", "mid", "high"]      # an older catalog: no data
     assert L.roll_problems(slots, {"*": {"res": "high", "msk": "mid"}}) == [
-        "Brother 1's RES is always the same — the seed cannot make it better."]
+        "The seed cannot change RES of brother 1. This stat has the same value at all times."]
     assert L.roll_problems(slots, {"1": {"msk": "high"}}) == []
 
 

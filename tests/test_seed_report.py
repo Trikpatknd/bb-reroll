@@ -46,7 +46,7 @@ def test_without_map_options_the_post_says_they_do_not_matter():
     info = {"version": "19.4.22", "build_name": "Bandits & Greenskins", "battle_sisters": "Enabled",
             "origin": "Trading Caravan", "map_options": {}}
     out = build_seed_report("Trading Caravan", "", "8633698106", info, "4.0.0")
-    assert "Map Options: any (the starting brothers do not depend on them; the map does)" in out
+    assert "Map Options: any. They change the map, not the starting brothers." in out
     assert "Land Mass Ratio" not in out
     assert out.endswith("Found with BB Reroll v4.0.0 — github.com/Trikpatknd/bb-reroll")
 

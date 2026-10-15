@@ -26,7 +26,7 @@ _MAP_OPTION_LABELS = [
 ]
 _BOOLEAN_KEYS = {"StackCitadels", "AllTradeLocations"}
 _UNKNOWN = "(unknown)"
-_ANY_MAP = "Map Options: any (the starting brothers do not depend on them; the map does)"
+_ANY_MAP = "Map Options: any. They change the map, not the starting brothers."
 
 
 def _yes_no(raw) -> str:

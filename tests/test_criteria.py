@@ -33,9 +33,10 @@ def test_the_search_accepts_the_gui_criteria_as_they_are():
 def test_number_checks():
     ok = {"Max seeds": 100000, "Stop after matches": 3, "Workers": 4}
     assert C.number_errors(ok, cpu_threads=8) == []
-    assert C.number_errors(dict(ok, Workers=9), cpu_threads=8) == ["Workers: this PC has 8 CPU threads."]
+    assert C.number_errors(dict(ok, Workers=9), cpu_threads=8) == [
+        "Workers: this computer has 8 processor threads. Use 8 or less."]
     errors = C.number_errors({"Max seeds": None, "Stop after matches": 0, "Workers": 4}, cpu_threads=8)
-    assert len(errors) == 2 and all("at least 1" in e for e in errors)
+    assert len(errors) == 2 and all("1 or more" in e for e in errors)
     assert C.to_int(" 42 ") == 42 and C.to_int("4.5") is None and C.to_int("") is None
 
 
@@ -55,3 +56,13 @@ def test_roster_lines():
         " 1. Musa the Merchant (Merchant)  [res3 msk1]  Bleeder, Spartan",
         " 2. Eduard (Caravan Hand)  [no stars]  no traits",
     ]
+
+
+def test_failure_reasons_read_as_sentences():
+    assert C.explain_failure("bro2 msk*1<2") == "Brother 2 has 1 MSK stars. The minimum is 2."
+    assert C.explain_failure("bro1 hp roll mid<high") == "The HP roll of brother 1 is mid. The minimum is high."
+    assert C.explain_failure("bro3 banned legend_heavy", {"legend_heavy": "Lumbering"}.get) ==         "Brother 3 has the banned trait Lumbering."
+    assert C.explain_failure("bro1 missing brave") == "Brother 1 does not have the required trait Brave."
+    assert C.explain_failure("bro4 no_good_trait") == "Brother 4 has none of the required traits."
+    assert C.explain_failure("no bro5 in this origin's roster") == "This origin has no brother 5."
+    assert C.explain_failure("something else") == "something else"

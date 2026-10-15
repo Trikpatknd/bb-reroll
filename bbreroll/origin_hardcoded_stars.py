@@ -71,22 +71,22 @@ ROLLED_ON_TOP: dict[str, set[int]] = {
 def summarize(origin: str) -> str:
     slots = ORIGIN_HARDCODED_STARS.get(origin)
     if slots is None:
-        return f'"{origin}" — no data available; assume fully rolled.'
+        return f"There is no data for {origin}."
     if not slots:
-        return f'"{origin}" — no fixed roster; consult the scenario directly.'
+        return f"The brothers of {origin} change with the seed."
     hardcoded = [(i + 1, d) for i, d in enumerate(slots) if d]
     rolled = [i + 1 for i, d in enumerate(slots) if not d]
     if not hardcoded:
-        return f"All {len(slots)} slots fully rolled — every stat can be brute-forced."
-    lines = ["Hardcoded stars (locked, cannot be brute-forced):"]
+        return f"All {len(slots)} brothers get random stars."
+    lines = ["Fixed stars (the seed cannot change them):"]
     on_top = ROLLED_ON_TOP.get(origin, set())
     for slot_num, stars in hardcoded:
-        token = "  ".join(f"{k}:{v}" for k, v in stars.items())
-        lines.append(f"  Slot {slot_num}: {token}" + ("  + rolled" if slot_num in on_top else ""))
+        token = ", ".join(f"{k.upper()} {v}" for k, v in stars.items())
+        lines.append(f"  Brother {slot_num}: {token}" + (", and random stars" if slot_num in on_top else ""))
     if rolled:
         joined = ", ".join(str(s) for s in rolled)
-        label = "Slots" if len(rolled) > 1 else "Slot"
-        lines.append(f"{label} {joined}: fully rolled.")
+        label = "Brothers" if len(rolled) > 1 else "Brother"
+        lines.append(f"{label} {joined}: random stars.")
     return "\n".join(lines)
 
 

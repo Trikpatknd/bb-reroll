@@ -68,10 +68,41 @@ def to_int(text):
 def number_errors(values: dict, cpu_threads: int) -> list:
     """Problems with the numeric search settings ({"Max seeds": n, "Stop after matches": n,
     "Workers": n}, None = not a number), as messages for the player; empty when fine."""
-    errors = ["%s must be a whole number of at least 1." % name for name, v in values.items() if v is None or v < 1]
+    errors = ["%s must be a whole number of 1 or more." % name for name, v in values.items() if v is None or v < 1]
     if not errors and values.get("Workers", 1) > cpu_threads:
-        errors.append("Workers: this PC has %d CPU threads." % cpu_threads)
+        errors.append("Workers: this computer has %d processor threads. Use %d or less." % (cpu_threads, cpu_threads))
     return errors
+
+
+_STAT_NAMES = {"hp": "HP", "fat": "FAT", "res": "RES", "init": "INIT", "msk": "MSK", "rsk": "RSK", "mdf": "MDF",
+               "rdf": "RDF"}
+
+
+def explain_failure(reason: str, display=None) -> str:
+    """The search's short failure reason (bbseed.search.slot_failure) as a sentence for the
+    player. display(trait_id) gives a trait's name. Unknown forms are returned as they are."""
+    display = display or id_to_display
+    m = re.match(r"bro(\d+) (\w+)\*(\d+)<(\d+)$", reason)
+    if m:
+        return "Brother %s has %s %s stars. The minimum is %s." % (
+            m.group(1), m.group(3), _STAT_NAMES.get(m.group(2), m.group(2).upper()), m.group(4))
+    m = re.match(r"bro(\d+) (\w+) roll (\w+)<(\w+)$", reason)
+    if m:
+        return "The %s roll of brother %s is %s. The minimum is %s." % (
+            _STAT_NAMES.get(m.group(2), m.group(2).upper()), m.group(1), m.group(3), m.group(4))
+    m = re.match(r"bro(\d+) banned (\w+)$", reason)
+    if m:
+        return "Brother %s has the banned trait %s." % (m.group(1), display(m.group(2)))
+    m = re.match(r"bro(\d+) missing (\w+)$", reason)
+    if m:
+        return "Brother %s does not have the required trait %s." % (m.group(1), display(m.group(2)))
+    m = re.match(r"bro(\d+) no_good_trait$", reason)
+    if m:
+        return "Brother %s has none of the required traits." % m.group(1)
+    m = re.match(r"no bro(\d+) in this origin's roster$", reason)
+    if m:
+        return "This origin has no brother %s." % m.group(1)
+    return reason
 
 
 def sanitize_trait(name: str) -> str:

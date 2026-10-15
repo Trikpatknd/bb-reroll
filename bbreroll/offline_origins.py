@@ -135,14 +135,24 @@ def refresh():
 def found_text(details=False):
     """Which game and mods the setups stand for: one line, or with `details` the mod files too."""
     if FOUND is None:
-        return "Battle Brothers was not found on this PC — click \"Game folder…\" and select where it is installed."
+        return ("BB Reroll cannot find Battle Brothers on this computer. Click \"Game folder\". "
+                "Then select the folder of the game.")
     mods = FOUND["mods"]
-    line = "Game %s with %s found in %s" % (
-        FOUND["game_version"] or "(version unknown)",
+    line = "Battle Brothers %s with %s in %s" % (
+        FOUND["game_version"] or "(version not known)",
         "no mods" if not mods else "1 mod file" if len(mods) == 1 else "%d mod files" % len(mods), FOUND["data"].parent)
     if details and mods:
-        line += "\n\nMods (the zip files in its data folder):\n" + "\n".join("  " + m for m in mods)
+        line += "\n\nMods (the zip files in the data folder):\n" + "\n".join("  " + m for m in mods)
     return line
+
+
+def found_short():
+    """The game in a few words, for the window's header."""
+    if FOUND is None:
+        return "Game not found"
+    mods = FOUND["mods"]
+    return "Battle Brothers %s · %s" % (FOUND["game_version"] or "",
+                                        "no mods" if not mods else "1 mod" if len(mods) == 1 else "%d mods" % len(mods))
 
 
 def reroll_mod_warning():
@@ -151,9 +161,9 @@ def reroll_mod_warning():
     rosters the offline search finds."""
     if FOUND is None or not FOUND.get("reroll_mod"):
         return None
-    return ("BB Reroll's in-game mod (%s) is in your game's data folder. While it is there the game rolls "
-            "DIFFERENT brothers for every seed, so seeds found offline will not match. Remove that file "
-            "(and restart Battle Brothers) before you play a seed found here." % ", ".join(FOUND["reroll_mod"]))
+    return ("The in-game mod of BB Reroll 3 (%s) is in the data folder of the game. With this mod, the game "
+            "gives different brothers for each seed, and the seeds from BB Reroll do not match. Remove the file. "
+            "Then start Battle Brothers again." % ", ".join(FOUND["reroll_mod"]))
 
 
 def is_legends_only(name):

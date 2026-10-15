@@ -27,11 +27,13 @@ def test_setups_follow_what_is_installed(monkeypatch):
     try:
         base = {"data": Path("X:/Battle Brothers/data"), "game_version": "1.5.2.3", "reroll_mod": []}
         assert setups(None) == ({}, None)
-        assert "not found" in O.found_text() and O.reroll_mod_warning() is None
+        assert "cannot find Battle Brothers" in O.found_text() and O.reroll_mod_warning() is None
+        assert O.found_short() == "Game not found"
         assert setups(dict(base, mods=[], legends=False)) == ({"Vanilla": ("vanilla", False)}, "Vanilla")
         assert setups(dict(base, mods=["mod_legends.zip", "mod_msu.zip"], legends=True)) == (
             {"Legends": ("legends", True), "Vanilla": ("vanilla", False)}, "Legends")
         assert "2 mod files" in O.found_text() and "mod_msu.zip" in O.found_text(details=True)
+        assert O.found_short() == "Battle Brothers 1.5.2.3 · 2 mods"
         assert "Sisterhood" in O.names_for("Legends") and "Sisterhood" not in O.names_for("Vanilla")
         assert setups(dict(base, mods=["mod_other.zip"], legends=False)) == (
             {"Modded": ("modded", False), "Vanilla": ("vanilla", False)}, "Modded")

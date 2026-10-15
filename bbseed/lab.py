@@ -403,7 +403,7 @@ def describe(bro):
         s["hp"], s["fat"], s["res"], s["init"], s["msk"], s["rsk"], s["mdf"], s["rdf"],
         ", ".join(bro["trait_names"]) or "none", ", ".join(bro["gear"]) or "none")
     if bro.get("rolls"):
-        text += "\n      rolls (against the background's range): " + roll_text(bro)
+        text += "\n      stat rolls (in the range of the background): " + roll_text(bro)
     for cat, names in bro.get("perk_groups") or ():
         text += "\n      %s perk groups: %s" % (cat, ", ".join(names))
     if bro.get("single_perks"):
