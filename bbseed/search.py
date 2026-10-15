@@ -9,6 +9,8 @@ Criteria follow BB Reroll's model (and its config keys, see --criteria):
             replaces "*" for that recruit, it is not added to it).
             Stats: hp fat res init msk rsk mdf rdf
   banned    no recruit may have any of these traits
+  tiers     the least a stat's roll may be, per roster slot, measured against what that recruit's
+            background can roll: low / mid / high = bottom / middle / top third, e.g. "msk:high"
   required  every recruit must have at least one of these traits (mode "any")
             or all of them (mode "all"); limit it to some slots with --require-slots
 
@@ -40,6 +42,18 @@ def parse_stars(spec):
     return out
 
 
+def parse_tiers(spec):
+    """"msk:high res:mid" -> {"msk": "high", "res": "mid"} — the least a stat's roll may be,
+    measured in what the recruit's background can roll (see rolls.py)."""
+    out = {}
+    for token in spec.split():
+        stat, _, level = token.partition(":")
+        if stat not in STATS or level not in ("mid", "high"):
+            raise ValueError("bad roll requirement %r (use e.g. msk:high or res:mid; stats: %s)" % (token, " ".join(STATS)))
+        out[stat] = level
+    return out
+
+
 def _trait(t):
     return t[6:] if t.startswith("trait.") else t
 
@@ -55,8 +69,14 @@ def normalize(criteria):
     if mode not in ("any", "all"):
         raise ValueError("required_mode must be 'any' or 'all'")
     slots = criteria.get("required_slots")
+    tiers = {}
+    for slot, spec in (criteria.get("tiers_by_slot") or {}).items():
+        spec = parse_tiers(spec) if isinstance(spec, str) else {k: v for k, v in spec.items() if v in ("mid", "high")}
+        if spec:
+            tiers[str(slot)] = spec
     return {
         "stars_by_slot": stars,
+        "tiers_by_slot": tiers,
         "banned": sorted({_trait(t) for t in criteria.get("banned") or ()}),
         "required": sorted({_trait(t) for t in criteria.get("required") or ()}),
         "required_mode": mode,
@@ -64,33 +84,99 @@ def normalize(criteria):
     }
 
 
+def slot_failure(slot, bro, criteria):
+    """None if this recruit (roster slot `slot`, 1 = first) meets his part of the criteria, else
+    a short reason."""
+    # a slot's own row replaces the "*" row (BB Reroll's rule since the in-game search;
+    # origin_hardcoded_stars.conflicts() checks the same way)
+    stars = criteria["stars_by_slot"]
+    need = stars.get(str(slot)) or stars.get("*", {})
+    for stat, minimum in need.items():
+        if bro["stars"][stat] < minimum:
+            return "bro%d %s*%d<%d" % (slot, stat, bro["stars"][stat], minimum)
+    tiers = criteria.get("tiers_by_slot") or {}
+    want = tiers.get(str(slot)) or tiers.get("*", {})
+    if want:
+        from .rolls import meets
+        rolls = bro.get("rolls")
+        for stat, level in want.items():
+            have = rolls[stat]["tier"] if rolls else None
+            if not meets(have, level):
+                return "bro%d %s roll %s<%s" % (slot, stat, have or "unknown", level)
+    traits = set(bro["traits"])
+    hit = traits & set(criteria["banned"])
+    if hit:
+        return "bro%d banned %s" % (slot, sorted(hit)[0])
+    required = set(criteria["required"])
+    if required and (criteria["required_slots"] is None or slot in criteria["required_slots"]):
+        if criteria["required_mode"] == "all":
+            missing = required - traits
+            if missing:
+                return "bro%d missing %s" % (slot, sorted(missing)[0])
+        elif not traits & required:
+            return "bro%d no_good_trait" % slot
+    return None
+
+
 def first_failure(roster, criteria):
     """None if the roster meets the (normalized) criteria, else a short reason."""
-    banned = set(criteria["banned"])
-    required = set(criteria["required"])
-    stars = criteria["stars_by_slot"]
     for slot, bro in enumerate(roster, 1):
-        # a slot's own row replaces the "*" row (BB Reroll's rule since the in-game search;
-        # origin_hardcoded_stars.conflicts() checks the same way)
-        need = stars.get(str(slot)) or stars.get("*", {})
-        for stat, minimum in need.items():
-            if bro["stars"][stat] < minimum:
-                return "bro%d %s*%d<%d" % (slot, stat, bro["stars"][stat], minimum)
-        traits = set(bro["traits"])
-        hit = traits & banned
-        if hit:
-            return "bro%d banned %s" % (slot, sorted(hit)[0])
-        if required and (criteria["required_slots"] is None or slot in criteria["required_slots"]):
-            if criteria["required_mode"] == "all":
-                missing = required - traits
-                if missing:
-                    return "bro%d missing %s" % (slot, sorted(missing)[0])
-            elif not traits & required:
-                return "bro%d no_good_trait" % slot
-    for slot in criteria["stars_by_slot"]:
+        failure = slot_failure(slot, bro, criteria)
+        if failure is not None:
+            return failure
+    for slot in list(criteria["stars_by_slot"]) + list(criteria.get("tiers_by_slot") or {}):
         if slot != "*" and int(slot) > len(roster):
             return "no bro%s in this origin's roster" % slot
     return None
+
+
+# ---------------------------------------------------------------------- odds
+class Odds:
+    """How often each recruit slot meets its own part of the criteria, over the seeds tested so
+    far. Recruits are rolled one after the other from the seed's random stream, so the slots are
+    as good as independent: the chance a seed matches is about the product of the slots' rates —
+    known long before the first match, and a slot that never passes shows what to loosen."""
+
+    def __init__(self):
+        self.tested = 0
+        self.passed = []          # per slot: seeds on which that recruit met his criteria
+
+    def add_roster(self, roster, criteria):
+        self.add([slot_failure(slot, bro, criteria) is None for slot, bro in enumerate(roster, 1)])
+
+    def add(self, passes):
+        self.tested += 1
+        while len(self.passed) < len(passes):
+            self.passed.append(0)
+        for i, ok in enumerate(passes):
+            if ok:
+                self.passed[i] += 1
+
+    def merge(self, tested, passed):
+        self.tested += tested
+        while len(self.passed) < len(passed):
+            self.passed.append(0)
+        for i, n in enumerate(passed):
+            self.passed[i] += n
+
+    def take(self):
+        """(tested, passed) since the last take, and start counting afresh (for the workers)."""
+        out = (self.tested, list(self.passed))
+        self.tested, self.passed = 0, []
+        return out
+
+    def chance(self):
+        """Estimated chance that a seed matches, or None before anything was tested."""
+        if not self.tested:
+            return None
+        p = 1.0
+        for n in self.passed:
+            p *= n / self.tested
+        return p
+
+    def never(self):
+        """Slots (1 = first) that have not passed once."""
+        return [i + 1 for i, n in enumerate(self.passed) if n == 0]
 
 
 # ---------------------------------------------------------------------- seeds
@@ -102,7 +188,7 @@ def seed_text(n, digits=10):
 def _worker(index, workers, profile, mod_settings, origin, criteria, start, limit, seeds, out):
     """Tests seeds start + index, start + index + workers, ... (or every workers-th of an
     explicit seed list) and reports to the queue."""
-    from .lab import Lab, LabError, big_stack
+    from .lab import Lab, LabError, big_stack, without_perks
 
     def numbered():
         n = start + index
@@ -112,25 +198,28 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
 
     def run():
         try:
-            lab = Lab(profile, mod_settings)
+            lab = Lab(profile, mod_settings).watch_rolls()      # stat rolls: criteria and results (~1 % slower)
         except Exception as e:
             out.put(("fatal", index, "%s: %s" % (type(e).__name__, e)))
             return
         out.put(("ready", index, lab.info()))
-        tested, last = 0, time.time()
+        tested, last, odds = 0, time.time(), Odds()
         for seed in (seeds[index::workers] if seeds is not None else numbered()):
             tested += 1
             try:
                 # sift on the reused world state (fast); an explicit seed is rolled on a fresh one
                 roster = lab.roster(seed, origin, fresh=seeds is not None)
+                odds.add_roster(roster, criteria)
                 failure = first_failure(roster, criteria)
                 if failure is None or seeds is not None:
-                    # the authoritative roll: a newly built world state, as in a new campaign
-                    confirmed = lab.roster(seed, origin, fresh=True)
-                    out.put(("progress", index, tested))        # so the count is current when the match shows
+                    # the authoritative roll: a newly built world state, as in a new campaign (with the
+                    # recruits' perk trees, which the sifting roll leaves out)
+                    confirmed = lab.roster_with_perks(seed, origin)
+                    out.put(("progress", index, (tested, odds.take())))     # current count when the match shows
                     tested, last = 0, time.time()
                     if seeds is not None or first_failure(confirmed, criteria) is None:
-                        out.put(("match", index, {"seed": seed, "roster": confirmed, "stable": confirmed == roster,
+                        stable = without_perks(confirmed) == without_perks(roster)
+                        out.put(("match", index, {"seed": seed, "roster": confirmed, "stable": stable,
                                                   "failure": first_failure(confirmed, criteria)}))
                     else:
                         out.put(("error", index, "seed %s matched only on the reused world state, not on a fresh "
@@ -138,9 +227,9 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             except LabError as e:
                 out.put(("error", index, str(e)))
             if time.time() - last >= 1.0:
-                out.put(("progress", index, tested))
+                out.put(("progress", index, (tested, odds.take())))
                 tested, last = 0, time.time()
-        out.put(("progress", index, tested))
+        out.put(("progress", index, (tested, odds.take())))
         out.put(("done", index, None))
 
     big_stack(run)
@@ -153,7 +242,9 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
     on_event(kind, payload) receives: "preparing" (archive name, scripts done, scripts total —
     only the first time a game version is used: its scripts are read once and cached),
     "ready" (workers loaded, workers total, setup info),
-    "progress" (seeds tested, seconds, matches), "match" (dict: seed, roster, stable, failure),
+    "progress" (seeds tested, seconds, matches, odds: {"chance": estimated chance a seed matches,
+    "never": [roster slots that have not met their criteria once], "tested"}),
+    "match" (dict: seed, roster, stable, failure),
     "error" / "fatal" (text), "finished" (seeds tested, seconds, matches, stopped early?).
     seeds: test exactly these seed texts and report every one of them (with the criterion it
     fails, if any) instead of searching. should_stop(): polled; return True to end the search.
@@ -181,6 +272,7 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
     for p in procs:
         p.start()
     matches, tested, running, t0, ready, stopped = [], 0, workers, None, 0, False
+    odds = Odds()
     try:
         while running and len(matches) < count:
             if should_stop is not None and should_stop():
@@ -196,8 +288,10 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
                     t0 = time.time()
                 emit("ready", (ready, workers, payload))
             elif kind == "progress":
-                tested += payload
-                emit("progress", (tested, time.time() - (t0 or time.time()), len(matches)))
+                tested += payload[0]
+                odds.merge(*payload[1])
+                emit("progress", (tested, time.time() - (t0 or time.time()), len(matches),
+                                  {"chance": odds.chance(), "never": odds.never(), "tested": odds.tested}))
             elif kind == "match":
                 matches.append(payload)
                 emit("match", payload)
@@ -243,10 +337,10 @@ def _print_seed(profile, origin, seeds, mod_settings=None):
     from .lab import Lab, big_stack, describe
 
     def run():
-        lab = Lab(profile, mod_settings)
+        lab = Lab(profile, mod_settings).watch_rolls()
         for seed in seeds:
             print("seed %s, origin %s:" % (seed, origin))
-            for i, bro in enumerate(lab.roster(seed, origin), 1):
+            for i, bro in enumerate(lab.roster_with_perks(seed, origin), 1):
                 print("   %d. %s" % (i, describe(bro)))
     big_stack(run)
 
@@ -262,6 +356,9 @@ def main(argv=None):
     ap.add_argument("--show", nargs="+", metavar="SEED", help="print the roster of these seeds and exit")
     ap.add_argument("--stars", nargs=2, action="append", metavar=("SLOT", "SPEC"), default=[],
                     help='minimum stars for a roster slot (1, 2, ... or "*"), e.g. --stars 1 "res2 fat2"')
+    ap.add_argument("--tier", nargs=2, action="append", metavar=("SLOT", "SPEC"), default=[],
+                    help='least stat rolls for a roster slot, against what its background can roll: low/mid/high '
+                         'thirds, e.g. --tier 1 "msk:high res:mid"')
     ap.add_argument("--ban", action="append", default=[], metavar="TRAIT", help="trait no recruit may have (repeatable)")
     ap.add_argument("--require", action="append", default=[], metavar="TRAIT", help="wanted trait (repeatable)")
     ap.add_argument("--require-mode", choices=("any", "all"), default="any")
@@ -290,6 +387,9 @@ def main(argv=None):
     criteria.setdefault("stars_by_slot", {})
     for slot, spec in args.stars:
         criteria["stars_by_slot"][slot] = spec
+    criteria.setdefault("tiers_by_slot", {})
+    for slot, spec in args.tier:
+        criteria["tiers_by_slot"][slot] = spec
     criteria["banned"] = list(criteria.get("banned") or []) + args.ban
     criteria["required"] = list(criteria.get("required") or []) + args.require
     if args.require or "required_mode" not in criteria:
@@ -309,8 +409,14 @@ def main(argv=None):
         elif kind == "ready":
             print("worker %d of %d has loaded the game scripts" % payload[:2], flush=True)
         elif kind == "progress":
-            tested, secs, found = payload
-            print("   %d seeds tested, %.1f per second, %d found" % (tested, tested / secs if secs > 0 else 0, found), flush=True)
+            tested, secs, found, odds = payload
+            hint = ""
+            if odds["chance"]:
+                hint = ", about 1 in %s seeds matches" % format(round(1 / odds["chance"]), ",")
+            elif odds["never"] and odds["tested"] >= 200:
+                hint = ", brother %s never met the criteria" % ", ".join(str(n) for n in odds["never"])
+            print("   %d seeds tested, %.1f per second, %d found%s" % (
+                tested, tested / secs if secs > 0 else 0, found, hint), flush=True)
         elif kind == "match":
             print("\n*** MATCH: seed %s%s" % (payload["seed"], "" if payload["stable"] else "   (WARNING: not reproducible, do not trust)"))
             for i, bro in enumerate(payload["roster"], 1):

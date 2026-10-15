@@ -69,3 +69,28 @@ def test_every_offered_origin_exists_in_the_game_menu():
     for setup in O.SETUPS:
         missing = [n for n in O.names_for(setup) if O.SCENARIO[n] not in offered[setup]]
         assert not missing, "%s: not in the game's new-campaign menu: %s" % (setup, missing)
+
+
+def test_origins_other_mods_add_are_offered_for_their_setup_only():
+    catalog = {"origins": [["trader_scenario", "scenario.trader", "Trading Caravan"],
+                           ["random_scenario", "scenario.random", "Random"],
+                           ["mod_pirates_scenario", "scenario.pirates", "Pirates"],
+                           ["mod_other_trader", "scenario.other_trader", "Trading Caravan"],
+                           ["mod_broken_scenario", "scenario.broken", "Broken"]],
+               "talents": {"trader_scenario": {"slots": []}, "mod_pirates_scenario": {"slots": []},
+                           "mod_other_trader": {"slots": []}, "mod_broken_scenario": {"error": "boom"}}}
+    assert O.menu_extras(catalog) == [("Pirates", "mod_pirates_scenario"),
+                                      ("Trading Caravan (mod_other_trader)", "mod_other_trader")]
+    assert O.menu_extras(None) == []
+    saved = dict(O.SCENARIO), dict(O.EXTRAS), dict(O.SETUPS)
+    try:
+        O.SETUPS.clear()
+        O.SETUPS.update({"Modded": ("modded", False), "Vanilla": ("vanilla", False)})
+        O.add_extras("modded", catalog)
+        assert O.names_for("Modded")[-2:] == ["Pirates", "Trading Caravan (mod_other_trader)"]
+        assert "Pirates" not in O.names_for("Vanilla")
+        assert O.SCENARIO["Pirates"] == "mod_pirates_scenario"
+    finally:
+        O.SCENARIO.clear(); O.SCENARIO.update(saved[0])
+        O.EXTRAS.clear(); O.EXTRAS.update(saved[1])
+        O.SETUPS.clear(); O.SETUPS.update(saved[2])

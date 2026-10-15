@@ -79,3 +79,34 @@ def test_origin_falls_back_to_dropdown_arg_when_not_reported():
     info = dict(FULL_INFO)            # FULL_INFO has no "origin" key
     out = build_seed_report("Lone Wolf", "x", "ABCDEFGH12", info, "3.4.6")
     assert "Origin: Lone Wolf" in out
+
+
+def test_roster_adds_a_bros_line_with_stars_per_brother():
+    roster = [{"stars": {"hp": 0, "msk": 3, "mdf": 2, "rdf": 1}},
+              {"stars": {"mdf": 1, "fat": 2}},          # dict order is not the stat order
+              {"stars": {}}]
+    out = build_seed_report("Gladiators", "x", "ABCDEFGH12", FULL_INFO, "4.0.0", roster=roster)
+    assert "Brief description: x\nBros: 1) MSK3 MDF2 RDF1 | 2) FAT2 MDF1 | 3) no stars\nSeed:" in out
+
+
+def test_game_version_and_mods_are_listed_for_compatibility():
+    info = dict(FULL_INFO, game_version="1.5.2.3",
+                mods=[{"name": "Legends Mod", "version": "19.4.22"}, {"name": "mod_textures", "version": None}])
+    out = build_seed_report("Gladiators", "x", "ABCDEFGH12", info, "4.0.0")
+    assert "Game version: 1.5.2.3\nMods: Legends Mod 19.4.22, mod_textures\n" in out
+
+
+def test_an_unmodded_game_says_no_mods():
+    info = dict(FULL_INFO, game_version="1.5.2.3", mods=[])
+    out = build_seed_report("Gladiators", "x", "ABCDEFGH12", info, "4.0.0")
+    assert "Mods: none\n" in out
+
+
+def test_older_entries_without_mod_info_have_no_mods_line():
+    out = build_seed_report("Gladiators", "x", "ABCDEFGH12", FULL_INFO, "4.0.0")
+    assert "Mods:" not in out and "Game version:" not in out
+
+
+def test_without_roster_there_is_no_bros_line():
+    out = build_seed_report("Gladiators", "x", "ABCDEFGH12", FULL_INFO, "4.0.0")
+    assert "Bros:" not in out

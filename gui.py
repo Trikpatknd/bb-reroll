@@ -64,6 +64,7 @@ except Exception:
         return []
 
 from bbreroll import offline_origins as O
+from bbreroll import star_limits
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
     roster_lines, sanitize_trait, to_int,
@@ -116,7 +117,8 @@ def default_workers() -> int:
 def _attach_tooltip(widget, text):
     """Hover tooltip (CTk has none) that cannot get stuck: it goes away when the mouse
     leaves, on any click or loss of focus, when the widget is destroyed, and by itself
-    after 6 s. `text` may be a function, asked each time the tooltip is shown.
+    after 6 s. `text` may be a function, asked each time the tooltip is shown; it may give
+    a list of (line, colour or None, bold?) instead of one text, or nothing (no tooltip).
     Not for dropdowns: once their list opens the widget never hears the mouse leave."""
     state = {"win": None, "job": None}
 
@@ -138,12 +140,24 @@ def _attach_tooltip(widget, text):
         if state["win"] is not None:
             return
         try:
+            content = text() if callable(text) else text
+            if not content:
+                return
             win = ctk.CTkToplevel(widget)
             win.overrideredirect(True)
             win.geometry(f"+{widget.winfo_rootx() + 20}+{widget.winfo_rooty() + widget.winfo_height() + 6}")
             win.attributes("-topmost", True)
-            ctk.CTkLabel(win, text=text() if callable(text) else text, font=("Segoe UI", 11),
-                         fg_color="#222222", corner_radius=6, wraplength=420, justify="left").pack(padx=8, pady=4)
+            if isinstance(content, str):
+                ctk.CTkLabel(win, text=content, font=("Segoe UI", 11),
+                             fg_color="#222222", corner_radius=6, wraplength=420, justify="left").pack(padx=8, pady=4)
+            else:
+                box = ctk.CTkFrame(win, fg_color="#222222", corner_radius=6)
+                box.pack(padx=0, pady=0)
+                for line, colour, bold in content:
+                    ctk.CTkLabel(box, text=line, font=("Segoe UI", 11, "bold" if bold else "normal"),
+                                 text_color=colour, wraplength=420, justify="left", anchor="w",
+                                 ).pack(fill="x", padx=10, pady=(4 if bold else 0, 0))
+                ctk.CTkFrame(box, height=6, fg_color="transparent").pack()
             state["win"] = win
             state["job"] = widget.after(6000, hide)
         except Exception:
@@ -237,6 +251,10 @@ class App(ctk.CTk):
         # them when a cell's value returns to 0. Cells with value > 0 get the
         # active highlight palette applied to fg_color/button_color/text_color.
         self.stars_widget_defaults:  dict[tuple[str, str], dict] = {}
+        # stat rolls: the least tier per stat ("any" / "mid" / "high"), same rows as the stars
+        self.tiers_vars:             dict[tuple[str, str], ctk.StringVar] = {}
+        self.tiers_widgets:          dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
+        self.tiers_widget_defaults:  dict[tuple[str, str], dict] = {}
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
         self.required_vars: dict[str, ctk.BooleanVar] = {}
         self.banned_known   = self._saved_list("known_banned", DEFAULT_BANNED)
@@ -258,6 +276,12 @@ class App(ctk.CTk):
                                    "battle_sisters": None, "origin": None,
                                    "map_options": {}}
         self._selftest = None
+        # What each origin can roll, per game setup (profile -> catalog, None = could not be made).
+        # Worked out from the game's scripts once per installed game, in the background.
+        self._catalogs: dict = {}
+        self._catalog_job = None          # profile being loaded / built
+        self._catalog_progress = ""
+        self._catalog_stop = threading.Event()
 
         self._grid_rebuild_id = None   # pending debounced stars-grid rebuild
         self._build_ui()
@@ -275,6 +299,7 @@ class App(ctk.CTk):
         # (a search runs for a while) or parked on a different-DPI second monitor.
         self.after(1000, self._repaint_tick)
         self.after(100, self._drain_events)
+        self.after(1500, self._ensure_catalog)     # after a self-test spec, if any, is known
 
     # ── UI build ──
     def _build_ui(self):
@@ -329,10 +354,13 @@ class App(ctk.CTk):
         # Stars grid
         stars_outer = ctk.CTkFrame(self)
         stars_outer.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
-        ctk.CTkLabel(stars_outer,
-                     text=("STARS  (0 = don't care, 1-3 = minimum stars.  "
-                           "A numeric slot row with all zeros falls back to the * default rule.)"),
-                     font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2))
+        stars_outer.grid_columnconfigure(0, weight=1)
+        self.grid_title = ctk.CTkLabel(stars_outer, text=self._GRID_TITLES["Stars"], font=("Segoe UI", 13, "bold"))
+        self.grid_title.grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2))
+        # Stars and stat rolls share the space: one grid at a time, both always count
+        self.grid_mode_var = ctk.StringVar(value="Stars")
+        ctk.CTkSegmentedButton(stars_outer, values=["Stars", "Stat rolls"], variable=self.grid_mode_var,
+                               command=self._on_grid_mode).grid(row=0, column=1, sticky="e", padx=10, pady=(6, 2))
         self.origin_info_var = ctk.StringVar(value="")
         self.origin_info_label = ctk.CTkLabel(
             stars_outer,
@@ -342,9 +370,19 @@ class App(ctk.CTk):
             font=("Consolas", 11),
             text_color="#9aa3b0",
         )
-        self.origin_info_label.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 4))
+        self.origin_info_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
+        self.rolls_info_label = ctk.CTkLabel(
+            stars_outer, justify="left", anchor="w", font=("Segoe UI", 11), text_color="#9aa3b0", wraplength=880,
+            text=("Where a brother's base stat landed in what HIS background can roll — mid = middle third or "
+                  "better, high = top third. The background sets most of a stat; the seed only moves it within "
+                  "that range. Greyed: the seed cannot change that stat for that brother."))
+        self.rolls_info_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 4))
+        self.rolls_info_label.grid_remove()
         self.stars_frame = ctk.CTkFrame(stars_outer, fg_color="transparent")
-        self.stars_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 8))
+        self.stars_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+        self.tiers_frame = ctk.CTkFrame(stars_outer, fg_color="transparent")
+        self.tiers_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 8))
+        self.tiers_frame.grid_remove()
 
         # Traits — two scrollable columns
         traits_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -470,7 +508,7 @@ class App(ctk.CTk):
                       command=lambda k=kind: self._bulk_check(k, False)).pack(side="left", padx=4)
         ctk.CTkButton(hdr, text="↺ Invert", width=70, height=26,
                       command=lambda k=kind: self._bulk_invert(k)).pack(side="left", padx=4)
-        ctk.CTkLabel(hdr, text="(✏ rename · × remove)", text_color="#7a8290",
+        ctk.CTkLabel(hdr, text="(hover: effects · ✏ rename · × remove)", text_color="#7a8290",
                      font=("Segoe UI", 10)).pack(side="right", padx=(4, 0))
 
         # Scrollable list
@@ -515,6 +553,7 @@ class App(ctk.CTk):
 
             cb = ctk.CTkCheckBox(row, text=self._display_for(trait), variable=v)
             cb.grid(row=0, column=0, sticky="w", padx=(2, 4))
+            _attach_tooltip(cb, lambda t=trait: self._trait_tooltip(t))
             ctk.CTkButton(row, text="✏", width=26, height=22,
                           fg_color="transparent", hover_color="#2b3441",
                           command=lambda t=trait, k=kind: self._edit_trait(k, t)
@@ -524,6 +563,22 @@ class App(ctk.CTk):
                           text_color="#d97676",
                           command=lambda t=trait, k=kind: self._remove_trait(k, t)
                           ).grid(row=0, column=2, padx=(1, 2))
+
+    _EFFECT_COLOURS = {"+": "#6fd38a", "-": "#ff8a7a", "": "#c9d1d9"}
+
+    def _trait_tooltip(self, trait):
+        """What a trait does, from the game's own tooltip: [(line, colour, bold)], or None when
+        the game's facts are not known (yet) or the trait is not one of the game's."""
+        found = (self._catalog() or {}).get("traits", {}).get(trait)
+        if not found:
+            return None
+        lines = [(found["name"], "white", True)]
+        for e in found["effects"]:
+            mark = {"+": "▲ ", "-": "▼ "}.get(e["sign"], "• ")
+            lines.append((mark + e["text"], self._EFFECT_COLOURS[e["sign"]], False))
+        if not found["effects"]:
+            lines.append((found["description"] or "No effects listed in the game's tooltip.", "#9aa3b0", False))
+        return lines
 
     def _pane_ctx(self, kind):
         sf = getattr(self, f"_{kind}_scroll")
@@ -629,6 +684,71 @@ class App(ctk.CTk):
         except Exception:
             pass
 
+    _GRID_TITLES = {
+        "Stars": "STARS  (0 = don't care, 1-3 = minimum stars.  A numeric slot row with all zeros falls back to "
+                 "the * default rule.)",
+        "Stat rolls": "STAT ROLLS  (any / mid / high = the least a stat's roll may be.  A numeric row replaces *.)",
+    }
+    _TIER_ACTIVE_FG = "#4fb3a6"     # teal face for a stat-roll requirement
+    _TIER_ACTIVE_BTN = "#3a8a80"
+
+    def _on_grid_mode(self, mode=None):
+        mode = self.grid_mode_var.get()
+        self.grid_title.configure(text=self._GRID_TITLES.get(mode, ""))
+        rolls = mode == "Stat rolls"
+        for widget, show in ((self.stars_frame, not rolls), (self.origin_info_label, not rolls),
+                             (self.tiers_frame, rolls), (self.rolls_info_label, rolls)):
+            widget.grid() if show else widget.grid_remove()
+
+    def _on_tier_changed(self, slot: str, stat: str, *_):
+        widget = self.tiers_widgets.get((slot, stat))
+        if widget is None:
+            return
+        try:
+            if self.tiers_vars[(slot, stat)].get() in ("mid", "high"):
+                widget.configure(fg_color=self._TIER_ACTIVE_FG, button_color=self._TIER_ACTIVE_BTN,
+                                 text_color=self._STAR_ACTIVE_TEXT)
+            else:
+                d = self.tiers_widget_defaults.get((slot, stat))
+                if d:
+                    widget.configure(**d)
+        except Exception:
+            pass
+
+    def _rebuild_tiers_grid(self, n, facts):
+        """The stat-rolls grid: same rows as the stars grid; a cell offers only "any" where the seed
+        cannot move that stat for that brother."""
+        prior = {k: v.get() for k, v in self.tiers_vars.items()}
+        for w in self.tiers_frame.winfo_children():
+            w.destroy()
+        self.tiers_vars.clear()
+        self.tiers_widgets.clear()
+        self.tiers_widget_defaults.clear()
+        ctk.CTkLabel(self.tiers_frame, text="slot", width=50,
+                     font=("Segoe UI", 11, "bold")).grid(row=0, column=0, padx=2, pady=2)
+        for j, stat in enumerate(STATS):
+            ctk.CTkLabel(self.tiers_frame, text=stat.upper(), width=46,
+                         font=("Segoe UI", 11, "bold")).grid(row=0, column=j + 1, padx=2, pady=2)
+        for ri, slot in enumerate(["*"] + [str(i) for i in range(1, n + 1)], start=1):
+            ctk.CTkLabel(self.tiers_frame, text=slot, width=50, text_color="#aab2c0" if slot == "*" else None,
+                         font=("Segoe UI", 11, "bold")).grid(row=ri, column=0, padx=2, pady=2)
+            for j, stat in enumerate(STATS):
+                options = star_limits.roll_options(facts, slot, stat)
+                value = prior.get((slot, stat), "any")
+                if value not in options:
+                    value = "any"
+                v = ctk.StringVar(value=value)
+                self.tiers_vars[(slot, stat)] = v
+                w = ctk.CTkOptionMenu(self.tiers_frame, values=options, variable=v, width=64,
+                                      state="normal" if len(options) > 1 else "disabled")
+                w.grid(row=ri, column=j + 1, padx=2, pady=2)
+                self.tiers_widgets[(slot, stat)] = w
+                self.tiers_widget_defaults[(slot, stat)] = {
+                    "fg_color": w.cget("fg_color"), "button_color": w.cget("button_color"),
+                    "text_color": w.cget("text_color")}
+                v.trace_add("write", lambda *_a, s=slot, t=stat: self._on_tier_changed(s, t))
+                self._on_tier_changed(slot, stat)
+
     def _schedule_grid_rebuild(self):
         """Debounce: typing a count or picking an origin writes bro_count_var
         once or more; rebuild the grid once, 120 ms after the last write."""
@@ -661,16 +781,22 @@ class App(ctk.CTk):
             ctk.CTkLabel(self.stars_frame, text=stat.upper(), width=46,
                          font=("Segoe UI", 11, "bold")).grid(row=0, column=j + 1, padx=2, pady=2)
 
+        # a cell offers only what that brother can get at all (when the origin's facts are known)
+        facts = self._slot_facts(self.origin_var.get())
         rows = ["*"] + [str(i) for i in range(1, n + 1)]
         for ri, slot in enumerate(rows, start=1):
             ctk.CTkLabel(self.stars_frame, text=slot, width=50,
                          text_color="#aab2c0" if slot == "*" else None,
                          font=("Segoe UI", 11, "bold")).grid(row=ri, column=0, padx=2, pady=2)
             for j, stat in enumerate(STATS):
-                v = ctk.StringVar(value=prior.get((slot, stat), "0"))
+                top = star_limits.cell_max(facts, slot, stat)
+                value = prior.get((slot, stat), "0")
+                if to_int(value) is not None and to_int(value) > top:
+                    value = str(top)
+                v = ctk.StringVar(value=value)
                 self.stars_vars[(slot, stat)] = v
-                w = ctk.CTkOptionMenu(self.stars_frame, values=["0", "1", "2", "3"],
-                                      variable=v, width=50)
+                w = ctk.CTkOptionMenu(self.stars_frame, values=[str(i) for i in range(top + 1)],
+                                      variable=v, width=50, state="normal" if top > 0 else "disabled")
                 w.grid(row=ri, column=j + 1, padx=2, pady=2)
                 self.stars_widgets[(slot, stat)] = w
                 self.stars_widget_defaults[(slot, stat)] = {
@@ -680,6 +806,7 @@ class App(ctk.CTk):
                 }
                 v.trace_add("write", lambda *_a, s=slot, t=stat: self._on_star_changed(s, t))
                 self._on_star_changed(slot, stat)
+        self._rebuild_tiers_grid(n, facts)
 
     # ── game setup / origin ──
     def _legends(self) -> bool:
@@ -692,6 +819,8 @@ class App(ctk.CTk):
             self.origin_var.set(names[0])
         self.sisters_menu.configure(state="normal" if self._legends() else "disabled")
         self._on_origin_change(self.origin_var.get())
+        if hasattr(self, "_catalog_stop"):     # also called while the window is being built
+            self.after(10, self._ensure_catalog)
 
     def _on_origin_change(self, value: str):
         if value not in O.SCENARIO or value in O.NOT_SEARCHABLE:
@@ -700,13 +829,26 @@ class App(ctk.CTk):
         count = O.COUNTS.get(value)
         if not self._legends():
             count = O.VANILLA_COUNTS.get(value) or count
+        sizes = star_limits.sizes_for(self._catalog(), O.SCENARIO.get(value))
+        if len(sizes) == 1:
+            count = sizes[0]            # what the game's scripts actually give
         if count is not None:
             self.bro_count_var.set(str(count))
         # Rebuild synchronously so hardcoded stars can be pre-filled right away;
         # this also cancels the debounced rebuild the bro_count_var write just
         # scheduled.
         self._rebuild_stars_grid()
-        if self._legends():
+        facts = self._slot_facts(value)
+        if facts is not None:
+            for (slot, _stat), var in self.stars_vars.items():
+                if slot != "*":
+                    var.set("0")
+            for slot, fixed in star_limits.prefill(facts).items():
+                for stat, n in fixed.items():
+                    if (slot, stat) in self.stars_vars:
+                        self.stars_vars[(slot, stat)].set(str(n))
+            self.origin_info_var.set(star_limits.describe(facts, sizes))
+        elif self._legends():
             self._apply_hardcoded_stars(value)
             self._refresh_origin_info()
         else:
@@ -715,6 +857,8 @@ class App(ctk.CTk):
                 if slot != "*":
                     var.set("0")
             self.origin_info_var.set(f"{self.setup_var.get()}: stars an origin fixes are not pre-filled here.")
+        if facts is None and self._catalog_progress:
+            self.origin_info_var.set((self.origin_info_var.get() + "\n" + self._catalog_progress).strip())
 
     def _apply_hardcoded_stars(self, origin: str):
         """Reset numeric slots, then pre-fill the origin's hardcoded stars."""
@@ -729,6 +873,101 @@ class App(ctk.CTk):
                 key = (str(slot_idx), stat)
                 if key in self.stars_vars:
                     self.stars_vars[key].set(str(value))
+
+    # ── what each origin can roll (bbseed/catalog.py) ──
+    def _profile(self):
+        return O.SETUPS.get(self.setup_var.get(), (None, False))[0]
+
+    def _catalog(self):
+        return self._catalogs.get(self._profile())
+
+    def _slot_facts(self, origin):
+        """Per brother slot: the stars the origin can give at all (None until known)."""
+        return star_limits.slots_for(self._catalog(), O.SCENARIO.get(origin))
+
+    def _ensure_catalog(self):
+        """Load the current setup's catalog, or work it out (once per installed game, ~1-2
+        minutes in worker processes) when there is none yet."""
+        profile = self._profile()
+        if profile is None or profile in self._catalogs or self._catalog_job is not None:
+            return
+        self._catalog_job = profile
+        may_build = not self._selftest or bool(self._selftest.get("catalog"))
+        workers = to_int(self.workers_var.get()) or default_workers()
+        workers = max(1, min(workers, os.cpu_count() or 1))
+        put = self._events.put
+        stop = self._catalog_stop
+
+        def run():
+            from bbseed import catalog
+            found = None
+            try:
+                found = catalog.load(profile)
+                if found is None and may_build:
+                    put(("catalog_progress", "Working out what each origin can roll (first time only)…"))
+                    found = catalog.build(profile, workers=workers, should_stop=stop.is_set,
+                                          on_event=lambda kind, payload: put(("catalog_event", (kind, payload))))
+            except Exception as e:      # the search works without it: only the extra checks are missing
+                put(("catalog_progress", f"Could not work out what the origins can roll: {type(e).__name__}: {e}"))
+            put(("catalog_done", (profile, found)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _ev_catalog_progress(self, text):
+        self._catalog_progress = text
+        if self._slot_facts(self.origin_var.get()) is None:
+            base = self.origin_info_var.get().split("\n")
+            kept = [line for line in base if not line.startswith(("Working out", "Could not work out"))]
+            self.origin_info_var.set("\n".join(kept + [text]).strip())
+
+    def _ev_catalog_event(self, payload):
+        kind, data = payload
+        if kind == "preparing":
+            name, done, total = data
+            self._ev_catalog_progress(f"Working out what each origin can roll: reading the game's scripts "
+                                      f"(first time only) · {done:,} of {total:,}")
+        elif kind == "ready":
+            self._ev_catalog_progress(f"Working out what each origin can roll (first time only): "
+                                      f"loading · {data[0]} of {data[1]} workers ready")
+        elif kind == "origin":
+            self._ev_catalog_progress(f"Working out what each origin can roll (first time only): "
+                                      f"{data[0]} of {data[1]} origins")
+        elif kind == "fatal":
+            self._ev_catalog_progress(f"Could not work out what the origins can roll: {str(data)[:200]}")
+
+    def _ev_catalog_done(self, payload):
+        profile, found = payload
+        self._catalogs[profile] = found
+        self._catalog_job = None
+        if found is not None:
+            self._catalog_progress = ""
+            extras = O.add_extras(profile, found)
+            if extras and profile == self._profile():      # origins other mods add
+                self.origin_menu.configure(values=O.names_for(self.setup_var.get()))
+                if self._saved.get("last_origin") in extras and not self._searching:
+                    self.origin_var.set(self._saved["last_origin"])     # the last session ended on one of them
+                    self._on_origin_change(self._saved["last_origin"])
+        if profile == self._profile() and found is not None:
+            self._apply_catalog()
+        self._ensure_catalog()          # the setup may have changed meanwhile
+
+    def _apply_catalog(self):
+        """The facts arrived: limit the grid cells and show them, without touching the player's
+        criteria (only empty cells get an origin's fixed stars)."""
+        origin = self.origin_var.get()
+        facts = self._slot_facts(origin)
+        if facts is None:
+            return
+        sizes = star_limits.sizes_for(self._catalog(), O.SCENARIO.get(origin))
+        if len(sizes) == 1 and self.bro_count_var.get() != str(sizes[0]):
+            self.bro_count_var.set(str(sizes[0]))
+        self._rebuild_stars_grid()
+        for slot, fixed in star_limits.prefill(facts).items():
+            for stat, n in fixed.items():
+                var = self.stars_vars.get((slot, stat))
+                if var is not None and to_int(var.get()) == 0:
+                    var.set(str(n))
+        self.origin_info_var.set(star_limits.describe(facts, sizes))
 
     def _refresh_origin_info(self):
         try:
@@ -842,8 +1081,16 @@ class App(ctk.CTk):
             # the "*" default for that slot.
             if slot == "*" or entry:
                 stars_by_slot[slot] = entry
+        # stat rolls: the same rule — "*" always, a numeric row only when it asks for something
+        tiers_by_slot: dict[str, dict[str, str]] = {}
+        for slot in ["*"] + [str(i) for i in range(1, n + 1)]:
+            entry = {stat: var.get() for (s, stat), var in self.tiers_vars.items()
+                     if s == slot and var.get() in ("mid", "high")}
+            if slot == "*" or entry:
+                tiers_by_slot[slot] = entry
         return {
             "stars_by_slot": stars_by_slot,
+            "tiers_by_slot": tiers_by_slot,
             "banned":   [t for t, v in self.banned_vars.items()   if v.get()],
             "required": [t for t, v in self.required_vars.items() if v.get()],
             "required_mode": self.required_mode_var.get(),
@@ -874,6 +1121,12 @@ class App(ctk.CTk):
                 for stat, n in (stats or {}).items():
                     if (slot, stat) in self.stars_vars:
                         self.stars_vars[(slot, stat)].set(str(n))
+        tiers = saved.get("tiers_by_slot")
+        if isinstance(tiers, dict) and self._saved.get("last_origin") == self.origin_var.get():
+            for slot, stats in tiers.items():
+                for stat, level in (stats or {}).items():
+                    if (slot, stat) in self.tiers_vars and level in ("mid", "high"):
+                        self.tiers_vars[(slot, stat)].set(level)
 
     def _numbers(self):
         values = {"Max seeds": to_int(self.max_iters_var.get()),
@@ -895,10 +1148,19 @@ class App(ctk.CTk):
             if not messagebox.askyesno("Trivial criteria", "No star thresholds and no traits are set.\n"
                                        "Every seed will match.\n\nSearch anyway?"):
                 return
-        # Pre-flight: hardcoded-stars unsatisfiability (the Gladiators-bear case).
-        # If a slot's stars are fixed by the origin below a required minimum, no
-        # seed can ever match — warn and require confirmation.
-        if self._legends():
+        # Pre-flight: criteria no seed can meet — stars an origin fixes lower, stats a brother never
+        # gets stars in, more starred stats than he can have (the game's own facts, when known).
+        facts = self._slot_facts(self.origin_var.get())
+        if facts is not None:
+            found = (star_limits.problems(facts, criteria["stars_by_slot"])
+                     + star_limits.roll_problems(facts, criteria["tiers_by_slot"]))
+            if found and not messagebox.askyesno(
+                    "Impossible criteria",
+                    f"No seed can ever match these criteria for \"{self.origin_var.get()}\":\n\n"
+                    + "\n".join(f"  • {p}" for p in found) + "\n\nSearch anyway?"):
+                return
+        # Without them: hardcoded-stars unsatisfiability from the built-in table (the Gladiators-bear case).
+        elif self._legends():
             conflicts = origin_conflicts(self.origin_var.get(), criteria["stars_by_slot"])
             if conflicts:
                 lines = "\n".join(
@@ -989,16 +1251,44 @@ class App(ctk.CTk):
             "battle_sisters": info.get("battle_sisters") if legends else "n/a (no Legends)",
             "origin": self._run["origin"],
             "map_options": {},
+            "game_version": info.get("game_version"),
+            "mods": info.get("mods") or [],
         }
 
     def _ev_progress(self, payload):
-        tested, secs, _found = payload
+        tested, secs, _found = payload[:3]
+        odds = payload[3] if len(payload) > 3 else {}
         self._set_watch_state("running")
         rate = tested / secs if secs > 0 else 0.0
         eta = ""
         if rate > 0 and self._search_total > tested and not self._run["checking"]:
             eta = f" · up to {self._fmt_duration((self._search_total - tested) / rate)} left"
         self.watch_var.set(f"searching · {tested:,} of {self._search_total:,} seeds · {rate:.0f}/s{eta}")
+        if self._run["checking"]:
+            return
+        hint = self._odds_text(odds, rate)
+        if hint:
+            self.status_var.set(hint)
+            self._run["odds_text"] = hint
+        never = odds.get("never") or []
+        self._run["never"] = never
+        if never and odds.get("tested", 0) >= 300 and not self._run.get("warned_never"):
+            self._run["warned_never"] = True
+            who = ", ".join(str(n) for n in never)
+            self._show_notice(f"Brother {who} has not met the criteria once in {odds['tested']:,} seeds — "
+                              f"this may never match. Loosen what you ask of {'him' if len(never) == 1 else 'them'}.",
+                              kind="info")
+
+    def _odds_text(self, odds, rate):
+        """'About 1 in 3,400 seeds matches — one every ~1m15s at this speed.' (or nothing yet)"""
+        chance, tested = odds.get("chance"), odds.get("tested", 0)
+        if not chance or tested < 100:
+            return ""
+        one_in = 1 / chance
+        text = f"About 1 in {one_in:,.0f} seeds matches (estimated from {tested:,} seeds)"
+        if rate > 0:
+            text += f" — one every ~{self._fmt_duration(one_in / rate)} at this speed"
+        return text + "."
 
     def _ev_match(self, payload):
         # the same seed found or checked again replaces its earlier entry
@@ -1041,10 +1331,17 @@ class App(ctk.CTk):
             self.status_var.set(
                 f"{'Stopped' if stopped else 'Search finished'}: {tested:,} seed{'' if tested == 1 else 's'} tested "
                 f"in {self._fmt_duration(secs)}, {found} match{'' if found == 1 else 'es'}"
-                f"{f', {errors} could not be evaluated' if errors else ''}.")
+                f"{f', {errors} could not be evaluated' if errors else ''}."
+                + (f" {self._run['odds_text']}" if not found and self._run.get("odds_text") else ""))
             if not found and not stopped and tested:
-                self._show_notice(f"No seed matched in {tested:,} seeds. Loosen the criteria or raise Max seeds.",
-                                  kind="info")
+                never = self._run.get("never") or []
+                if never:
+                    who = ", ".join(str(n) for n in never)
+                    self._show_notice(f"No seed matched in {tested:,} seeds: brother {who} never met the criteria. "
+                                      f"Loosen what you ask of {'him' if len(never) == 1 else 'them'}.", kind="info")
+                else:
+                    self._show_notice(f"No seed matched in {tested:,} seeds. Loosen the criteria or raise Max seeds.",
+                                      kind="info")
         if self._selftest:
             self._selftest_done(payload)
 
@@ -1156,14 +1453,15 @@ class App(ctk.CTk):
 
     # ── results ──
     def _render_match_list(self):
+        from bbseed.lab import perk_text, roll_text
         for w in self.match_list.winfo_children():
             w.destroy()
         if not self._matches:
             self.match_pane.grid_remove()
             return
         # as tall as its content needs, up to a limit (it scrolls beyond that)
-        wanted = sum(54 + 15 * len(m["roster"]) for m in self._matches)
-        self.match_list.configure(height=max(80, min(230, wanted)))
+        wanted = sum(54 + 15 * len(m["roster"]) * (6 if m.get("show_perks") else 1) for m in self._matches)
+        self.match_list.configure(height=max(80, min(300, wanted)))
         for entry in self._matches:
             ok = entry.get("failure") is None
             row = ctk.CTkFrame(self.match_list, fg_color="#1f6f3a" if ok else "#3a3f4a", corner_radius=6)
@@ -1186,10 +1484,31 @@ class App(ctk.CTk):
             _attach_tooltip(share_btn,
                             "Copies a ready-to-paste Legends Discord seed-sharing post to the clipboard")
             ctk.CTkButton(row, text="×", width=32, height=28, fg_color="transparent", hover_color="#5a1f1f",
-                          command=lambda e=entry: self._dismiss_match(e)).grid(row=0, column=4, padx=(0, 6), pady=(6, 0))
+                          command=lambda e=entry: self._dismiss_match(e)).grid(row=0, column=5, padx=(0, 6), pady=(6, 0))
+            has_perks = any(b.get("perk_groups") or b.get("rolls") for b in entry["roster"])
+            if has_perks:
+                perks_btn = ctk.CTkButton(row, text="▾ Details" if entry.get("show_perks") else "▸ Details",
+                                          width=86, height=28, fg_color="#155028", hover_color="#0e3d1d",
+                                          command=lambda e=entry: self._toggle_perks(e))
+                perks_btn.grid(row=0, column=4, padx=3, pady=(6, 0))
+                _attach_tooltip(perks_btn, "Each brother's stat rolls (where they landed in what his background "
+                                           "can roll) and, with Legends, his perk trees")
             ctk.CTkLabel(row, text="\n".join(roster_lines(entry["roster"])), font=("Consolas", 11), justify="left",
-                         anchor="w", text_color="#e6efe8").grid(row=1, column=0, columnspan=5, sticky="w",
+                         anchor="w", text_color="#e6efe8").grid(row=1, column=0, columnspan=6, sticky="w",
                                                                 padx=12, pady=(2, 8))
+            if has_perks and entry.get("show_perks"):
+                lines = []
+                for i, b in enumerate(entry["roster"], 1):
+                    lines.append(f"{i:2d}. {b['name']} — rolls: {roll_text(b) or 'unknown'}")
+                    if perk_text(b):
+                        lines.append(f"      perk trees: {perk_text(b)}")
+                text = "\n".join(lines)
+                ctk.CTkLabel(row, text=text, font=("Segoe UI", 11), justify="left", anchor="w", wraplength=860,
+                             text_color="#cfe3d4").grid(row=2, column=0, columnspan=6, sticky="w", padx=12, pady=(0, 8))
+
+    def _toggle_perks(self, entry: dict):
+        entry["show_perks"] = not entry.get("show_perks")
+        self._render_match_list()
 
     def _dismiss_match(self, entry: dict):
         self._matches = [m for m in self._matches if m is not entry]
@@ -1222,6 +1541,7 @@ class App(ctk.CTk):
             seed=entry["seed"],
             report_info=entry.get("info") or self._report_info,
             tool_version=APP_VERSION,
+            roster=entry.get("roster"),
         )
 
     def _copy_seed_share(self, entry: dict):
@@ -1298,6 +1618,7 @@ class App(ctk.CTk):
 
     def _on_close(self):
         self._stop.set()
+        self._catalog_stop.set()
         self._save_settings()
         self.destroy()
 
@@ -1312,6 +1633,11 @@ class App(ctk.CTk):
         def go():
             self.setup_var.set(spec.get("setup", O.DEFAULT_SETUP))
             self._on_setup_change()
+            # "catalog": true — load (or build) what the origins can roll first, and wait for it
+            if spec.get("catalog") and self._profile() not in self._catalogs:
+                self._ensure_catalog()
+                self.after(500, go)
+                return
             self.origin_var.set(spec["origin"])
             self._on_origin_change(spec["origin"])
             for var in self.banned_vars.values():
@@ -1326,10 +1652,16 @@ class App(ctk.CTk):
                     self.required_vars[t].set(True)
             for (slot, stat), var in self.stars_vars.items():
                 var.set(str(spec.get("stars", {}).get(slot, {}).get(stat, 0)))
+            for (slot, stat), var in self.tiers_vars.items():
+                var.set(spec.get("tiers", {}).get(slot, {}).get(stat, "any"))
+            if spec.get("grid"):
+                self.grid_mode_var.set(spec["grid"])
+                self._on_grid_mode()
             self.max_iters_var.set(str(spec.get("max_seeds", 2000)))
             self.sisters_var.set(spec.get("battle_sisters", O.BATTLE_SISTERS[1]))
             self.count_var.set(str(spec.get("count", 2)))
             self.workers_var.set(str(spec.get("workers", 4)))
+            self.share_desc_var.set(spec.get("description", ""))
             if spec.get("check"):
                 self.check_seed_var.set(spec["check"])
                 self._on_check_seed()
@@ -1341,9 +1673,17 @@ class App(ctk.CTk):
 
     def _selftest_done(self, payload):
         spec = self._selftest
+        if spec.get("show_perks"):          # open every result's perk trees before the screenshot
+            for m in self._matches:
+                m["show_perks"] = True
+            self._render_match_list()
         Path(spec["out"]).write_text(json.dumps({
             "finished": list(payload), "status": self.status_var.get(), "notice": self.notice_var.get(),
             "title": self.title(), "setups": list(O.SETUPS),
+            "catalog": self._catalog() is not None, "origin_info": self.origin_info_var.get(),
+            "tooltips": {t: self._trait_tooltip(t) for t in spec.get("tooltips", [])},
+            "stars": {f"{slot}:{stat}": v.get() for (slot, stat), v in self.stars_vars.items() if v.get() != "0"},
+            "cells": {f"{slot}:{stat}": len(w.cget("values")) - 1 for (slot, stat), w in self.stars_widgets.items()},
             "matches": [{"seed": m["seed"], "origin": m["origin"], "stable": m["stable"], "failure": m["failure"],
                          "checked": m["checked"], "lines": roster_lines(m["roster"])} for m in self._matches],
             "share": None if not self._matches else self._share_report(self._matches[0]),

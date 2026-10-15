@@ -64,6 +64,31 @@ def test_slot_beyond_roster_fails():
     assert first_failure([bro(hp=3)], c) == "no bro4 in this origin's roster"
 
 
+def test_odds_multiply_the_slots_pass_rates():
+    from bbseed.search import Odds
+    c = normalize({"stars_by_slot": {"1": "msk2", "2": "mdf1"}})
+    odds = Odds()
+    assert odds.chance() is None
+    odds.add_roster([bro(msk=2), bro(mdf=1)], c)
+    odds.add_roster([bro(msk=2), bro()], c)
+    odds.add_roster([bro(), bro(mdf=2)], c)
+    odds.add_roster([bro(), bro()], c)
+    assert odds.tested == 4 and odds.passed == [2, 2]
+    assert odds.chance() == 0.25 and odds.never() == []
+
+
+def test_odds_name_a_slot_that_never_passes_and_merge_worker_counts():
+    from bbseed.search import Odds
+    c = normalize({"stars_by_slot": {"2": "hp3"}})
+    worker = Odds()
+    for _ in range(3):
+        worker.add_roster([bro(), bro(hp=1)], c)
+    total = Odds()
+    total.merge(*worker.take())
+    assert worker.tested == 0 and total.tested == 3
+    assert total.chance() == 0.0 and total.never() == [2]
+
+
 def test_seeds_are_ten_digits():
     assert seed_text(42) == "0000000042"
     assert seed_text(10 ** 10 + 7) == "0000000007"

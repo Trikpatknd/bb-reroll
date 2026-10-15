@@ -51,9 +51,10 @@ def default_criteria() -> dict:
 
 
 def is_trivial(criteria: dict) -> bool:
-    """No stars and no traits asked for: every seed matches."""
+    """No stars, no stat rolls and no traits asked for: every seed matches."""
     any_star = any(any(v > 0 for v in s.values()) for s in criteria["stars_by_slot"].values())
-    return not (any_star or criteria["required"] or criteria["banned"])
+    any_roll = any(any(v in ("mid", "high") for v in s.values()) for s in (criteria.get("tiers_by_slot") or {}).values())
+    return not (any_star or any_roll or criteria["required"] or criteria["banned"])
 
 
 def to_int(text):

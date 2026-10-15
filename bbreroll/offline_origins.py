@@ -161,9 +161,47 @@ def is_legends_only(name):
 
 
 def names_for(setup):
-    """Origin names offered for a game setup, in the GUI's order."""
-    _profile, legends = SETUPS.get(setup, (None, False))
-    return [n for n in SCENARIO if n not in NOT_SEARCHABLE and (legends or not is_legends_only(n))]
+    """Origin names offered for a game setup, in the GUI's order: the known origins, then any
+    the setup's own mods add (see add_extras)."""
+    profile, legends = SETUPS.get(setup, (None, False))
+    known = [n for n in BUILT_IN if n not in NOT_SEARCHABLE and (legends or not is_legends_only(n))]
+    return known + EXTRAS.get(profile, [])
+
+
+# The origin names above, before origins of other mods were added to SCENARIO.
+BUILT_IN = tuple(SCENARIO)
+# Not origins of their own: the tutorial, and vanilla's "Random" (the menu picks one of the other
+# origins with a random draw before the campaign seed is applied — the pick is not the seed's).
+NOT_ORIGINS = {"tutorial_scenario", "random_scenario"}
+# profile -> names of origins its mods add, beyond the known ones
+EXTRAS = {}
+
+
+def menu_extras(catalog):
+    """[(name, script)] of the origins the game's own menu offers that the known list does not
+    have — added by other mods — and that the catalog could roll. A name the list already uses
+    for another origin gets the script name added."""
+    if not catalog:
+        return []
+    known = set(SCENARIO.values()) | NOT_ORIGINS
+    rolled = catalog.get("talents") or {}
+    out = []
+    for script, _sid, title in catalog.get("origins") or ():
+        if script in known or script not in rolled or "error" in rolled[script]:
+            continue
+        name = title if title not in SCENARIO or SCENARIO[title] == script else "%s (%s)" % (title, script)
+        out.append((name, script))
+    return out
+
+
+def add_extras(profile, catalog):
+    """Offer the origins a setup's mods add (from its catalog); returns their names."""
+    names = []
+    for name, script in menu_extras(catalog):
+        SCENARIO[name] = script
+        names.append(name)
+    EXTRAS[profile] = names
+    return names
 
 
 refresh()

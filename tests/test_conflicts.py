@@ -43,3 +43,11 @@ def test_partial_origin_rolled_slot_skipped():
 
 def test_unknown_origin_no_conflict():
     assert ohs.conflicts("Nonexistent Origin", {"*": {"msk": 3}}) == []
+
+
+def test_a_slot_with_a_roll_on_top_only_knows_its_fixed_stars():
+    # Berserker: HP 3 and MSK 3 fixed, two more stats rolled — FAT 3 is possible, MSK above 3 is not
+    assert ohs.conflicts("Berserker", {"*": {"fat": 3, "hp": 3}}) == []
+    # Inquisition, brother 2: RES 3 and RSK 3 fixed plus one roll; brother 1 and 3 fully fixed
+    c = ohs.conflicts("The Inquisition", {"*": {"mdf": 1}})
+    assert (2, "mdf", 1, 0) not in c and (1, "mdf", 1, 0) in c
