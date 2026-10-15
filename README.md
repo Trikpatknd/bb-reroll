@@ -53,12 +53,15 @@ Put the `.exe` anywhere and double-click it. For dev mode (no build): `pip insta
 ## Use
 
 1. **Game setup** — `Legends` (your game with the mods in its data folder) or `Vanilla` (your game without mods). Only what is installed is offered; the **Game folder…** button shows what was found and lets you pick another install.
-2. **Origin** — the brother count fills in by itself.
-3. **Stars grid** — 0 = don't care, 1-3 = minimum stars. Row `*` is the rule for every brother; a numbered row replaces it for that brother (a numbered row of all zeros falls back to `*`). With Legends, the stars an origin fixes for a brother are shown above the grid and pre-filled.
-4. **Banned / Required traits** — tick what matters. No brother may have a banned trait; every brother needs one (`any`) or all (`all`) of the required ones. Traits can be renamed, removed and added.
+2. **Origin** — the brother count fills in by itself. Origins that other installed mods add to the game's menu are listed too.
+3. **Stars grid** — 0 = don't care, 1-3 = minimum stars. Row `*` is the rule for every brother; a numbered row replaces it for that brother (a numbered row of all zeros falls back to `*`). Above the grid you see what each brother of the origin can get at all — stars the origin fixes (pre-filled), how many stats are rolled, stats that never get stars — and each cell only offers what is possible. Criteria no seed can meet (more starred stats than a brother can have, a stat he never gets stars in, a fixed star asked higher) are named before the search starts.
+   **Stat rolls** (switch above the grid) — the least a base stat's roll may be: *mid* = the middle third or better, *high* = the top third **of what that brother's background can roll**. The background sets most of a stat (a Minstrel always has 55 melee skill); the seed only moves it inside that range, so this is what a search can actually choose. Cells for stats the seed cannot move for that brother are greyed. Results show each brother's rolls under **▸ Details**, e.g. `MSK 48 high (45-50)`.
+4. **Banned / Required traits** — tick what matters. No brother may have a banned trait; every brother needs one (`any`) or all (`all`) of the required ones. Hover a trait to see what it does, from the game's own tooltip (▲ good, ▼ bad). Traits can be renamed, removed and added.
 5. **Battle sisters** — set it as in the game's Mod Options (Legends only); it changes who is rolled.
-6. **▶ Search** — the status line shows progress and speed; **■ Stop** ends it. Matches appear in the result list with their roster, a **Copy** button for the seed, **Roster** for the full details and **Seed share** for a ready-made Legends Discord post.
+6. **▶ Search** — the status line shows progress, speed and, after a few hundred seeds, an estimate like *about 1 in 3,400 seeds matches — one every ~1m15s*. If a brother has not met his criteria once in 300 seeds, a notice says so. **■ Stop** ends it. Matches appear in the result list with their roster, a **Copy** button for the seed, **Roster** for the full details, **▸ Details** for each brother's stat rolls and (Legends) perk groups and **Seed share** for a ready-made Legends Discord post (with every brother's stars, the game version and the installed mods, so others can tell whether the seed works for them).
 7. Start a New Campaign with the same origin and type the seed **exactly as shown**.
+
+The first start after installing or updating the game or a mod works out what each origin can roll and what each trait does (about 2 minutes with Legends, in the background; kept under `%LOCALAPPDATA%\BB Reroll`). Searching works meanwhile — only the extra checks and tooltips wait for it.
 
 **Check a seed** shows the roster any seed gives for the chosen setup and origin — handy for a seed someone shared. Seed text is case-sensitive in the game (`SEEDTEST` and `seedtest` are different seeds); the search only produces digit seeds, so there is nothing to mistype.
 
@@ -83,8 +86,10 @@ The search is also a command-line tool:
 
 ```powershell
 python -m bbseed.search --profile legends --origin trader_scenario --stars 1 "res2 fat2" --ban dumb --count 3
+python -m bbseed.search --profile legends --origin trader_scenario --tier 1 "msk:high hp:mid" --count 3
 python -m bbseed.search --profile vanilla --origin early_access_scenario --show 1234567890
 python -m bbseed.search --profile legends --list-origins
+python -m bbseed.catalog --profile legends     # what each origin's brothers can get (stars), per slot
 ```
 
 ---
@@ -92,8 +97,9 @@ python -m bbseed.search --profile legends --list-origins
 ## Limits
 
 - **Deserters is not offered.** Its recruits are created after a step that depends on the generated map, so the seed text alone does not decide them.
+- **Vanilla's "Random" origin is not offered**: the game picks the origin with a random draw before the seed is used, so a seed cannot decide it. Pick the origin itself instead.
 - **Mod Options**: only Legends' Battle Sisters can be set. Every other mod setting is taken at the mod's default; if you changed one that affects recruits, results can differ.
-- **The origin list is fixed** (Legends 19.4.22). An origin added by another mod is not listed.
+- **Origins whose backgrounds change from seed to seed** (Legends' Random Party/Solo/Trio, Free Company, Peasant Militia) get no limits in the stars grid: what they can roll is only what a sample of seeds showed.
 - **Other mods** are loaded as they are installed. A mod that needs engine functions the stand-in does not model stops the search with a load error instead of giving wrong results.
 - The game's **Map Options do not affect the starting brothers** (they are rolled from the seed after the map is made), only the map itself.
 
@@ -112,7 +118,8 @@ bb_reroll/
 ├── bbreroll/                     # GUI helpers (tkinter-free, unit-tested)
 │   ├── criteria.py               #   criteria model, default trait lists, pre-search checks
 │   ├── offline_origins.py        #   game setups found on this PC, origins and their scenario scripts
-│   ├── origin_hardcoded_stars.py #   per-origin hardcoded talent stars (Legends)
+│   ├── origin_hardcoded_stars.py #   per-origin fixed talent stars (Legends; fallback until the catalog exists)
+│   ├── star_limits.py            #   what stars each brother can get → grid limits, info text, impossible criteria
 │   ├── seed_report.py            #   Discord seed-share post formatter
 │   └── trait_names.py            #   trait ID → display name
 ├── bbseed/                       # the search: the game's campaign-start scripts, run without the game
@@ -120,12 +127,16 @@ bb_reroll/
 │   ├── sq/                       #   Squirrel interpreter (source text and compiled scripts)
 │   ├── engine.py, world.py       #   stand-in for the engine's native side
 │   ├── gamedata.py, profiles.py  #   finds the install, reads its script archives, defines the setups
-│   ├── lab.py                    #   Lab(profile).roster(seed, origin)
-│   └── search.py                 #   the parallel search (+ command line)
+│   ├── lab.py                    #   Lab(profile).roster(seed, origin), perk groups, installed mods
+│   ├── search.py                 #   the parallel search + match-odds estimate (+ command line)
+│   ├── talents.py                #   which stars the talent roll makes and which ones an origin fixes
+│   ├── rolls.py                  #   each stat roll's place in what the background can roll (low/mid/high)
+│   ├── traits.py                 #   what each trait does, from the game's tooltips
+│   └── catalog.py                #   per installed game: origins, star facts, trait effects (cached)
 └── tests/                        # pytest suite (python -m pytest)
 ```
 
-Tests that need the game (`tests/test_offline_game.py`, part of `tests/test_offline_origins.py`) are skipped when it is not installed.
+Tests that need the game (`tests/test_offline_game.py`, `tests/test_game_features.py`, part of `tests/test_offline_origins.py`) are skipped when it is not installed.
 
 ---
 
