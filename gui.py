@@ -65,6 +65,7 @@ except Exception:
 
 from bbreroll import offline_origins as O
 from bbreroll import star_limits
+from bbreroll import backgrounds as background_limits
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
     explain_failure, roster_lines, sanitize_trait, to_int,
@@ -372,6 +373,12 @@ class App(ctk.CTk):
         # stat rolls: the least tier per stat ("any" / "mid" / "high"), same rows as the stars
         self.tiers_vars:             dict[tuple[str, str], ctk.StringVar] = {}
         self.tiers_widgets:          dict[tuple[str, str], "ctk.CTkOptionMenu"] = {}
+        # backgrounds: per brother slot (and "any" for at least one brother) the background asked
+        # for, by name; ANY_BACKGROUND = no condition. Name -> id per row.
+        self.background_vars:        dict[str, ctk.StringVar] = {}
+        self._background_ids:        dict[str, dict[str, str]] = {}
+        self._background_widgets:    dict[str, "ctk.CTkOptionMenu"] = {}
+        self._pending_backgrounds:   dict[str, str] = {}    # saved conditions, until the catalog shows the menus
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
         self.required_vars: dict[str, ctk.BooleanVar] = {}
         self.banned_known   = self._saved_list("known_banned", DEFAULT_BANNED)
@@ -480,7 +487,7 @@ class App(ctk.CTk):
         self.grid_title = _title(cond, "STARS")
         self.grid_title.grid(row=0, column=0, sticky="w", padx=14, pady=(10, 0))
         self.grid_mode_var = ctk.StringVar(value="Stars")
-        ctk.CTkSegmentedButton(cond, values=["Stars", "Stat rolls"], variable=self.grid_mode_var,
+        ctk.CTkSegmentedButton(cond, values=["Stars", "Stat rolls", "Backgrounds"], variable=self.grid_mode_var,
                                command=self._on_grid_mode, font=(FONT, 12), height=28,
                                fg_color=PALETTE["control"], selected_color=PALETTE["accent"],
                                selected_hover_color=PALETTE["accent_hover"], unselected_color=PALETTE["control"],
@@ -497,6 +504,9 @@ class App(ctk.CTk):
         self.tiers_frame = ctk.CTkFrame(cond, fg_color="transparent")
         self.tiers_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
         self.tiers_frame.grid_remove()
+        self.backgrounds_frame = ctk.CTkFrame(cond, fg_color="transparent")
+        self.backgrounds_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
+        self.backgrounds_frame.grid_remove()
         # why a stars cell is closed: one colour per reason
         self.stars_legend = ctk.CTkFrame(cond, fg_color="transparent")
         self.stars_legend.grid(row=4, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 10))
@@ -782,8 +792,14 @@ class App(ctk.CTk):
                       "The thirds are of the values that the background of the brother can roll. "
                       "The background sets most of a stat; the seed changes it only in this range.\n"
                       "Row All is for each brother. Dark cells: the seed cannot change this stat for this brother.",
+        "Backgrounds": "Select the background that a brother must have. Some origins let the seed select the "
+                       "background. Other origins always give the same backgrounds.\n"
+                       "Row Any brother: at least one brother must have this background. Use it with the stat "
+                       "rolls: a high roll is high for the background of the brother.",
     }
     _SET_ROW = "Set row"
+    ANY_BACKGROUND = "Any background"
+    _GRID_TITLES = {"Stars": "STARS", "Stat rolls": "STAT ROLLS", "Backgrounds": "BACKGROUNDS"}
 
     # closed cells: why they are closed decides their look (legend under the grid)
     _CLOSED = {"never": ("never", "never_text"), "fixed": ("fixed", "fixed_text"), "full": ("full", "full_text")}
@@ -853,11 +869,14 @@ class App(ctk.CTk):
 
     def _on_grid_mode(self, mode=None):
         mode = self.grid_mode_var.get()
-        rolls = mode == "Stat rolls"
-        self.grid_title.configure(text="STAT ROLLS" if rolls else "STARS")
+        if mode not in self._GRID_HELP:
+            mode = "Stars"
+        stars = mode == "Stars"
+        self.grid_title.configure(text=self._GRID_TITLES[mode])
         self.grid_help.configure(text=self._GRID_HELP[mode])
-        for widget, show in ((self.stars_frame, not rolls), (self.origin_info_label, not rolls),
-                             (self.stars_legend, not rolls), (self.tiers_frame, rolls)):
+        for widget, show in ((self.stars_frame, stars), (self.origin_info_label, stars),
+                             (self.stars_legend, stars), (self.tiers_frame, mode == "Stat rolls"),
+                             (self.backgrounds_frame, mode == "Backgrounds")):
             widget.grid() if show else widget.grid_remove()
 
     def _grid_header(self, frame):
@@ -918,6 +937,64 @@ class App(ctk.CTk):
                 if len(options) == 1:
                     self._close_cell(w, "never")
             self._row_setter(self.tiers_frame, ri, slot, ["high", "mid", "any"], self._set_roll_row)
+
+    def _on_background_changed(self, slot, *_):
+        widget = self._background_widgets.get(slot)
+        if widget is not None:
+            self._style_cell(widget, PALETTE["roll"], PALETTE["roll_btn"],
+                             self.background_vars[slot].get() != self.ANY_BACKGROUND)
+
+    def _rebuild_backgrounds_view(self, n, facts):
+        """One row per brother: a menu of the backgrounds he can get when the seed selects it, else
+        his fixed background as text; and the row "Any brother" when two or more brothers vary."""
+        prior = {k: v.get() for k, v in self.background_vars.items()}
+        for w in self.backgrounds_frame.winfo_children():
+            w.destroy()
+        self.background_vars.clear()
+        self._background_ids.clear()
+        self._background_widgets = {}
+        names = background_limits.names_for(self._catalog(), O.SCENARIO.get(self.origin_var.get()))
+        per_slot = background_limits.choices(facts, names)
+        info = background_limits.describe(facts, names) if facts else (
+            self._catalog_progress or "The backgrounds of this origin are not known yet.")
+        ctk.CTkLabel(self.backgrounds_frame, text=info, font=(FONT, 11), text_color=PALETTE["star"], justify="left",
+                     anchor="w", wraplength=880).grid(row=0, column=0, columnspan=3, sticky="w", padx=(4, 2), pady=(0, 4))
+        rows = []
+        some = background_limits.any_choices(facts, names)
+        if some:
+            rows.append((background_limits.ANY_BROTHER, "Any brother", some))
+        for i in range(1, n + 1):
+            rows.append((str(i), str(i), per_slot[i - 1] if facts and i <= len(per_slot) else None))
+        # two columns of rows for a big roster (Peasant Militia has 12 brothers)
+        half = (len(rows) + 1) // 2 if len(rows) > 7 else len(rows)
+        for k, (slot, label, options) in enumerate(rows):
+            row, col = 1 + k % half, 3 * (k // half)
+            ctk.CTkLabel(self.backgrounds_frame, text=label, width=46 if slot != background_limits.ANY_BROTHER else 90,
+                         anchor="w", font=(FONT, 12, "bold"),
+                         text_color=PALETTE["text"]).grid(row=row, column=col, sticky="w", padx=(4 if col == 0 else 24, 2),
+                                                          pady=2)
+            if options is not None and len(options) > 1:
+                ids = {name: bid for bid, name in options}
+                self._background_ids[slot] = ids
+                value = prior.get(slot, self.ANY_BACKGROUND)
+                pending = self._pending_backgrounds.get(slot)
+                if pending is not None:
+                    value = next((name for name, bid in ids.items() if bid == pending), value)
+                if value not in ids:
+                    value = self.ANY_BACKGROUND
+                v = ctk.StringVar(value=value)
+                self.background_vars[slot] = v
+                w = _menu(self.backgrounds_frame, [self.ANY_BACKGROUND] + list(ids), v, 230)
+                w.grid(row=row, column=col + 1, sticky="w", padx=2, pady=2)
+                self._background_widgets[slot] = w
+                v.trace_add("write", lambda *_a, s=slot: self._on_background_changed(s))
+                self._on_background_changed(slot)
+            else:
+                text = options[0][1] if options else "Not known yet"
+                ctk.CTkLabel(self.backgrounds_frame, text=text, font=(FONT, 12), anchor="w", width=230,
+                             text_color=PALETTE["muted"]).grid(row=row, column=col + 1, sticky="w", padx=8, pady=2)
+        if facts:
+            self._pending_backgrounds = {}
 
     def _schedule_grid_rebuild(self):
         """Debounce: typing a count or picking an origin writes bro_count_var
@@ -980,6 +1057,7 @@ class App(ctk.CTk):
             self._limit_random_stars(slot)
             # no "Set row" here: a brother gets stars in only 2 to 4 stats, so a full row never matches
         self._rebuild_tiers_grid(n, facts)
+        self._rebuild_backgrounds_view(n, facts)
 
     # ── game setup / origin ──
     def _legends(self) -> bool:
@@ -1010,6 +1088,11 @@ class App(ctk.CTk):
         # Rebuild synchronously so hardcoded stars can be pre-filled right away;
         # this also cancels the debounced rebuild the bro_count_var write just
         # scheduled.
+        # a new origin starts with no background conditions (saved ones are for the saved origin only)
+        if value != self._saved.get("last_origin"):
+            self._pending_backgrounds = {}
+        for var in self.background_vars.values():
+            var.set(self.ANY_BACKGROUND)
         self._rebuild_stars_grid()
         # a new origin starts with empty brother rows (row All stays; locked cells show the origin's stars)
         for key, var in self.stars_vars.items():
@@ -1041,6 +1124,9 @@ class App(ctk.CTk):
 
     def _catalog(self):
         return self._catalogs.get(self._profile())
+
+    def _background_names(self):
+        return background_limits.names_for(self._catalog(), O.SCENARIO.get(self.origin_var.get()))
 
     def _slot_facts(self, origin):
         """Per brother slot: the stars the origin can give at all (None until known)."""
@@ -1250,9 +1336,18 @@ class App(ctk.CTk):
                      if s == slot and var.get() in ("mid", "high")}
             if slot == "*" or entry:
                 tiers_by_slot[slot] = entry
+        # backgrounds: the rows that ask for one (saved ones still waiting for the catalog count too)
+        backgrounds_by_slot = {slot: [bid] for slot, bid in self._pending_backgrounds.items()}
+        for slot, var in self.background_vars.items():
+            bid = self._background_ids.get(slot, {}).get(var.get())
+            if bid:
+                backgrounds_by_slot[slot] = [bid]
+            else:
+                backgrounds_by_slot.pop(slot, None)
         return {
             "stars_by_slot": stars_by_slot,
             "tiers_by_slot": tiers_by_slot,
+            "backgrounds_by_slot": backgrounds_by_slot,
             "banned":   [t for t, v in self.banned_vars.items()   if v.get()],
             "required": [t for t, v in self.required_vars.items() if v.get()],
             "required_mode": self.required_mode_var.get(),
@@ -1289,6 +1384,15 @@ class App(ctk.CTk):
                 for stat, level in (stats or {}).items():
                     if (slot, stat) in self.tiers_vars and level in ("mid", "high"):
                         self.tiers_vars[(slot, stat)].set(level)
+        backgrounds = saved.get("backgrounds_by_slot")
+        if isinstance(backgrounds, dict) and self._saved.get("last_origin") == self.origin_var.get():
+            for slot, ids in backgrounds.items():
+                if isinstance(ids, list) and ids and isinstance(ids[0], str):
+                    name = next((n for n, bid in self._background_ids.get(slot, {}).items() if bid == ids[0]), None)
+                    if name is not None:
+                        self.background_vars[slot].set(name)
+                    else:           # the menus come with the catalog
+                        self._pending_backgrounds[slot] = ids[0]
 
     def _numbers(self):
         values = {SEEDS_TO_TEST: to_int(self.max_iters_var.get()),
@@ -1307,7 +1411,7 @@ class App(ctk.CTk):
             return
         # Pre-flight: trivially-passing criteria match every seed immediately.
         if is_trivial(criteria):
-            if not messagebox.askyesno("No conditions", "You set no stars, no stat rolls and no traits. "
+            if not messagebox.askyesno("No conditions", "You set no stars, no stat rolls, no backgrounds and no traits. "
                                        "Each seed matches.\n\nSearch?"):
                 return
         # Pre-flight: criteria no seed can meet — stars an origin fixes lower, stats a brother never
@@ -1315,7 +1419,8 @@ class App(ctk.CTk):
         facts = self._slot_facts(self.origin_var.get())
         if facts is not None:
             found = (star_limits.problems(facts, criteria["stars_by_slot"])
-                     + star_limits.roll_problems(facts, criteria["tiers_by_slot"]))
+                     + star_limits.roll_problems(facts, criteria["tiers_by_slot"])
+                     + background_limits.problems(facts, criteria["backgrounds_by_slot"], self._background_names()))
             if found and not messagebox.askyesno(
                     "Impossible conditions",
                     f"No seed can match these conditions for {self.origin_var.get()}:\n\n"
@@ -1440,6 +1545,10 @@ class App(ctk.CTk):
             self._show_notice(f"Brother {who} did not match the conditions in {odds['tested']:,} seeds. "
                               f"Possibly no seed matches. Use easier conditions for "
                               f"{'this brother' if len(never) == 1 else 'these brothers'}.", kind="info")
+        elif odds.get("never_any") and odds.get("tested", 0) >= 300 and not self._run.get("warned_never"):
+            self._run["warned_never"] = True
+            self._show_notice(f"No brother had the background of row Any brother in {odds['tested']:,} seeds. "
+                              f"Possibly no seed matches. Select a different background.", kind="info")
 
     def _odds_text(self, odds, rate):
         """'Approximately 1 in 3,400 seeds matches (...). At this speed, that is 1 match in ...' (or nothing)"""
@@ -1637,7 +1746,8 @@ class App(ctk.CTk):
             sub = f"{entry['origin']} · {entry['setup']}"
             if entry.get("checked"):
                 sub += ("  ·  Checked: matches the conditions" if ok else
-                        "  ·  Checked: " + explain_failure(entry["failure"], self._display_for))
+                        "  ·  Checked: " + explain_failure(entry["failure"], self._display_for,
+                                                           self._background_names()))
             ctk.CTkLabel(card, text=sub, font=(FONT, 12), text_color=PALETTE["muted"] if ok else PALETTE["bad"],
                          anchor="w").grid(row=0, column=1, sticky="w", pady=(8, 0))
             buttons = ctk.CTkFrame(card, fg_color="transparent")
@@ -1825,6 +1935,9 @@ class App(ctk.CTk):
                     var.set(str(spec.get("stars", {}).get(slot, {}).get(stat, 0)))
             for (slot, stat), var in self.tiers_vars.items():
                 var.set(spec.get("tiers", {}).get(slot, {}).get(stat, "any"))
+            for slot, var in self.background_vars.items():
+                wanted = spec.get("backgrounds", {}).get(slot)
+                var.set(next((n for n, bid in self._background_ids[slot].items() if bid == wanted), self.ANY_BACKGROUND))
             if spec.get("grid"):
                 self.grid_mode_var.set(spec["grid"])
                 self._on_grid_mode()
@@ -1857,6 +1970,8 @@ class App(ctk.CTk):
             "tooltips": {t: self._trait_tooltip(t) for t in spec.get("tooltips", [])},
             "stars": {f"{slot}:{stat}": v.get() for (slot, stat), v in self.stars_vars.items() if v.get() != "0"},
             "cells": {f"{slot}:{stat}": len(w.cget("values")) - 1 for (slot, stat), w in self.stars_widgets.items()},
+            "backgrounds": {slot: len(ids) for slot, ids in self._background_ids.items()},
+            "criteria": self._gather_criteria(),
             "matches": [{"seed": m["seed"], "origin": m["origin"], "stable": m["stable"], "failure": m["failure"],
                          "checked": m["checked"], "lines": roster_lines(m["roster"])} for m in self._matches],
             "share": None if not self._matches else self._share_report(self._matches[0]),

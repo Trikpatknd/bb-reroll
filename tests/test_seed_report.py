@@ -110,3 +110,10 @@ def test_older_entries_without_mod_info_have_no_mods_line():
 def test_without_roster_there_is_no_bros_line():
     out = build_seed_report("Gladiators", "x", "ABCDEFGH12", FULL_INFO, "4.0.0")
     assert "Bros:" not in out
+
+
+def test_the_bros_line_names_each_brothers_background():
+    roster = [{"stars": {"msk": 3}, "background_name": "Hedge Knight"},
+              {"stars": {}, "background_name": "Background: Sellsword"}]
+    out = build_seed_report("Free Company", "x", "1234567890", FULL_INFO, "4.2.0", roster=roster)
+    assert "Bros: 1) Hedge Knight MSK3 | 2) Sellsword no stars\n" in out

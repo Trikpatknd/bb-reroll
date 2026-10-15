@@ -87,3 +87,41 @@ def test_a_slot_whose_background_changes_is_marked():
     facts.add("background.farmhand", stars(hp=1), {"hp"})
     facts.add("background.miller", stars(fat=2), {"fat"})
     assert facts.summary()["varied"]
+
+
+def test_a_slot_that_picks_from_a_list_can_get_the_whole_list():
+    # Free Company brother 3: one of six elite backgrounds; the samples showed only two of them
+    elite = ["background.hedge_knight", "background.swordmaster", "background.gladiator"]
+    facts = SlotFacts()
+    facts.add("background.hedge_knight", stars(msk=1), {"msk"}, pool=elite)
+    facts.add("background.swordmaster", stars(mdf=1), {"mdf"}, pool=elite)
+    s = facts.summary()
+    assert s["choices"] == sorted(elite) and s["choices_exact"] and s["varied"]
+
+
+def test_a_list_with_one_background_seen_once_is_still_varied():
+    facts = SlotFacts()
+    facts.add("background.gambler", stars(), set(), pool=["background.gambler", "background.thief"])
+    assert facts.summary()["varied"] and facts.summary()["choices"] == ["background.gambler", "background.thief"]
+
+
+def test_a_background_the_origin_sets_outside_any_list_is_not_exact():
+    facts = SlotFacts()
+    facts.add("background.legend_commander_beggar", stars(), set(), pool=None)
+    facts.add("background.legend_commander_beggar", stars(), set(), pool=["background.beggar"])  # replaced later
+    s = facts.summary()
+    assert s["choices"] == ["background.legend_commander_beggar"] and not s["choices_exact"] and not s["varied"]
+
+
+def test_brothers_that_share_a_list_share_every_list():
+    # Random Party: each brother rolls from the common list, 1 time in 100 from the party list
+    from bbseed.talents import share_lists
+    common, party, other = ["background.a", "background.b"], ["background.c"], ["background.d", "background.e"]
+    one, five, solo = SlotFacts(), SlotFacts(), SlotFacts()
+    one.add("background.a", stars(), set(), pool=common)
+    five.add("background.b", stars(), set(), pool=common)
+    five.add("background.c", stars(), set(), pool=party)
+    solo.add("background.d", stars(), set(), pool=other)
+    share_lists([one, five, solo])
+    assert one.summary()["choices"] == ["background.a", "background.b", "background.c"]
+    assert solo.summary()["choices"] == ["background.d", "background.e"]

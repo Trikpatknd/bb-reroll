@@ -42,12 +42,14 @@ def _version_line(report_info: dict) -> str:
 
 
 def _bros_line(roster) -> str:
-    """'Bros: 1) MSK3 MDF2 | 2) FAT2 | ...' — each brother's talent stars, in stat order."""
+    """'Bros: 1) Hedge Knight MSK3 MDF2 | 2) Sellsword FAT2 | ...' — each brother's background
+    (when the roster has it) and talent stars, in stat order."""
     parts = []
     for i, bro in enumerate(roster, 1):
         stars = bro.get("stars") or {}
-        text = " ".join(f"{s.upper()}{stars[s]}" for s in STATS if stars.get(s))
-        parts.append(f"{i}) {text or 'no stars'}")
+        text = " ".join(f"{s.upper()}{stars[s]}" for s in STATS if stars.get(s)) or "no stars"
+        background = (bro.get("background_name") or "").replace("Background: ", "")
+        parts.append(f"{i}) {background + ' ' if background else ''}{text}")
     return "Bros: " + " | ".join(parts)
 
 

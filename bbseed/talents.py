@@ -19,16 +19,44 @@ talents and, in Legends, the stats undead recruits cannot get; Legends' pick wei
 0). A call whose picks survive to the final roster tells which stats the roll could have
 starred; a call the origin overwrites afterwards tells nothing. More seeds are rolled only to
 see every background an origin can give a slot.
+
+The backgrounds a slot can get come the same way: the origin hands setStartValuesEx() a list of
+background scripts and it picks one with one draw. The wrapper records that list; when the
+recruit's final background is the one that call picked, the list is the slot's whole choice on
+that seed (an origin that picks from different lists on different seeds, like Legends' Random
+Party with its rare second list, shows each list only on the seeds that used it).
 """
+from .sq.runtime import tostring
+
 STATS = ("hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf")
 
 # One log entry per fillTalentValues call: [entity, talents before, talents after, excluded talents,
 # pick weights (Legends) or null, zombie?, skeleton?]. Vanilla's version takes no arguments,
 # Legends' takes (_num, _force): pass them on as they come.
+# setStartValuesEx (vargv[1]: the player class and the copies derived classes hold): one entry per
+# call, [entity, the background scripts it could pick from (null: not a list), the background id
+# the recruit has after it]. It reads, it draws nothing.
 _WRAP = """
 local cls = vargv[0];
 if ("BBR_TalentLog" in ::getroottable()) return;
 ::BBR_TalentLog <- [];
+::BBR_BackgroundLog <- [];
+foreach (c in vargv[1])
+{
+    if ("BBR_BackgroundWrapped" in c) continue;
+    local start = c.setStartValuesEx;
+    c.BBR_BackgroundWrapped <- true;
+    c.setStartValuesEx <- function (...)
+    {
+        local list = vargv.len() > 0 && typeof vargv[0] == "array" ? clone vargv[0] : null;
+        local args = [this];
+        args.extend(vargv);
+        local ret = start.acall(args);
+        local background = this.getBackground();
+        ::BBR_BackgroundLog.push([this, list, background != null ? background.getID() : null]);
+        return ret;
+    };
+}
 local fill = cls.fillTalentValues;
 cls.fillTalentValues <- function(...)
 {
@@ -45,7 +73,8 @@ cls.fillTalentValues <- function(...)
     return ret;
 };
 """
-# The calls per recruit, in roster order.
+# Per recruit, in roster order: [his fillTalentValues calls, his last setStartValuesEx call as
+# [list, background id after it] or null].
 _TAKE = """
 local out = [];
 foreach (bro in ::World.getPlayerRoster().getAll())
@@ -53,9 +82,23 @@ foreach (bro in ::World.getPlayerRoster().getAll())
     local calls = [];
     foreach (e in ::BBR_TalentLog)
         if (e[0] == bro) calls.push(e.slice(1));
-    out.push(calls);
+    local pick = null;
+    foreach (e in ::BBR_BackgroundLog)
+        if (e[0] == bro) pick = e.slice(1);
+    out.push([calls, pick]);
 }
 ::BBR_TalentLog.clear();
+::BBR_BackgroundLog.clear();
+return out;
+"""
+# [[script, background id, name]] for background scripts (a new background instance each).
+_NAMES = """
+local out = [];
+foreach (script in vargv[0])
+{
+    local b = ::new("scripts/skills/backgrounds/" + script);
+    out.push([script, b.getID(), b.getName()]);
+}
 return out;
 """
 
@@ -124,10 +167,16 @@ class SlotFacts:
         self.starred = []              # per sample: the stats with stars
         self.backgrounds = set()
         self.spread = set()            # stats whose base roll has a range (rolls.py): the seed moves them
+        self.lists = set()             # the background lists the slot picked from (frozensets of ids)
+        self.listed = 0                # samples whose background came from a recorded list
 
-    def add(self, background, stars, can_roll, rolls=None):
+    def add(self, background, stars, can_roll, rolls=None, pool=None):
+        """pool: the background ids the slot picked from on this seed (None: not known)."""
         self.samples += 1
         self.backgrounds.add(background)
+        if pool and background in pool:
+            self.lists.add(frozenset(pool))
+            self.listed += 1
         self.can_roll.update(can_roll)
         for stat, r in (rolls or {}).items():
             if r["hi"] > r["lo"]:
@@ -149,15 +198,33 @@ class SlotFacts:
         ones, "max": {stat: highest stars possible}, "fixed": {stat: stars} the same on every
         seed, "rolled": [stats the roll can star], "backgrounds": [ids seen], "varied": does the
         background change from seed to seed (then the facts are only what the samples showed),
-        "spread": [stats whose base roll the seed can move] (empty without roll data)}"""
+        "spread": [stats whose base roll the seed can move] (empty without roll data),
+        "choices": [background ids the slot can get], "choices_exact": every sample picked its
+        background from a recorded list (else "choices" may miss some)}"""
         fixed = self._fixed()
         rolled = [s for s in STATS if s in self.can_roll and s not in fixed]
         top = {s: 3 if s in rolled else max(self.values[s]) for s in STATS}
+        choices = set(self.backgrounds).union(*self.lists)
         return {"samples": self.samples, "most": max(len(s) for s in self.starred),
                 "least": min(len(s) for s in self.starred),
                 "picks": max(len(s - fixed.keys()) for s in self.starred), "max": top, "fixed": fixed,
-                "rolled": rolled, "backgrounds": sorted(self.backgrounds), "varied": len(self.backgrounds) > 1,
-                "spread": [s for s in STATS if s in self.spread]}
+                "rolled": rolled, "backgrounds": sorted(self.backgrounds), "varied": len(choices) > 1,
+                "spread": [s for s in STATS if s in self.spread], "choices": sorted(choices),
+                "choices_exact": self.listed == self.samples}
+
+
+def share_lists(slots):
+    """Brothers that picked from the same background list come from the same code (Legends'
+    Random Party rolls each brother in one loop, from a common list or, 1 time in 100, a second
+    one): each of them can get what any of them picked from. Changes the SlotFacts in place."""
+    changed = True
+    while changed:
+        changed = False
+        for a in slots:
+            for b in slots:
+                if a is not b and a.lists & b.lists and not b.lists >= a.lists:
+                    b.lists |= a.lists
+                    changed = True
 
 
 class TalentWatch:
@@ -167,19 +234,45 @@ class TalentWatch:
         self.lab = lab
         eng = lab.eng
         cls = eng.class_table("scripts/entity/tactical/player")
-        eng.vm.compile(_WRAP, "talents_wrap").invoke(eng.root, (cls,))
+        from .rolls import _copies
+        players = [cls] + _copies(eng, cls.get("ClassName"))
+        eng.vm.compile(_WRAP, "talents_wrap").invoke(eng.root, (cls, players))
         self._take = eng.vm.compile(_TAKE, "talents_take")
+        self._names = eng.vm.compile(_NAMES, "talents_background_names")
+        self._ids = {}                  # background script -> id
+        self.names = {}                 # background id -> name
+
+    def _pool(self, scripts):
+        """The background ids of a list of background scripts."""
+        new = [s for s in scripts if s not in self._ids]
+        if new:
+            for script, bid, name in self._names.invoke(self.lab.eng.root, (new,)):
+                self._ids[tostring(script)] = tostring(bid)
+                self.names.setdefault(tostring(bid), _plain_name(tostring(name)))
+        return [self._ids[s] for s in scripts]
 
     def roll(self, seed, origin):
-        """(roster, [(rolled, fixed, can_roll) per recruit])."""
-        roster, calls = self.lab.roster(seed, origin, fresh=False, probe=self._take)
+        """(roster, [(rolled, fixed, can_roll) per recruit], [background ids each recruit picked
+        from, or None, per recruit])."""
+        roster, taken = self.lab.roster(seed, origin, fresh=False, probe=self._take)
         index = self.lab.attr_index
-        out = []
-        for bro, bro_calls in zip(roster, calls):
+        out, pools = [], []
+        for bro, (bro_calls, pick) in zip(roster, taken):
             plain = [(list(c[0]), list(c[1]), list(c[2]), None if c[3] is None else list(c[3]), c[4], c[5])
                      for c in bro_calls]
             out.append(analyse(plain, bro["stars"], index))
-        return roster, out
+            pool = None
+            if pick is not None and pick[0] is not None and tostring(pick[1]) == bro["background"]:
+                pool = self._pool([tostring(s) for s in pick[0]])
+            pools.append(pool)
+            self.names.setdefault(bro["background"], _plain_name(bro["background_name"] or bro["background"]))
+        return roster, out, pools
+
+
+def _plain_name(name):
+    """'Background: Hedge Knight' -> 'Hedge Knight'."""
+    name = str(name)
+    return name[len("Background: "):] if name.startswith("Background: ") else name
 
 
 def survey_seeds():
@@ -194,17 +287,22 @@ def survey(watch, origin, least=12, most=100, calm=8, calm_varied=25):
     """Roll seeds for one origin until `calm` samples in a row taught nothing new (`calm_varied`
     when a slot has shown more than one background: its other backgrounds must get a chance to
     show up); at least `least`, at most `most` samples. Returns {"samples", "sizes": [roster sizes seen],
-    "slots": [SlotFacts.summary() per slot]}. Raises LabError if the origin cannot be rolled."""
+    "slots": [SlotFacts.summary() per slot], "background_names": {id: name} of every background in
+    the slots' choices}. Raises LabError if the origin cannot be rolled."""
     slots, sizes, quiet = [], set(), 0
     for n, seed in enumerate(survey_seeds(), 1):
-        roster, split = watch.roll(seed, origin)
+        roster, split, pools = watch.roll(seed, origin)
         before = (frozenset(sizes), tuple(s.signature() for s in slots))
         sizes.add(len(split))
         while len(slots) < len(split):
             slots.append(SlotFacts())
-        for facts, bro, (_rolled, _fixed, can_roll) in zip(slots, roster, split):
-            facts.add(bro["background"], bro["stars"], can_roll, bro.get("rolls"))
+        for facts, bro, (_rolled, _fixed, can_roll), pool in zip(slots, roster, split, pools):
+            facts.add(bro["background"], bro["stars"], can_roll, bro.get("rolls"), pool)
         quiet = quiet + 1 if (frozenset(sizes), tuple(s.signature() for s in slots)) == before else 0
-        varied = len(sizes) > 1 or any(len(s.backgrounds) > 1 for s in slots)
+        varied = len(sizes) > 1 or any(len(s.backgrounds) > 1 or any(len(p) > 1 for p in s.lists) for s in slots)
         if n >= most or (n >= least and quiet >= (calm_varied if varied else calm)):
-            return {"samples": n, "sizes": sorted(sizes), "slots": [s.summary() for s in slots]}
+            share_lists(slots)
+            summaries = [s.summary() for s in slots]
+            ids = {b for s in summaries for b in s["choices"]}
+            return {"samples": n, "sizes": sorted(sizes), "slots": summaries,
+                    "background_names": {b: watch.names.get(b, b) for b in sorted(ids)}}

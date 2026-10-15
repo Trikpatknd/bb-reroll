@@ -92,3 +92,37 @@ def test_odds_name_a_slot_that_never_passes_and_merge_worker_counts():
 def test_seeds_are_ten_digits():
     assert seed_text(42) == "0000000042"
     assert seed_text(10 ** 10 + 7) == "0000000007"
+
+
+def test_backgrounds_per_slot_and_for_any_brother():
+    def b(background):
+        return dict(bro(), background=background)
+    c = normalize({"backgrounds_by_slot": {"2": "hedge_knight swordmaster", "1": []}})
+    assert c["backgrounds_by_slot"] == {"2": ["background.hedge_knight", "background.swordmaster"]}
+    assert first_failure([b("background.miller"), b("background.swordmaster")], c) is None
+    assert first_failure([b("background.miller"), b("background.miller")], c) == "bro2 background miller"
+    some = normalize({"backgrounds_by_slot": {"any": ["background.hedge_knight"]}})
+    assert first_failure([b("background.miller"), b("background.hedge_knight")], some) is None
+    assert first_failure([b("background.miller"), b("background.thief")], some) == "no bro with a wanted background"
+    beyond = normalize({"backgrounds_by_slot": {"6": ["hedge_knight"]}})
+    assert first_failure([b("background.miller")] * 4, beyond) == "no bro6 in this origin's roster"
+
+
+def test_odds_count_the_any_brother_condition_as_one_more_factor():
+    from bbseed.search import Odds
+    def b(background):
+        return dict(bro(), background=background)
+    c = normalize({"backgrounds_by_slot": {"any": ["hedge_knight"]}})
+    odds = Odds()
+    odds.add_roster([b("background.hedge_knight"), b("background.miller")], c)
+    odds.add_roster([b("background.miller"), b("background.miller")], c)
+    assert odds.chance() == 0.5 and not odds.team_never()
+    total = Odds()
+    total.merge(*odds.take())
+    assert total.team == 1 and total.chance() == 0.5
+    none = Odds()
+    none.add_roster([b("background.miller")], c)
+    assert none.team_never() and none.chance() == 0.0
+    plain = Odds()
+    plain.add_roster([b("background.miller")], normalize({}))
+    assert plain.team is None and plain.chance() == 1.0

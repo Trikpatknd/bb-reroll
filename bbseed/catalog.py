@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import gamedata, profiles
 
-CATALOG_VERSION = 4
+CATALOG_VERSION = 5
 
 # not surveyed: the tutorial and the random-origin picker are not origins of their own; Deserters
 # creates its recruits only after the map exists (see bbreroll/offline_origins.NOT_SEARCHABLE)

@@ -5,7 +5,9 @@ Tkinter-free so it is unit-tested (tests/test_criteria.py).
 
 A criteria dict:
     {"stars_by_slot": {"*": {stat: min}, "1": {stat: min}, ...},   # slot = roster position
-     "banned": [trait ids], "required": [trait ids], "required_mode": "any" | "all"}
+     "banned": [trait ids], "required": [trait ids], "required_mode": "any" | "all",
+     "tiers_by_slot": {slot: {stat: "mid" | "high"}},
+     "backgrounds_by_slot": {"1": [background ids], ..., "any": [ids at least one brother has]}}
 A numeric slot row replaces the "*" row for that brother (it is not merged with it).
 """
 import re
@@ -54,7 +56,8 @@ def is_trivial(criteria: dict) -> bool:
     """No stars, no stat rolls and no traits asked for: every seed matches."""
     any_star = any(any(v > 0 for v in s.values()) for s in criteria["stars_by_slot"].values())
     any_roll = any(any(v in ("mid", "high") for v in s.values()) for s in (criteria.get("tiers_by_slot") or {}).values())
-    return not (any_star or any_roll or criteria["required"] or criteria["banned"])
+    any_background = any((criteria.get("backgrounds_by_slot") or {}).values())
+    return not (any_star or any_roll or any_background or criteria["required"] or criteria["banned"])
 
 
 def to_int(text):
@@ -78,10 +81,18 @@ _STAT_NAMES = {"hp": "HP", "fat": "FAT", "res": "RES", "init": "INIT", "msk": "M
                "rdf": "RDF"}
 
 
-def explain_failure(reason: str, display=None) -> str:
+def explain_failure(reason: str, display=None, background_names=None) -> str:
     """The search's short failure reason (bbseed.search.slot_failure) as a sentence for the
-    player. display(trait_id) gives a trait's name. Unknown forms are returned as they are."""
+    player. display(trait_id) gives a trait's name, background_names {id: name} a background's.
+    Unknown forms are returned as they are."""
     display = display or id_to_display
+    m = re.match(r"bro(\d+) background (\w+)$", reason)
+    if m:
+        from bbreroll.backgrounds import display as background
+        return "Brother %s has the background %s. Your condition is a different background." % (
+            m.group(1), background("background." + m.group(2), background_names))
+    if reason == "no bro with a wanted background":
+        return "No brother has a background from your conditions."
     m = re.match(r"bro(\d+) (\w+)\*(\d+)<(\d+)$", reason)
     if m:
         return "Brother %s has %s %s stars. The minimum is %s." % (
