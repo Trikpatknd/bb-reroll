@@ -12,6 +12,7 @@ log_*.html
 
 # Nexus page draft — lives in the repo locally as reference, not for distribution
 NEXUS_PAGE.md
+NEXUS_PAGE.bbcode.txt
 
 # Local Claude context docs — auto-loaded / resume-handoff notes, kept local
 CONTEXT.md
@@ -37,3 +38,4 @@ deploy_config.json
 RELEASE.md
 drafts/
 legends_extract/
+nexus_media/
