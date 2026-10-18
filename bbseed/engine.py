@@ -112,6 +112,8 @@ class Engine:
         self.instance_counter = {}
         self.hash_to_path = {}        # ClassNameHash -> script path
         self.draw_log = None          # set to a list to record every seeded Math.rand call
+        self.log_lines = None         # while a list: logInfo lines go there instead of self.log (a map run's log) ...
+        self.info_hook = None         # ... and this is called with each of them (mapgen stops a run with it)
         self.odd_rand_calls = []      # Math.rand calls with a non-numeric bound (see m_rand)
         self.equal_bounds_draw = False  # does Math.rand(x, x) consume a draw? (settled by the June log: no)
         self.noop = NativeFn(lambda this, *a: None, "noop")
@@ -159,9 +161,14 @@ class Engine:
             text = "".join(tostring(a) for a in args)
             if level == "error" and self.vm.last_trace:
                 text += "\n      trace: " + " > ".join(self.vm.last_trace[-8:])
-            self.log.append((level, text))
             if self.verbose:
                 print("[%s] %s" % (level, text))
+            if level == "info" and self.log_lines is not None:
+                self.log_lines.append(text)
+                if self.info_hook is not None:
+                    self.info_hook(text)
+            else:
+                self.log.append((level, text))
         return fn
 
     # ------------------------------------------------------------------ files

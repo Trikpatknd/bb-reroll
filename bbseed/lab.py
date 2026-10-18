@@ -13,6 +13,9 @@ Math.seedRandomString(seed), then Assets.setCampaignSettings(settings) — which
 runs the origin's onSpawnAssets() and re-rolls descriptions and level-up values.
 Verified against the real game (BB 1.5.2.3, "A New Company", seed 1234567890).
 
+`world_map()` runs the game's own campaign start, map generation included, up to the generated
+world (see mapgen.py); rosters do not use it.
+
 The script interpreter recurses deeply: call into a Lab only from a thread
 started by big_stack().
 """
@@ -21,7 +24,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import profiles
+from . import mapgen, profiles
 from .engine import Engine
 from .sq import runtime as R
 from .sq.runtime import SqError, SqTable, call, tostring
@@ -32,13 +35,16 @@ ATTRIBUTES = {"hp": "Hitpoints", "fat": "Fatigue", "res": "Bravery", "init": "In
 
 # the settings table the new-campaign menu hands over (new_campaign_menu_module.parseSettingsFromJS);
 # none of the options except the origin and the seed enters the roster's random draws
-_START = """
+_SETTINGS = """
 local settings = {
     Name = "Battle Brothers", Banner = "banner_01", Difficulty = 1, EconomicDifficulty = 1, BudgetDifficulty = 1,
     Ironman = false, ExplorationMode = false, GreaterEvil = 0, PermanentDestruction = true,
     Seed = vargv[0], StartingScenario = vargv[1]
 };
 ::World.State.m.CampaignSettings = settings;
+"""
+# the roster: what startNewCampaign does after the world is generated
+_START = _SETTINGS + """
 ::Math.seedRandomString(settings.Seed);
 ::World.Assets.setCampaignSettings(settings);
 """
@@ -218,6 +224,8 @@ class Lab:
         self.attr_index = {short: R.get(attrs, long) for short, long in ATTRIBUTES.items()}
         self._scenarios = {}
         self._rolls = None
+        self._maps = None               # mapgen.MapRun, made by the first world_map()
+        self._state_spent = False       # a map run used the world state: the next roster needs a new one
         self._stash_capacity = eng.vm.compile("return ::World.Assets.getStash().getCapacity();", "lab_cap").invoke(eng.root, ())
         for key, value in (mod_settings or {}).items():
             mod_id, setting = key.split(":", 1)
@@ -303,9 +311,10 @@ class Lab:
         probe: a compiled script run while the recruits still exist; then the result is
         (roster, what the probe returned)."""
         eng = self.eng
-        if fresh:
+        if fresh or self._state_spent:
             self.world.build_state()
             self.world.add_placeholder_settlements()
+            self._state_spent = False
         try:
             scenario = self.scenario(origin)
             self._start.invoke(eng.root, (seed, scenario))
@@ -346,6 +355,29 @@ class Lab:
                 bro["perk_groups"] = [[tostring(cat), [tostring(n) for n in names]] for cat, names in groups]
                 bro["single_perks"] = sorted({tostring(n) for n in single})
         return bros
+
+    # ------------------------------------------------------------------ maps
+    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None):
+        """The game's own campaign start (world_state.startNewCampaign, every mod hook included) on a
+        fresh world state, stopped where the map is wanted (see mapgen.py): stop_at="accepted" right after
+        the generator logs "World accepted.", "reseed" at the second Math.seedRandomString(seed).
+        layout: one of hexmap.LAYOUTS (None: mapgen.LAYOUT).
+
+        Returns {"log": [the logInfo lines of the run], "draws": seeded draws in the run, "seconds",
+        "stub_uses": {(kind, name): uses in this run}}. Rosters are not changed by it. A run that fails
+        (a script error, or a native the lab does not model yet: mapgen.MapError) raises LabError."""
+        if self._maps is None:
+            self._maps = mapgen.MapRun(self.eng, self.eng.vm.compile(_SETTINGS + mapgen.START, "lab_map_start"))
+        scenario = self.scenario(origin)
+        self.world.build_state()
+        self._state_spent = True          # the campaign start is left half done: roster() builds a new state
+        try:
+            return self._maps.run(seed, scenario, stop_at, layout)
+        except SqError as e:
+            raise LabError("map of seed %r: %s (at %s)" % (
+                seed, tostring(e.value), " > ".join(self.eng.vm.last_trace[-6:]))) from e
+        except mapgen.MapError as e:
+            raise LabError("map of seed %r: %s" % (seed, e)) from e
 
     def _bro(self, t):
         talents = t.get("talents")
