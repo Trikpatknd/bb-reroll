@@ -294,6 +294,36 @@ def test_scripts_read_and_write_tiles(lab):
     assert m.tile(5, 5).Type == 7 and m.tile(6, 5).Type == 3
 
 
+def test_scripts_accumulate_settlement_heat(lab):
+    # the loop of Legends' refineSettlements / entity_manager.updateSettlementHeat: add (6 - d) to every tile
+    # within 6 of a settlement, without zeroing first, so the field must start as a number
+    e, m, out = lab
+    e.vm.run('''
+        local s = ::World.getTileSquare(5, 5);
+        local sum = 0;
+        local size = ::World.getMapSize();
+        for (local x = 0; x < size.X; x = ++x)
+            for (local y = 0; y < size.Y; y = ++y) {
+                local tile = ::World.getTileSquare(x, y);
+                local d = s.getDistanceTo(tile);
+                if (d > 6)
+                    continue;
+                tile.HeatFromSettlements = tile.HeatFromSettlements + (6 - d);
+                sum += tile.HeatFromSettlements;
+            }
+        print(s.HeatFromSettlements);
+        print(s.getNextTile(2).HeatFromSettlements);
+        print(sum);
+        ::World.getTileSquare(0, 0).HeatFromSettlements = 0;
+    ''', "t.nut")
+    assert out[:2] == ["6", "5"]
+    assert m.tile(5, 5).HeatFromSettlements == 6
+    assert int(out[2]) == sum(6 - m.distance(m.tile(5, 5), t) for t in m.tiles if m.distance(m.tile(5, 5), t) <= 6)
+    assert m.tile(11, 5).HeatFromSettlements == 0 and m.tile(10, 5).HeatFromSettlements == 1
+    m.reset()
+    assert all(t.HeatFromSettlements == 0 for t in m.tiles)
+
+
 def test_world_natives(lab):
     e, m, out = lab
     e.vm.run('''

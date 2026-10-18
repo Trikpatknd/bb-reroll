@@ -91,7 +91,7 @@ class Tile(SqNative):
 
     __slots__ = ("x", "y", "q", "r", "ID", "addr", "nb", "hm",
                  "Type", "Subregion", "Level", "TacticalType", "HasRoad", "IsOccupied",
-                 "IsMarkedForImpassableTerrain", "Region", "RoadDirections", "IsFlipped",
+                 "IsMarkedForImpassableTerrain", "Region", "RoadDirections", "IsFlipped", "HeatFromSettlements",
                  "brush", "props", "_sq", "_co", "_pos")
 
     def __init__(self, hm, x, y, q, r, tile_id):
@@ -118,6 +118,9 @@ class Tile(SqNative):
         self.Region = 0             # used by the generator's region pass (not in the brief's field list)
         self.RoadDirections = 0     # bit mask of Const.DirectionBit, written by the road builder
         self.IsFlipped = False      # tile_badlands.nut
+        # UNVERIFIED default 0: Legends' refineSettlements and entity_manager.updateSettlementHeat add
+        # (6 - d) to it for every tile within 6 of a settlement, and Legends' loop does not zero it first
+        self.HeatFromSettlements = 0
         self.brush = None
         self.props = None
 
@@ -250,7 +253,7 @@ class Tile(SqNative):
 
 
 _PLAIN = ("Type", "Subregion", "Level", "TacticalType", "HasRoad", "IsOccupied", "IsMarkedForImpassableTerrain",
-          "Region", "RoadDirections", "IsFlipped")
+          "Region", "RoadDirections", "IsFlipped", "HeatFromSettlements")
 _GET = {name: attrgetter(name) for name in _PLAIN}
 _GET["ID"] = attrgetter("ID")
 _GET["SquareCoords"] = Tile._square_coords
