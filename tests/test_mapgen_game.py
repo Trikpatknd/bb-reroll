@@ -82,3 +82,19 @@ def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
     # this run's stub uses only (the engine's total since start-up is never empty): up to "World accepted."
     # every native is modelled or an explained no-op
     assert again["stub_uses"] == first["stub_uses"] == {}
+
+
+def test_events_from_log_reads_the_generators_attempt_lines():
+    """The attempts of a map run, in the format of the lab's reference data from the in-game logs
+    (bb_seedlab tools/maplog.py): the ratio's text is not compared, only the counts."""
+    from bbseed.mapgen import events_from_log
+    log = ["Generating world with following settings...", "Snowline : 0.85", "LandMassMult : 1.55",
+           "Building land and sea...", "Land Ocean ratio0.390268 >= 1.7 :: Land :6681 Ocean:17119",
+           "World rejected. Creating new one...",
+           "Building land and sea...", "Land Ocean ratio2.92739 >= 1.7 :: Land :17740 Ocean:6060",
+           "Desert tiles 2220 >= 2400", "World rejected. Creating new one...",
+           "Building land and sea...", "Land Ocean ratio2.5 >= 1.7 :: Land :17000 Ocean:6800",
+           "Desert tiles 2500 >= 2400", "World accepted."]
+    assert events_from_log(log) == [["land", 6681, 17119], ["land", 17740, 6060], ["desert", 2220],
+                                    ["land", 17000, 6800], ["desert", 2500], ["accepted"]]
+    assert events_from_log([]) == []

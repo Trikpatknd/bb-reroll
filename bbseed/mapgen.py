@@ -20,18 +20,46 @@ The tile world is `hexmap.HexMap`, made by the `World.resizeScene` native the fi
 Everything a run puts in place (tile natives, the wrapped seed functions, the log capture) is taken away again
 when it ends, however it ends, so the roster path sees the engine as before.
 """
+import re
 import time
 
 from .hexmap import LAYOUTS, HexMap
 from .sq import runtime as R
 from .sq.runtime import MISSING, NativeFn, SqError, SqTable
 
-# The hex layout of the engine's tile grid (see hexmap.py). UNVERIFIED until Task 4 of the map-search plan
-# measures it against the logged generations.
-LAYOUT = "odd-q-down"
+# The hex layout of the engine's tile grid (see hexmap.py), measured against the 96 world generations of the
+# in-game logs (map-search Task 4; bb_seedlab MODLOG "CHECKPOINT A"): the even columns sit half a row higher
+# and N is y+1 (high y is north: tile_mountains.nut puts snow at y >= SizeY * Snowline).
+# - Land/ocean/desert counts and draws of all 96 generations (579 attempts) match in even-q-up and also in
+#   odd-q-down: those two are one grid with N and S swapped, and up to "World accepted." the scripts only count
+#   neighbours. odd-q-up / even-q-down (the other grid) miss attempt 1 of every generation tried.
+# - The shore brush warnings after it (`Shore Brush undefined (N)!`, N = Const.DirectionBit mask of a shore
+#   tile's land neighbours) decide: even-q-up logs the game's masks, odd-q-down the mirrored ones (55 <-> 62).
+LAYOUT = "even-q-up"
 
 STOPS = ("accepted", "reseed")
 ACCEPTED = "World accepted."
+
+# The generator's attempt lines (Legends' isWorldAcceptable / isDesertAcceptable). The ratio's text is left out:
+# only the counts are compared with the game.
+_LAND_RE = re.compile(r"^Land Ocean ratio\S* >= \S+ :: Land :(\d+) Ocean:(\d+)$")
+_DESERT_RE = re.compile(r"^Desert tiles (\d+) >= \S+$")
+
+
+def events_from_log(lines):
+    """The attempts of a map run, from its logInfo lines: ["land", land, ocean] per land/sea check,
+    ["desert", tiles] per desert check, ["accepted"] at the end. The same format as the reference data the
+    research lab reads from the game's own log.html (bb_seedlab tools/maplog.py)."""
+    events = []
+    for line in lines:
+        m = _LAND_RE.match(line)
+        if m:
+            events.append(["land", int(m.group(1)), int(m.group(2))])
+        elif (m := _DESERT_RE.match(line)):
+            events.append(["desert", int(m.group(1))])
+        elif line == ACCEPTED:
+            events.append(["accepted"])
+    return events
 
 # The campaign start itself; the lab puts its campaign settings on the world state first (lab._SETTINGS).
 START = "::World.State.startNewCampaign();"
