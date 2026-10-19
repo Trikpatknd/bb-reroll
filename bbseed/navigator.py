@@ -19,6 +19,11 @@ its `ActionPointCosts[tile.Type]` is a finite number > 0, and with `RoadOnly` it
 - a negative cost blocks (the plan's wording; no script table has one).
 - the start tile is never entered, so its own cost does not matter: a port's deep-sea route starts on its
   (land) settlement tile, which the ship table blocks, and the game does have ports.
+- UNVERIFIED (Task 7): an occupied tile (a town, a location, a house tile: IsOccupied) can be entered like any
+  other; only the cost table and RoadOnly block. isEmpty() depends on this: buildSettlements' checks route
+  through earlier towns (and end on one: the goal is itself an occupied town tile, so a rule that blocked occupied
+  tiles would need an exception for the goal), a coastal town's deep-sea route (findAccessibleOceanEdge) passes
+  earlier harbours, and the attached-location and fortress checks pass other locations.
 Reachability does not depend on how the engine searches, so it is answered from connected components (cached
 until a tile's Type or road changes), which costs nothing per question.
 
@@ -157,7 +162,8 @@ class Navigator(SqNative):
     # ------------------------------------------------------------------ reachability
     def _component_map(self, blocked, road_only):
         """The connected parts of the tiles a route may enter. Made again only when a tile's Type changed (or, for
-        RoadOnly, its roads): the road builder's many RoadDirections writes leave the other answers cached."""
+        RoadOnly, its roads): the road builder's many RoadDirections writes leave the other answers cached.
+        UNVERIFIED (Task 7): IsOccupied plays no part (see the module text); the cache does not watch it."""
         hm = self.hexmap
         version = (hm.type_version, hm.road_version) if road_only else hm.type_version
         key = (blocked, road_only)

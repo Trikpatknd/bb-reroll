@@ -85,11 +85,13 @@ def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
 
 
 # ---------------------------------------------------------------- whole maps (stop_at="reseed"), map-search Task 5
-# Full maps are shared through this cache: one world_map(seed) per seed per test session, at most 5 in the suite
-# (ruling N). test_roster_unchanged_after_a_full_map builds them (it must stand first: it takes the rosters before
-# and after each map); the tests after it read them.
+# At most 5 whole maps in the suite (ruling N): the town test's 3 (shared through FULL_MAPS, one world_map(seed) per
+# seed per test session) and the roster test's 2, which it always builds itself between the rosters (its seeds are
+# its own, so no other test can have built them first, whatever the order the tests run in).
 FULL_MAPS = {}
-FULL_SEEDS = ("1234567890", "0000000001", "0000000002", "0000000003", "0000000004")
+TOWN_SEEDS = ("1234567890", "0000000001", "0000000002")
+ROSTER_SEEDS = ("0000000003", "0000000004")
+assert not set(TOWN_SEEDS) & set(ROSTER_SEEDS)
 ORIGINS = ("trader_scenario", "legends_noble_scenario")
 _PROBE = """
 local out = { settlements = 0, placed = 0, occupied = 0, locations = 0 };
@@ -118,16 +120,18 @@ def full_map(lab, seed):
 
 
 def test_roster_unchanged_after_a_full_map(legends_lab):
-    """A whole map (towns, roads, regions, factions) on the lab's engine leaves both origins' rosters as they were."""
-    for seed in FULL_SEEDS:
+    """A whole map (towns, roads, regions, factions) on the lab's engine leaves both origins' rosters as they were.
+    The map is built here, between the rosters, every time (not taken from FULL_MAPS)."""
+    for seed in ROSTER_SEEDS:
         before = {origin: legends_lab.roster(seed, origin, fresh=True) for origin in ORIGINS}
-        full_map(legends_lab, seed)
+        out = legends_lab.world_map(seed)
+        assert out["log"].count("World accepted.") == 1 and out["log"][-1] == "Placing abandoned fortresses...",             "a whole map ran to the second seeding between the rosters"
         assert {origin: legends_lab.roster(seed, origin, fresh=True) for origin in ORIGINS} == before, seed
 
 
 def test_legends_map_completes_with_towns(legends_lab):
     from bbseed.mapgen import unexplained_stubs
-    for seed in ("1234567890", "0000000001", "0000000002"):
+    for seed in TOWN_SEEDS:
         out = full_map(legends_lab, seed)
         assert out["log"].count("World accepted.") == 1
         assert not unexplained_stubs(out["stub_uses"])
