@@ -28,13 +28,15 @@ from .sq import runtime as R
 from .sq.runtime import MISSING, NativeFn, SqError, SqTable
 
 # The hex layout of the engine's tile grid (see hexmap.py), measured against the 96 world generations of the
-# in-game logs (map-search Task 4; bb_seedlab MODLOG "CHECKPOINT A"): the even columns sit half a row higher
-# and N is y+1 (high y is north: tile_mountains.nut puts snow at y >= SizeY * Snowline).
+# in-game logs (map-search Task 4; bb_seedlab MODLOG "CHECKPOINT A"): N is y+1 (high y is north:
+# tile_mountains.nut puts snow at y >= SizeY * Snowline), and the even columns sit half a row lower (further south)
+# than the odd ones: tile (4, 5) is at Pos.Y 554.3, below (5, 5) at 609.7, and its NE neighbour is (5, 5).
 # - Land/ocean/desert counts and draws of all 96 generations (579 attempts) match in even-q-up and also in
 #   odd-q-down: those two are one grid with N and S swapped, and up to "World accepted." the scripts only count
 #   neighbours. odd-q-up / even-q-down (the other grid) miss attempt 1 of every generation tried.
 # - The shore brush warnings after it (`Shore Brush undefined (N)!`, N = Const.DirectionBit mask of a shore
-#   tile's land neighbours) decide: even-q-up logs the game's masks, odd-q-down the mirrored ones (55 <-> 62).
+#   tile's land neighbours) decide: even-q-up logs the game's masks in 96/96 generations, odd-q-down in 79/96
+#   (mirrored masks such as 62 for 55, or other warnings where its terrain past "accepted" differs).
 LAYOUT = "even-q-up"
 
 STOPS = ("accepted", "reseed")
