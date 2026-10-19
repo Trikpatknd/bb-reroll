@@ -177,6 +177,54 @@ def test_summary_is_complete(legends_lab):
     assert json.loads(json.dumps(m)) == m                           # plain data: it goes between processes
 
 
+_SETTLEMENT_LISTS = """
+local out = [];
+foreach (list in ::Const.World.Settlements.LegendsWorldMaster)
+{
+    local sizes = [];
+    foreach (s in list.Sizes) sizes.push([s.Size, s.Ratio, s.MinAmount]);
+    local scripts = [];
+    foreach (t in list.Types) scripts.push(t.Script);
+    out.push({ ratio = list.Ratio, sizes = sizes, scripts = scripts });
+}
+return out;
+"""
+
+
+def test_map_limits_follow_the_games_settlement_lists(legends_lab):
+    """map_conditions.limits() (map-search Task 8) rests on a copy of Legends' settlement lists
+    (Const.World.Settlements.LegendsWorldMaster). The copy must equal the game's table, each list's town kind must be
+    the flags the scripts gave the towns of the cached whole maps (no map is built here, ruling N), and no cached
+    map may have more of anything than limits() allows."""
+    from bbreroll import map_conditions as M
+    from bbseed.lab import big_stack
+    from bbseed.mapgen import TOWN_TYPE_KEYS, counts
+    from bbseed.sq.runtime import f32
+    eng = legends_lab.lab.eng
+    lists = big_stack(lambda: eng.vm.compile(_SETTLEMENT_LISTS, "test_settlement_lists").invoke(eng.root, ()))
+    game = [(f32(l.get("ratio")), tuple(tuple(int(v) for v in s) for s in l.get("sizes"))) for l in lists]
+    assert game == [(f32(ratio), sizes) for _kind, ratio, sizes in M.LEGENDS_LISTS]
+    kind_of = {}
+    for (kind, _r, _s), l in zip(M.LEGENDS_LISTS, lists):
+        for script in l.get("scripts"):
+            name = script.rsplit("/", 1)[-1]
+            assert kind_of.setdefault(name, kind) == kind, name      # a script in two lists is of one kind
+    assert legends_lab.get_mod_setting("mod_legends", "Settlements") == M.MAP_OPTION_DEFAULTS["Settlements"]
+    lim = M.limits(None)
+    for seed in TOWN_SEEDS:
+        m = full_map(legends_lab, seed)["map"]
+        assert len(m["towns"]) <= lim["ports"]
+        for t in m["towns"]:
+            kind = kind_of[t["script"]]
+            assert (t["southern"], t["military"]) == (kind == "city_state", kind == "military"), t
+        for band in (1, 33, 99):
+            c = counts(m, band)
+            assert all(c[k] <= lim[k] for k in M.PORT_KEYS), (seed, band, c)
+            assert all(c["towns"][k] <= lim["towns"][k] for k in TOWN_TYPE_KEYS), (seed, band, c)
+            criteria = dict({k: c[k] for k in M.PORT_KEYS}, north_band=band, towns=c["towns"])
+            assert M.problems(criteria) == [], (seed, band, c)
+
+
 def test_probe_is_the_next_draw_of_the_maps_stream(legends_lab):
     """out["probe"] (map-search Task 7) is one Math.rand(1, 2147483646) drawn at the stop: the next number of the
     stream the campaign seed started, after all of the run's draws, and not counted in them. Checked against the RNG

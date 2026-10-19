@@ -175,6 +175,97 @@ def summary(lab, log=()):
             "attempts": sum(1 for e in events_from_log(log) if e[0] == "land")}
 
 
+# ------------------------------------------------------------------------------------------- map conditions
+# What the map search counts on a summary. The search workers need it, and bbseed never imports bbreroll, so it lives
+# here; bbreroll/map_conditions.py (labels, limits, impossible conditions, the seed post's line) re-exports it.
+#
+# Town types: every town has exactly one, so the five counts add up to the town count.
+#   city_state  a southern town (isSouthern(): in Legends 19.4.22 only the script city_state)
+#   military    a stronghold of any size (isMilitary() and not southern: Legends' legends_fort scripts)
+#   size1..3    the other towns by getSize(): villages, towns, cities
+# The labels are the game's own words: "villages, cities and strongholds" (vanilla config/strings.nut, the
+# campaign introduction), "City State of" (CityStateTitles).
+TOWN_TYPE_KEYS = ("city_state", "military", "size1", "size2", "size3")
+TOWN_TYPE_LABELS = {"city_state": "City states", "military": "Strongholds", "size1": "Villages", "size2": "Towns",
+                    "size3": "Cities"}
+PORT_KEYS = ("ports", "ports_south", "ports_north")
+PORT_LABELS = {"ports": "Ports", "ports_south": "Southern ports", "ports_north": "Northern ports"}
+DEFAULT_NORTH_BAND = 33
+
+
+def town_type(town):
+    """The TOWN_TYPE_KEYS key of one summary town (see above)."""
+    if town["southern"]:
+        return "city_state"
+    if town["military"]:
+        return "military"
+    size = town["size"]
+    if size not in (1, 2, 3):
+        raise ValueError("town %r has size %r: a town type needs size 1, 2 or 3" % (town.get("name"), size))
+    return "size%d" % size
+
+
+def in_north_band(y, height, north_band):
+    """Is row y in the north band of `north_band` percent (0..100) of a map `height` rows high?
+
+    The band is counted from the north edge (high y is north: y = height - 1 is the top row) and holds the rows y
+    with 100 * (height - y) <= north_band * height, i.e. the top floor(height * north_band / 100) rows (rounded
+    down; integer arithmetic, no other rounding). On the 170-row Legends map 20 / 33 / 50 % are the top
+    34 / 56 / 85 rows (y >= 136 / 114 / 85), 1 % is 1 row, 99 % is 168; 0 % is no row and 100 % the whole map.
+    In mapdraw's picture the band line is height * north_band / 100 rows down from the top: the band's rows end
+    at or above it in the odd columns; the even columns sit half a row lower, so their last band row can reach
+    half a row below it."""
+    return 100 * (height - y) <= north_band * height
+
+
+def counts(summary, north_band):
+    """What the map conditions count on a summary (mapgen.summary), with the north band in percent (0..100):
+
+      {"ports": the towns whose port flag is set,
+       "ports_south": the ports that are southern towns,
+       "ports_north": the ports in the north band that are NOT southern (a southern town is never a northern port),
+       "towns": {key: number of towns of that type, for every key of TOWN_TYPE_KEYS, in that order}}"""
+    if not 0 <= north_band <= 100:
+        raise ValueError("north band %r: it must be 0..100 percent" % (north_band,))
+    height = summary["size"][1]
+    towns = dict.fromkeys(TOWN_TYPE_KEYS, 0)
+    ports = south = north = 0
+    for t in summary["towns"]:
+        towns[town_type(t)] += 1
+        if t["port"]:
+            ports += 1
+            if t["southern"]:
+                south += 1
+            elif in_north_band(t["y"], height, north_band):
+                north += 1
+    return {"ports": ports, "ports_south": south, "ports_north": north, "towns": towns}
+
+
+def failure(summary, map_criteria):
+    """The first map condition the summary does not meet, as a text like "Ports: 4, needs 6"; None when it meets
+    them all. The order: ports, southern ports, northern ports, then the town types in TOWN_TYPE_KEYS order.
+
+    map_criteria: {"ports": n, "ports_south": n, "ports_north": n, "north_band": percent (missing or None:
+    DEFAULT_NORTH_BAND), "towns": {key: n}}. Every number is a minimum; 0 or missing is no condition. A town key
+    that is not in TOWN_TYPE_KEYS is an error."""
+    c = map_criteria or {}
+    want_towns = c.get("towns") or {}
+    unknown = set(want_towns) - set(TOWN_TYPE_KEYS)
+    if unknown:
+        raise ValueError("unknown town types %s (known: %s)" % (sorted(unknown), ", ".join(TOWN_TYPE_KEYS)))
+    band = c.get("north_band")
+    have = counts(summary, DEFAULT_NORTH_BAND if band is None else band)
+    for key in PORT_KEYS:
+        need = c.get(key) or 0
+        if have[key] < need:
+            return "%s: %d, needs %d" % (PORT_LABELS[key], have[key], need)
+    for key in TOWN_TYPE_KEYS:
+        need = want_towns.get(key) or 0
+        if have["towns"][key] < need:
+            return "%s: %d, needs %d" % (TOWN_TYPE_LABELS[key], have["towns"][key], need)
+    return None
+
+
 # The campaign start itself; the lab puts its campaign settings on the world state first (lab._SETTINGS).
 START = "::World.State.startNewCampaign();"
 
