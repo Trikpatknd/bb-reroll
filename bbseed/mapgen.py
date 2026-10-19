@@ -23,7 +23,7 @@ when it ends, however it ends, so the roster path sees the engine as before.
 import re
 import time
 
-from .hexmap import LAYOUTS, HexMap
+from .hexmap import LAYOUTS, HexMap, MapError, NotModelled  # noqa: F401  (MapError/NotModelled: mapgen's API)
 from .sq import runtime as R
 from .sq.runtime import MISSING, NativeFn, SqError, SqTable
 
@@ -78,41 +78,58 @@ class StopCampaign(Exception):
     """Ends a campaign start where the map is wanted. Not an SqError, so no script's try/catch can catch it."""
 
 
-class MapError(Exception):
-    """A map run went somewhere the lab cannot follow. Not an SqError: no script's try/catch hides it."""
-
-
-class NotModelled(MapError):
-    """The run reached a native the lab does not have yet."""
-
-
 def _missing(name, why):
     def fn(this, *args):
-        raise NotModelled("World.%s is not modelled yet (%s)" % (name, why))
+        raise NotModelled("World.%s is not modelled (%s)" % (name, why))
     return NativeFn(fn, name)
 
 
-# ::World natives the generator calls after "World accepted." that are not modelled yet. A counted
-# do-nothing stub would let the generator run on with wrong answers (a path that is never empty, a region
-# that is never found), so in a map run they stop it instead.
-_NOT_YET = {
-    "findNextRegion": "regions and their labels, Task 5",
-    "findNextTileOfType": "region labels, Task 5",
-    "getNavigator": "the navigator: settlement links and roads, Task 5",
-    "queryTilesInRange": "the terrain around a settlement site, Task 5",
-    "spawnLocation": "settlements and locations on the map, Task 5",
-    "spawnRegionText": "region labels, Task 5",
-    "updateTilesWithHeat": "settlement heat, Task 5",
+# ::World natives a map run must not answer with a counted do-nothing stub (which would let the generator run
+# on with wrong answers): until the run reaches one of them on purpose, it stops there.
+_NOT_YET = {}
+
+# The counted stand-ins (Engine.stub_uses) a whole map run (stop_at="reseed") may use, each with the reason it
+# cannot change a draw, a tile or an entity the scripts read back. Anything else in a run's stub_uses is unexplained.
+_ACTOR_DISPLAY = "the faction leaders (noble, councilman, vizier) are actors made like recruits; the same " \
+                 "display natives every roster run uses, and the 96 in-game rosters match with them as stand-ins"
+HARMLESS_STUBS = {
+    # actors (createFactions' leaders): drawing on the tactical map
+    ("entity", "createOverlay"): _ACTOR_DISPLAY,
+    ("entity", "setOverlayValues"): _ACTOR_DISPLAY,
+    ("entity", "setOverlayIcons"): _ACTOR_DISPLAY,
+    ("entity", "setPreventOcclusion"): _ACTOR_DISPLAY,
+    ("entity", "setBlockSight"): _ACTOR_DISPLAY,
+    ("entity", "setVisibleInFogOfWar"): _ACTOR_DISPLAY,
+    ("entity", "setSpriteColorization"): _ACTOR_DISPLAY,
+    ("entity", "setSpriteOffset"): _ACTOR_DISPLAY,
+    ("entity", "setDiscovered"): _ACTOR_DISPLAY,
+    ("sprite", "setHorizontalFlipping"): _ACTOR_DISPLAY,
+    # colour variation of a sprite: engine natives draw nothing from the seeded stream (engine fact 1, measured on
+    # the roster path, which calls them too)
+    ("sprite", "varyColor"): _ACTOR_DISPLAY,
+    ("sprite", "varySaturation"): _ACTOR_DISPLAY,
+    ("sprite", "varyBrightness"): _ACTOR_DISPLAY,
+    # Legends' buildSettlements: LoadingScreen.updateProgress("Building Settlements ...") sends the text to the
+    # loading screen's HTML side, which sends nothing back
+    ("UI.handle", "asyncCall"): "a message to the loading screen's HTML side; nothing comes back",
+    # an achievement counter in the Steam client (settlement / location scripts)
+    ("root", "updateAchievement"): "a Steam achievement; nothing in the scripts reads it back",
 }
+
+
+def unexplained_stubs(stub_uses):
+    """The stand-ins a map run used that HARMLESS_STUBS does not explain."""
+    return {k: n for k, n in stub_uses.items() if k not in HARMLESS_STUBS}
 
 
 class MapRun:
     """Runs the campaign start on one lab's engine. One per lab; everything in it is reused between maps."""
 
-    def __init__(self, eng, start):
+    def __init__(self, eng, start, world=None):
         """start: a compiled script that puts the campaign settings on the world state (vargv: seed, origin
-        object) and runs START."""
+        object) and runs START. world: the lab's world.World (makes the entities World.spawnLocation asks for)."""
         self.eng = eng
+        self.world = world
         self.hexmap = None
         self.layout = LAYOUT
         self._start = start
@@ -127,6 +144,7 @@ class MapRun:
         # What a run puts on ::World, ::Math and the root table (and takes away again afterwards).
         world = {name: _missing(name, why) for name, why in _NOT_YET.items()}
         world["resizeScene"] = NativeFn(self._resize_scene, "resizeScene")
+        world["spawnLocation"] = NativeFn(self._spawn_location, "spawnLocation")
         # The world's game speed (startNewCampaign pauses the game: setPause sets it to 0). It is the speed of
         # the running world's clock; map generation never reads it. UNVERIFIED start value 1.0 (normal speed).
         self._speed = 1.0
@@ -176,15 +194,25 @@ class MapRun:
     def _set_speed(self, this, mult):
         self._speed = float(mult)
 
+    def _spawn_location(self, this, script, coords, *rest):
+        """World.spawnLocation(script, coords): a world entity on that tile (world.World.spawn_location)."""
+        if rest:
+            raise NotModelled("World.spawnLocation with %d more arguments" % len(rest))
+        if self.world is None:
+            raise NotModelled("World.spawnLocation: this map run has no world.World to make entities")
+        tile = self.hexmap.tile_at_coords(int(R.get(coords, "X")), int(R.get(coords, "Y")))
+        if tile is None:
+            raise NotModelled("World.spawnLocation on coordinates outside the map")
+        return self.world.spawn_location(script, tile)
+
     # Draws are counted by the generator itself (rng.MT64.draws: every number Math.rand takes from the seeded
     # stream, whatever path of the native took it); re-seeding starts a new generator, so the old one's count
-    # is added up first.
+    # is added up first. Only a seeding with the campaign seed itself counts towards the stop: startNewCampaign
+    # seeds with it before the map and again after it (a hook that seeds another string does not stop the run).
     def _on_seed_string(self, this, s):
-        self._reseeds += 1
-        if self._reseeds == 2:
-            if s != self._seed:
-                raise MapError("the second Math.seedRandomString(%r) is not the campaign seed %r" % (s, self._seed))
-            if self._stop_at == "reseed":
+        if s == self._seed:
+            self._reseeds += 1
+            if self._reseeds == 2 and self._stop_at == "reseed":
                 raise StopCampaign("reseed")
         self._draws += self.eng.rng.draws
         return R.call(self._seed_string, this, (s,))
@@ -253,7 +281,7 @@ class MapRun:
             self._start.invoke(eng.root, (seed, scenario))
         except StopCampaign:
             stopped = True
-        except SqError:
+        except (SqError, MapError):
             eng.vm.note_trace(0)          # for the caller's error text, before the stack is cleared
             raise
         finally:

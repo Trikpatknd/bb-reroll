@@ -84,6 +84,68 @@ def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
     assert again["stub_uses"] == first["stub_uses"] == {}
 
 
+# ---------------------------------------------------------------- whole maps (stop_at="reseed"), map-search Task 5
+# Full maps are shared through this cache: one world_map(seed) per seed per test session, at most 5 in the suite
+# (ruling N). test_roster_unchanged_after_a_full_map builds them (it must stand first: it takes the rosters before
+# and after each map); the tests after it read them.
+FULL_MAPS = {}
+FULL_SEEDS = ("1234567890", "0000000001", "0000000002", "0000000003", "0000000004")
+ORIGINS = ("trader_scenario", "legends_noble_scenario")
+_PROBE = """
+local out = { settlements = 0, placed = 0, occupied = 0, locations = 0 };
+foreach (s in ::World.EntityManager.getSettlements())
+{
+    ++out.settlements;
+    if (s.isPlacedOnMap()) ++out.placed;
+    if (s.getTile().IsOccupied) ++out.occupied;
+}
+out.locations = ::World.EntityManager.getLocations().len();
+return out;
+"""
+
+
+def full_map(lab, seed):
+    """The whole map of a seed (Legends' default Map Options, Trader), built once per test session, with what the
+    world state held right after it (the scripts' own settlement list)."""
+    if seed not in FULL_MAPS:
+        from bbseed.lab import big_stack
+        out = lab.world_map(seed)
+        eng = lab.lab.eng
+        probe = big_stack(lambda: eng.vm.compile(_PROBE, "test_full_map_probe").invoke(eng.root, ()))
+        out["probe"] = {k: probe.get(k) for k in ("settlements", "placed", "occupied", "locations")}
+        FULL_MAPS[seed] = out
+    return FULL_MAPS[seed]
+
+
+def test_roster_unchanged_after_a_full_map(legends_lab):
+    """A whole map (towns, roads, regions, factions) on the lab's engine leaves both origins' rosters as they were."""
+    for seed in FULL_SEEDS:
+        before = {origin: legends_lab.roster(seed, origin, fresh=True) for origin in ORIGINS}
+        full_map(legends_lab, seed)
+        assert {origin: legends_lab.roster(seed, origin, fresh=True) for origin in ORIGINS} == before, seed
+
+
+def test_legends_map_completes_with_towns(legends_lab):
+    from bbseed.mapgen import unexplained_stubs
+    for seed in ("1234567890", "0000000001", "0000000002"):
+        out = full_map(legends_lab, seed)
+        assert out["log"].count("World accepted.") == 1
+        assert not unexplained_stubs(out["stub_uses"])
+        towns = [line for line in out["log"] if line.startswith("Created ") and line.endswith(" settlements.")]
+        assert len(towns) == 1 and out["log"][-1] == "Placing abandoned fortresses..."
+        # the settlements registered themselves (settlement.onInit: EntityManager.addSettlement) and stand on
+        # their tiles (location.onInit: IsOccupied)
+        n = int(towns[0].split()[1])
+        assert out["probe"]["settlements"] == out["probe"]["placed"] == out["probe"]["occupied"] == n >= 19
+        assert out["probe"]["locations"] > n            # attached locations and the abandoned fortresses
+
+
+def test_harmless_stubs_all_have_a_reason():
+    from bbseed.mapgen import HARMLESS_STUBS, unexplained_stubs
+    assert all(isinstance(why, str) and len(why) > 20 for why in HARMLESS_STUBS.values())
+    assert unexplained_stubs({("sprite", "varyColor"): 3, ("World", "spawnEntity"): 1}) == {("World", "spawnEntity"): 1}
+
+
 def test_events_from_log_reads_the_generators_attempt_lines():
     """The attempts of a map run, in the format of the lab's reference data from the in-game logs
     (bb_seedlab tools/maplog.py): the ratio's text is not compared, only the counts."""

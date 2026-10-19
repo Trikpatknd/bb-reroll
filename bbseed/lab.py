@@ -367,7 +367,8 @@ class Lab:
         "stub_uses": {(kind, name): uses in this run}}. Rosters are not changed by it. A run that fails
         (a script error, or a native the lab does not model yet: mapgen.MapError) raises LabError."""
         if self._maps is None:
-            self._maps = mapgen.MapRun(self.eng, self.eng.vm.compile(_SETTINGS + mapgen.START, "lab_map_start"))
+            self._maps = mapgen.MapRun(self.eng, self.eng.vm.compile(_SETTINGS + mapgen.START, "lab_map_start"),
+                                       self.world)
         scenario = self.scenario(origin)
         self.world.build_state()
         self._state_spent = True          # the campaign start is left half done: roster() builds a new state
@@ -377,7 +378,8 @@ class Lab:
             raise LabError("map of seed %r: %s (at %s)" % (
                 seed, tostring(e.value), " > ".join(self.eng.vm.last_trace[-6:]))) from e
         except mapgen.MapError as e:
-            raise LabError("map of seed %r: %s" % (seed, e)) from e
+            raise LabError("map of seed %r: %s (at %s)" % (
+                seed, e, " > ".join(self.eng.vm.last_trace[-6:]))) from e
 
     def _bro(self, t):
         talents = t.get("talents")

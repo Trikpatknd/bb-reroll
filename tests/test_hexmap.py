@@ -8,7 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bbseed.engine import Engine, Stub
-from bbseed.hexmap import LAYOUTS, HexMap
+from bbseed.hexmap import LAYOUTS, HexMap, NotModelled
 from bbseed.sq import runtime as R
 from bbseed.sq.runtime import SqError, SqTable
 
@@ -229,20 +229,19 @@ def test_details_brushes_and_roads():
     assert d is not None
     R.set_(d, "Saturation", 0.5)
     assert not t.HasRoad
-    # ASSUMED: a Road detail makes HasRoad true; clear() / clearAllBut() take it away again
+    # A road is RoadDirections (the road builder's bits; removeAutobahnkreuze, buildRoadSprites and the attached
+    # locations read HasRoad before any road detail exists): a road detail does not make one, clear() keeps it
     t.spawnDetail(None, "world_road_01", 6, 1, False)
-    assert t.HasRoad
-    t.clear(None, 4 | 32)
-    assert t.HasRoad
+    assert not t.HasRoad and R.get(t, "HasRoad") is False
+    R.set_(t, "RoadDirections", 1 | 8)
+    assert t.HasRoad and R.get(t, "HasRoad") is True
     t.clear(None, 1)
-    assert not t.HasRoad
-    t.spawnDetail(None, "world_road_01", 6, 1, False)
-    t.clearAllBut(None, 1)
-    assert t.HasRoad
     t.clearAllBut(None, 4)
-    assert not t.HasRoad
-    t.spawnDetail(None, "world_road_01", 6, 1, False)
     t.clear(None)
+    assert t.HasRoad
+    with pytest.raises(SqError):
+        R.set_(t, "HasRoad", False)          # read-only: no script assigns it
+    R.set_(t, "RoadDirections", 0)
     assert not t.HasRoad
     assert t.isSuitable(None) is True
 
@@ -396,3 +395,125 @@ def test_a_full_size_map_builds_quickly_and_neighbours_are_consistent():
                 if n is not None and m.neighbour(n, (d + 3) % 6) is not t:
                     bad += 1
     assert bad == 0
+
+
+# ---------------------------------------------------------------- map search Task 5: coordinates and world queries
+LEGENDS_NEIGHBOURS = [(0, 1), (1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1)]     # z_legends_hex.nut, N NE SE S SW NW
+
+
+def test_coords_are_the_hex_coordinates_legends_computes():
+    """Legends walks rings in Coords itself (config/z_legends_hex.nut): Y = squareY - squareX / 2 (integer division)
+    and fixed neighbour offsets; in the measured layout even-q-up both hold, and getTile(X, Y) takes them."""
+    m = HexMap(None, 20, 16, "even-q-up")
+    for t in m.tiles:
+        c = R.get(t, "Coords")
+        assert (R.get(c, "X"), R.get(c, "Y")) == (t.x, t.y - t.x // 2)
+        assert m._get_tile(None, R.get(c, "X"), R.get(c, "Y")) is t and m._get_tile(None, c) is t
+        for d, (dx, dy) in enumerate(LEGENDS_NEIGHBOURS):
+            n = t.getNextTile(None, d)
+            if n is not None:
+                nc = R.get(n, "Coords")
+                assert (R.get(nc, "X") - R.get(c, "X"), R.get(nc, "Y") - R.get(c, "Y")) == (dx, dy)
+    assert m._get_tile(None, 0, 40) is None
+
+
+def test_ring_order_is_legends_traverse_circle():
+    m = HexMap(None, 30, 30, "even-q-up")
+    centre = m.tile(15, 14)
+    c = R.get(centre, "Coords")
+    for radius in (1, 2, 3):
+        x, y = R.get(c, "X") + radius * -1, R.get(c, "Y")          # radius steps SW: (-1, 0) each
+        want = []
+        for dx, dy in LEGENDS_NEIGHBOURS:
+            for _ in range(radius):
+                x, y = x + dx, y + dy
+                want.append(m.tile_at_coords(x, y))
+        assert m.ring(centre, radius) == want and len(want) == 6 * radius
+        assert all(m.distance(centre, t) == radius for t in want)
+    assert m.ring(centre, 0) == [centre]
+    corner = m.tile(0, 0)
+    assert all(t is not None for t in m.ring(corner, 2)) and len(m.ring(corner, 2)) < 12
+
+
+def test_query_tiles_in_range_through_a_script(lab):
+    """getTerrainInRegion: World.queryTilesInRange(tile, 1, 4, callback.bindenv(this), counts) counts the terrain."""
+    e, m, out = lab
+    e.vm.run('''
+        for (local x = 0; x < 12; ++x) for (local y = 0; y < 10; ++y) ::World.getTileSquare(x, y).Type = 2;
+        ::World.getTileSquare(6, 5).Type = 4;
+        local counter = { n = 0, function onTile(_tile, _counts) { ++_counts[_tile.Type]; ++this.n; } };
+        local counts = array(19, 0);
+        ::World.queryTilesInRange(::World.getTileSquare(5, 5), 1, 4, counter.onTile.bindenv(counter), counts);
+        print(counter.n + " " + counts[2] + " " + counts[4]);
+        counts = array(19, 0);
+        ::World.queryTilesInRange(::World.getTileSquare(0, 0), 0, 1, counter.onTile.bindenv(counter), counts);
+        print(counts[2]);
+    ''', "t.nut")
+    assert out == ["60 59 1", str(1 + sum(1 for d in range(6) if m.tile(0, 0).hasNextTile(None, d)))]
+
+
+def test_find_next_region():
+    m = HexMap(None, 20, 20, "even-q-up")
+    for t in m.tiles:
+        t.Type = 2
+    t0 = m.tile(10, 10)
+    assert m.find_next_region(t0, 3, 2) == 0                 # no tile has a region yet
+    far = m.ring(t0, 3)[0]
+    far.Region = 7
+    assert m.find_next_region(t0, 3, 2) == 7 and m.find_next_region(t0, 2, 2) == 0
+    assert m.find_next_region(t0, 3, 5) == 0                 # another type
+    assert m.find_next_region(t0, 3, 0) == 7                 # 0: any type
+    near = m.ring(t0, 1)[3]
+    near.Region = 2
+    assert m.find_next_region(t0, 3, 2) == 2                 # the nearer ring first
+    t0.Region = 9
+    assert m.find_next_region(t0, 3, 2) == 2                 # the tile itself does not count
+
+
+def test_find_next_tile_of_type_wants_a_tile_inside_the_type(lab):
+    """A "decent spot" for a region label: a tile of the type whose six neighbours are of it too."""
+    e, m, out = lab
+    e.vm.run('''
+        for (local x = 0; x < 12; ++x) for (local y = 0; y < 10; ++y) ::World.getTileSquare(x, y).Type = 2;
+        local r = {};
+        print(::World.findNextTileOfType(::World.getTileSquare(5, 5), 9, 2, r) + " " + (r.Result == ::World.getTileSquare(5, 5)));
+        local lone = ::World.getTileSquare(9, 5);
+        lone.Type = 7;
+        print(::World.findNextTileOfType(::World.getTileSquare(5, 5), 9, 7, {}));
+        for (local i = 0; i < 6; ++i) lone.getNextTile(i).Type = 7;
+        r = {};
+        print(::World.findNextTileOfType(::World.getTileSquare(5, 5), 9, 7, r) + " " + (r.Result == lone));
+        print(::World.findNextTileOfType(::World.getTileSquare(5, 5), 3, 7, {}) + " " + ::World.findNextTileOfType(::World.getTileSquare(5, 5), 9, 11, {}));
+        for (local x = 0; x < 12; ++x) for (local y = 0; y < 10; ++y) ::World.getTileSquare(x, y).Type = 2;
+        ::World.getTileSquare(0, 4).Type = 7;
+        ::World.getTileSquare(0, 3).Type = 7;
+        ::World.getTileSquare(0, 5).Type = 7;
+        ::World.getTileSquare(1, 4).Type = 7;
+        ::World.getTileSquare(1, 5).Type = 7;
+        print(::World.findNextTileOfType(::World.getTileSquare(0, 4), 2, 7, {}));
+    ''', "t.nut")
+    assert out == ["true true", "false", "true true", "false false", "false"]       # last: at the map's edge
+
+
+def test_update_tiles_with_heat_adds_like_legends_refine_settlements():
+    m = HexMap(None, 20, 20, "even-q-up")
+    a, b = m.tile(5, 5), m.tile(8, 6)
+    m.update_tiles_with_heat([a, b], 6)
+    for t in m.tiles:
+        want = sum(6 - m.distance(s, t) for s in (a, b) if m.distance(s, t) <= 6)
+        assert t.HeatFromSettlements == want
+
+
+def test_the_other_world_natives_of_a_map_run(lab):
+    e, m, out = lab
+    e.vm.run('''
+        print(::World.getNavigator() == ::World.getNavigator());
+        print(::World.spawnRegionText("Darkwood", 1.0, 90.0, ::World.getTileSquare(1, 1).Pos) == null);
+    ''', "t.nut")
+    assert out == ["true", "true"]
+    t = m.tile(4, 4)
+    with pytest.raises(NotModelled):
+        t.getDirectionTo(None, t)
+    assert m.far_directions == 0
+    t.getDirectionTo(None, m.tile(9, 9))
+    assert m.far_directions == 1

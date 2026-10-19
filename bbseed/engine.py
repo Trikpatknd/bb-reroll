@@ -436,6 +436,10 @@ class Engine:
             "abs": lambda this, a: abs(int(a)), "absf": lambda this, a: f32(abs(float(a))),
             "round": lambda this, a: c_round(f32(a)), "floor": lambda this, a: f32(math.floor(f32(a))),
             "ceil": lambda this, a: f32(math.ceil(f32(a))), "pow": lambda this, a, b: f32(math.pow(float(a), float(b))),
+            # The angle between two positions (UNVERIFIED convention, not modelled). Its only caller in the scripts
+            # is buildLabels, whose result (+ 90) becomes the rotation of a region label in World.spawnRegionText,
+            # which only draws: it cannot change a draw, a tile or a count. A caller that used the number for
+            # anything else would need the real convention.
             "getAngleTo": lambda this, *a: 0.0,
         }
         self.Math = self._table("Math", math_fns)

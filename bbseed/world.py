@@ -39,6 +39,9 @@ class Sprite(Stub):
         Stub.__init__(self, engine, "sprite", {
             "Visible": True, "HasBrush": False, "Alpha": 255, "Saturation": 1.0, "Scale": 1.0,
             "Rotation": 0.0, "Color": Stub(engine, "color"), "IsFadingIn": False, "IsFadingOut": False,
+            # UNVERIFIED: a sprite that is not fading is done fading. settlement.onUpdate (via location.onAfterInit)
+            # reads it before it switches its night lights on or off: decoration only.
+            "IsFadingDone": True,
         })
         self.sprite_name = name
         self.brush = None
@@ -46,6 +49,9 @@ class Sprite(Stub):
             "setBrush": NativeFn(self._set_brush, "setBrush"),
             "resetBrush": NativeFn(self._reset_brush, "resetBrush"),
             "getBrush": NativeFn(lambda this: self.brush, "getBrush"),
+            # How bright it is drawn (the tile templates' details in refineTerrain, ~140 per map). Nothing reads
+            # it back, so it cannot change a draw or a tile.
+            "setBrightness": NativeFn(lambda this, *args: None, "setBrightness"),
         }
 
     def _set_brush(self, this, name):
@@ -64,13 +70,19 @@ class Sprite(Stub):
 
 
 class EntityState:
-    def __init__(self, engine, eid, top):
+    def __init__(self, engine, eid, top, tile=None):
         self.engine = engine
         self.id = eid
         self.sprites = {}
         self.order = []
         self.faction = 0
         self.initialized = False
+        self.tile = tile            # world entities (World.spawnLocation): the tile it stands on
+        self.pos = None             # ... and its position (None: the tile's Pos)
+        self.alive = True
+        self.labels = {}
+        self.discovered = False     # UNVERIFIED start value
+        self.thinking = False
 
 
 def _state(this):
@@ -123,9 +135,12 @@ class World:
         self.engine = engine
         self.discover = discover
         self.next_entity_id = 1
+        self.died = 0                   # world entities that died (World entity die())
         self.rosters = {}
         self.entity_natives = SqTable()
+        self.world_entity_natives = SqTable()     # entities on the map (World.spawnLocation); delegates to the above
         self._install_entity_natives()
+        self._install_world_entity_natives()
         self._install_state_natives()
         self._install_world_natives()
 
@@ -174,7 +189,96 @@ class World:
             fb.newslot("_get", NativeFn(fallback, "_get"))
             t.delegate = fb
 
-    def create_entity(self, path):
+    def _install_world_entity_natives(self):
+        """What an entity on the world map has besides the roster entities' natives: its tile and position."""
+        from .hexmap import Vec
+        t = self.world_entity_natives
+
+        def get_pos(this):
+            st = _state(this)
+            if st.pos is None:
+                return st.tile.hm.pos_of(st.tile)
+            return st.pos
+
+        def set_pos(this, pos):
+            # UNVERIFIED: moving an entity off its tile's centre. Nothing on the generator's path calls it
+            # (a party's movement does); kept as a plain record.
+            _state(this).pos = Vec(R.get(pos, "X"), R.get(pos, "Y"))
+
+        eng = self.engine
+
+        def add_label(this, name):
+            st = _state(this)
+            label = st.labels[name] = Stub(eng, "label", {"Visible": True, "Text": ""})
+            return label
+
+        def get_label(this, name):
+            label = _state(this).labels.get(name)
+            if label is None:
+                raise SqError("label '%s' does not exist" % name)     # UNVERIFIED: real engine behaviour
+            return label
+
+        def die(this):
+            """The entity leaves the map: its script's onFinish() runs (it frees the tile, location.onFinish:
+            IsOccupied = false, and unregisters itself). Reached on the map's path: settlement.buildAttachedLocation
+            kills an attached location whose onBuild() fails (~12 per map in the bench), and the next try may pick
+            the same tile. UNVERIFIED (Task 7): that the engine runs onFinish at once, not at the end of the frame."""
+            st = _state(this)
+            if not st.alive:
+                return
+            st.alive = False
+            self.died += 1
+            fn = R.get_raw(this, "onFinish")
+            if fn is not None:
+                call(fn, this, ())
+
+        def set_discovered(this, value):
+            # UNVERIFIED (Task 7): whether the engine also calls the script's onDiscovered() here. On the map's
+            # path only attached_location.onBuild calls it; onDiscovered would only clear decorations and count
+            # statistics (no draw, no tile field).
+            _state(this).discovered = bool(value)
+
+        def set_thinking(on):
+            def fn(this):
+                # The engine calls onThink() of a registered entity while world time runs; none runs before
+                # the campaign start's second seeding (runSimulation comes after it).
+                _state(this).thinking = on
+            return fn
+
+        def display_only(this, *args):
+            """Changes only how the entity is drawn (render order, fog of war, sprite colour/offset/scale,
+            visibility); nothing reads it back, so it cannot change a draw or a tile."""
+
+        fns = {
+            "getTile": lambda this: _state(this).tile,
+            "getPos": get_pos,
+            "setPos": set_pos,
+            "isPlacedOnMap": lambda this: _state(this).tile is not None and _state(this).alive,
+            "isAlive": lambda this: _state(this).alive,
+            "die": die,
+            "addLabel": add_label,
+            "getLabel": get_label,
+            "hasLabel": lambda this, name: name in _state(this).labels,
+            "isDiscovered": lambda this: _state(this).discovered,
+            "setDiscovered": set_discovered,
+            "registerThinker": set_thinking(True),
+            "unregisterThinker": set_thinking(False),
+        }
+        for name in ("setRenderedTop", "setVisibleInFogOfWar", "setSpriteColorization", "setSpriteOffset",
+                     "setSpriteScaling", "setVisibility"):
+            fns[name] = display_only
+        for k, fn in fns.items():
+            t.newslot(k, NativeFn(fn, k))
+        t.delegate = self.entity_natives
+
+    def spawn_location(self, path, tile):
+        """World.spawnLocation(script, coords): the entity is made like a roster's (create, onInit,
+        onAfterInit), standing on `tile` from the start. UNVERIFIED (Task 7): that the engine places it before
+        create(). The scripts themselves mark the tile (location.onInit: IsOccupied) and register the entity
+        (settlement.onInit: EntityManager.addSettlement; location.onInit: addLocation)."""
+        return self.create_entity(path, tile=tile)
+
+    def create_entity(self, path, tile=None):
         """What a roster's create() does. ASSUMED sequence (not yet probed):
         build the object, attach the natives, create(), onInit(), onAfterInit()."""
         eng = self.engine
@@ -182,10 +286,10 @@ class World:
         base = obj
         while base.delegate is not None:
             base = base.delegate
-        st = EntityState(eng, self.next_entity_id, obj)
+        st = EntityState(eng, self.next_entity_id, obj, tile)
         self.next_entity_id += 1
         base.d[_ENT] = st
-        base.delegate = self.entity_natives
+        base.delegate = self.entity_natives if tile is None else self.world_entity_natives
         for name in ("create", "onInit", "onAfterInit"):
             fn = R.get_raw(obj, name)
             if fn is not None:
@@ -201,6 +305,15 @@ class World:
             r = self.rosters[name] = Roster(self, name)
         return r
 
+    def _new_roster(self, name):
+        r = self.rosters[name] = Roster(self, name)
+        return r
+
+    def forget_entity_rosters(self):
+        """Drop the rosters of entities (settlements) of an earlier map: a new world state has none."""
+        for name in [n for n in self.rosters if n.startswith("id:")]:
+            del self.rosters[name]
+
     def _install_world_natives(self):
         eng = self.engine
         w = eng.World
@@ -209,6 +322,9 @@ class World:
             "getTemporaryRoster": lambda this: self.roster("temporary"),
             "getGuestRoster": lambda this: self.roster("guest"),
             "getRoster": lambda this, rid: self.roster("id:%s" % rid),
+            # a settlement's recruits (settlement.onInit / onFinish); empty until its roster is filled
+            "createRoster": lambda this, rid: self._new_roster("id:%s" % rid),
+            "deleteRoster": lambda this, rid: self.rosters.pop("id:%s" % rid, None) and None,
         }
         for k, fn in fns.items():
             w.d[k] = NativeFn(fn, k)
@@ -303,6 +419,7 @@ class World:
         """Create the world state and run its real onInit() (mod hooks included),
         with the UI construction and the campaign start switched off."""
         eng = self.engine
+        self.forget_entity_rosters()
         state = self.new_state("WorldState", "scripts/states/world_state")
         self.state = state
         state.newslot("onInitUI", eng.noop)

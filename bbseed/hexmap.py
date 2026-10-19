@@ -41,9 +41,16 @@ _SQRT3 = math.sqrt(3.0)
 # generator averages Pos values and converts the average back with worldToTile (region labels).
 HEX_SIZE = 64.0
 
-_ROAD = 1                       # Const.World.DetailType.Road
 _ADDR_BASE = 0x60000000         # tile addresses come from the tile number, so building a map leaves
 #                                 the interpreter's address counter (R.new_addr) alone
+
+
+class MapError(Exception):
+    """A map run went somewhere the lab cannot follow. Not an SqError: no script's try/catch hides it."""
+
+
+class NotModelled(MapError):
+    """The run reached a native (or a case of one) the lab does not model."""
 
 
 class Vec(SqNative):
@@ -90,7 +97,7 @@ class Tile(SqNative):
     the method on (the tile itself), tests pass None."""
 
     __slots__ = ("x", "y", "q", "r", "ID", "addr", "nb", "hm",
-                 "Type", "Subregion", "Level", "TacticalType", "HasRoad", "IsOccupied",
+                 "Type", "Subregion", "Level", "TacticalType", "IsOccupied",
                  "IsMarkedForImpassableTerrain", "Region", "RoadDirections", "IsFlipped", "HeatFromSettlements",
                  "brush", "props", "_sq", "_co", "_pos")
 
@@ -112,7 +119,6 @@ class Tile(SqNative):
         self.Subregion = 0
         self.Level = 0
         self.TacticalType = 0
-        self.HasRoad = False
         self.IsOccupied = False
         self.IsMarkedForImpassableTerrain = False
         self.Region = 0             # used by the generator's region pass (not in the brief's field list)
@@ -144,8 +150,23 @@ class Tile(SqNative):
     def sq_set(self, key, value):
         if key in _SETTABLE:
             setattr(self, key, value)
+            # the navigator's cached reachability is out of date
+            if key == "Type":
+                self.hm.type_version += 1
+            elif key == "RoadDirections":
+                self.hm.road_version += 1
         else:
             raise SqError("the index '%s' does not exist" % tostring(key))
+
+    @property
+    def HasRoad(self):
+        """A tile has a road once the road builder gave it a direction. MEASURED from the scripts, not the
+        engine: removeAutobahnkreuze (end of buildRoads), buildRoadSprites and the attached locations of
+        refineSettlements all read HasRoad on tiles whose roads exist only as RoadDirections bits (the road
+        details are spawned by buildRoadSprites, and only on tiles that already have HasRoad), so HasRoad
+        cannot come from the details. UNVERIFIED (Task 7): whether clear() of a road tile (a house tile, an
+        attached location) also takes its road away; here it does not."""
+        return self.RoadDirections != 0
 
     def _square_coords(self):
         v = self._sq
@@ -154,11 +175,14 @@ class Tile(SqNative):
         return v
 
     def _coords(self):
-        # UNVERIFIED: Coords as axial (q, r). The scripts only pass it back (getTile, spawnLocation) and
-        # read Coords.X on tactical maps, where it is the column.
+        """Coords: the engine's hex coordinates (X, Y) = (q, -q - r). Legends computes them itself
+        (config/z_legends_hex.nut): neighbour offsets N (0,1) NE (1,0) SE (1,-1) S (0,-1) SW (-1,0) NW (-1,1),
+        and `getHexFromSquareY(x, y) = y - x / 2` (integer division), which in the measured layout even-q-up
+        is exactly Y here (N is y+1, the even columns sit lower); it hands them to World.getTile(X, Y) when it
+        walks the rings around a settlement (updateSurroundingTileData)."""
         v = self._co
         if v is None:
-            v = self._co = Vec(self.q, self.r)
+            v = self._co = Vec(self.q, -self.q - self.r)
         return v
 
     def _properties(self):
@@ -183,15 +207,19 @@ class Tile(SqNative):
         return max(abs(dq), abs(dr), abs(dq + dr))
 
     def getDirectionTo(self, this, other):
-        """Adjacent tiles: the direction between them. Further away: the direction of the 60 degree
-        sector the other tile lies in (UNVERIFIED; the generator only asks about neighbours)."""
+        """Adjacent tiles: the direction between them. The same tile: not modelled (the engine may answer 6 =
+        Const.Direction.COUNT, whose Const.DirectionBit entry is 0), an error. Further away: the direction of the
+        60 degree sector the other tile lies in (UNVERIFIED). On the map's path (buildRoads, removeAutobahnkreuze,
+        buildAdditionalRoads) only neighbours are asked: HexMap.far_directions counts the other calls, and it stayed
+        0 in the replay of the logged generations (map-search Task 5)."""
         dq = other.q - self.q
         dr = other.r - self.r
         d = _DIRECTION_OF.get((dq, dr))
         if d is not None:
             return d
         if dq == 0 and dr == 0:
-            return 0                # UNVERIFIED
+            raise NotModelled("Tile.getDirectionTo(the same tile)")
+        self.hm.far_directions += 1
         angle = math.degrees(math.atan2(_SQRT3 * (dr + dq / 2.0), 1.5 * dq))
         return int(((angle + 120.0) % 360.0) // 60.0)
 
@@ -214,18 +242,12 @@ class Tile(SqNative):
         return n
 
     def clear(self, this, mask=None):
-        """Remove the details (decorations) of the given types, all of them without an argument.
-        Nothing is drawn here, so the only trace of a detail is HasRoad."""
-        if mask is None or (mask.__class__ is int and mask & _ROAD):
-            self.HasRoad = False
+        """Remove the details (decorations) of the given types, all of them without an argument. Nothing is
+        drawn here and no script reads a detail back, so there is nothing to remove (HasRoad comes from
+        RoadDirections, see HasRoad)."""
 
     def clearAllBut(self, this, *masks):
-        keep = 0
-        for m in masks:
-            if m.__class__ is int:
-                keep |= m
-        if not keep & _ROAD:
-            self.HasRoad = False
+        """See clear()."""
 
     def setBrush(self, this, name):
         self.brush = name
@@ -239,9 +261,7 @@ class Tile(SqNative):
 
     def spawnDetail(self, this, brush=None, zlevel=0, detail_type=0, *rest):
         """Nothing is drawn: hands back a sprite stand-in the scripts can write to (Saturation, setBrightness...).
-        ASSUMED: a detail of type Road is what makes HasRoad true; no script ever assigns HasRoad."""
-        if detail_type.__class__ is int and detail_type & _ROAD:
-            self.HasRoad = True
+        A road detail does not make a road (see HasRoad)."""
         return self.hm.detail_sprite()
 
     def isSuitable(self, this, *args):
@@ -252,10 +272,12 @@ class Tile(SqNative):
         return "Tile(%d, %d)" % (self.x, self.y)
 
 
-_PLAIN = ("Type", "Subregion", "Level", "TacticalType", "HasRoad", "IsOccupied", "IsMarkedForImpassableTerrain",
+_PLAIN = ("Type", "Subregion", "Level", "TacticalType", "IsOccupied", "IsMarkedForImpassableTerrain",
           "Region", "RoadDirections", "IsFlipped", "HeatFromSettlements")
+_ROUTE_FIELDS = frozenset(("Type", "RoadDirections"))      # what the navigator's answers depend on
 _GET = {name: attrgetter(name) for name in _PLAIN}
 _GET["ID"] = attrgetter("ID")
+_GET["HasRoad"] = lambda tile: tile.RoadDirections != 0     # read-only: no script assigns it
 _GET["SquareCoords"] = Tile._square_coords
 _GET["Coords"] = Tile._coords
 _GET["Pos"] = lambda tile: tile.hm.pos_of(tile)
@@ -288,7 +310,20 @@ class HexMap:
         self._shifted, self._ysign = _LAYOUT[layout]
         self._offsets = _OFFSETS[layout]
         self._sprite = None
+        self.type_version = 0       # +1 on every script write of a tile's Type (the navigator's cache) ...
+        self.road_version = 0       # ... and of its RoadDirections (only RoadOnly routes depend on it)
+        self.far_directions = 0     # getDirectionTo calls between tiles that are not neighbours (see there)
+        self._navigator = None
         self._build(size_x, size_y)
+
+    @property
+    def navigator(self):
+        """World.getNavigator() of this tile world, made on first use."""
+        nav = self._navigator
+        if nav is None:
+            from .navigator import Navigator
+            nav = self._navigator = Navigator(self)
+        return nav
 
     def _half(self, x):
         """How far column x's slant is (in rows) from column 0's."""
@@ -327,8 +362,12 @@ class HexMap:
         dr = a.r - b.r
         return max(abs(dq), abs(dr), abs(dq + dr))
 
-    def tile_at_coords(self, q, r):
-        """The tile with these axial coordinates (what `Tile.Coords` holds), or None."""
+    def tile_at_coords(self, cx, cy):
+        """The tile with these hex coordinates (what `Tile.Coords` holds: X = q, Y = -q - r), or None."""
+        return self.tile_at_axial(cx, -cx - cy)
+
+    def tile_at_axial(self, q, r):
+        """The tile with these internal axial coordinates (Tile.q, Tile.r), or None."""
         return self.tile(q, self._ysign * (r + self._half(q)))
 
     def pos_of(self, tile):
@@ -353,7 +392,7 @@ class HexMap:
             q = -r - s
         elif dr > ds:
             r = -q - s
-        return Vec(int(q), int(r))
+        return Vec(int(q), int(-q - r))         # as Coords (see Tile._coords)
 
     # ------------------------------------------------------------------ state
     def reset(self):
@@ -361,10 +400,97 @@ class HexMap:
         for t in self.tiles:
             t.reset_state()
         self._sprite = None
+        self.touch()
 
     def resize(self, size_x, size_y):
         self._sprite = None
         self._build(size_x, size_y)
+        self.touch()
+
+    def touch(self):
+        """Python code that changed a tile's Type or RoadDirections directly (scripts go through Tile.sq_set,
+        which does this itself) tells the navigator so."""
+        self.type_version += 1
+        self.road_version += 1
+
+    # ------------------------------------------------------------------ rings
+    def ring(self, tile, radius):
+        """The tiles at exactly `radius` from `tile`, in ring order; tiles off the map are left out. radius 0 is
+        the tile. The order is Legends' own ring walk (config/z_legends_hex.nut traverseCircle): from the tile
+        `radius` steps SW, `radius` steps in each direction N, NE, SE, S, SW, NW, every tile after a step.
+        UNVERIFIED (Task 7): the order of the engine's own queries. Where the generator uses an order-dependent
+        query (findNextTileOfType's pick, which tile findNextRegion's answer comes from) only the label's place
+        and the tiles' Region number depend on it, not a draw or a count."""
+        if radius == 0:
+            return [tile]
+        q, r = tile.q + radius * _AXIAL[4][0], tile.r + radius * _AXIAL[4][1]
+        out = []
+        at = self.tile_at_axial
+        for k in range(6):
+            sq, sr = _AXIAL[k]
+            for _ in range(radius):
+                q += sq
+                r += sr
+                t = at(q, r)
+                if t is not None:
+                    out.append(t)
+        return out
+
+    def tiles_in_range(self, tile, lo, hi):
+        """The tiles at distance lo..hi of `tile`, ring by ring (see ring())."""
+        for radius in range(max(0, lo), hi + 1):
+            yield from self.ring(tile, radius)
+
+    # ------------------------------------------------------------------ world queries
+    def query_tiles_in_range(self, tile, lo, hi, callback, data):
+        """World.queryTilesInRange(tile, min, max, callback, data): callback(tile, data) for every tile at
+        distance min..max. The generator's only caller (getTerrainInRegion) counts the terrain types, so the
+        order (ring by ring, ring order; UNVERIFIED until Task 7) does not change its result."""
+        lo, hi = _to_int(lo), _to_int(hi)
+        for t in self.tiles_in_range(tile, lo, hi):
+            R.call(callback, None, (t, data))
+
+    def find_next_region(self, tile, radius, terrain):
+        """World.findNextRegion(tile, radius, type), as buildLabels uses it. UNVERIFIED model (Task 5 checks it
+        against the logged region counts): the Region of the first tile within `radius` (ring by ring, rings
+        1..radius) whose Region is not 0 and whose Type is `type` (0: any type); 0 when there is none."""
+        radius = _to_int(radius)
+        for d in range(1, radius + 1):
+            for t in self.ring(tile, d):
+                if t.Region != 0 and (terrain == 0 or t.Type == terrain):
+                    return t.Region
+        return 0
+
+    def find_next_tile_of_type(self, tile, radius, terrain, result):
+        """World.findNextTileOfType(tile, radius, type, result): the first tile within `radius` (the tile itself
+        first, then ring by ring) that is of that Type and whose six neighbours all are too goes to result.Result
+        and the answer is true; false when there is none ("Failed to find decent spot for region label.").
+        The six-neighbour condition is MEASURED, not guessed: any tile of the type alone never fails (in the
+        first 16 logged generations the nearest one is at most 4 tiles from a region's centre), while the game
+        failed 9 times in 7 of those maps; with the condition the lab fails 5 to 7 times in 4 to 7 maps, 3 to 6 of
+        them among the game's 7, under each of four findNextRegion models; over all 96 generations 21 maps fail in
+        both (about 12 expected without a link) and the count is equal in 65 (MODLOG "TOWNS AND REGIONS").
+        UNVERIFIED (Task 7): the order and whether the tile itself counts; only whether a spot exists changes the
+        run (the label's place does not)."""
+        radius = _to_int(radius)
+        for t in self.tiles_in_range(tile, 0, radius):
+            if t.Type == terrain:
+                for n in t.nb:
+                    if n is None or n.Type != terrain:
+                        break
+                else:
+                    R.newslot(result, "Result", t)
+                    return True
+        return False
+
+    def update_tiles_with_heat(self, tiles, radius):
+        """World.updateTilesWithHeat(settlement tiles, 6) (vanilla refineSettlements): every tile within
+        `radius` of a settlement gets (radius - d) more HeatFromSettlements. UNVERIFIED: the formula is the one
+        Legends wrote out in script in its own refineSettlements, which replaces this call."""
+        radius = _to_int(radius)
+        for s in tiles:
+            for t in self.tiles_in_range(s, 0, radius):
+                t.HeatFromSettlements = t.HeatFromSettlements + (radius - self.distance(s, t))
 
     def detail_sprite(self):
         """What spawnDetail hands back. One shared stand-in: nothing reads a detail's state back."""
@@ -389,6 +515,14 @@ class HexMap:
             "clearTiles": lambda this: self.reset(),
             "getNumOfTilesWithType": self._count_type,
             "worldToTile": lambda this, pos: self.world_to_tile(pos),
+            "getNavigator": lambda this: self.navigator,
+            "queryTilesInRange": lambda this, tile, lo, hi, cb, data: self.query_tiles_in_range(tile, lo, hi, cb, data),
+            "findNextRegion": lambda this, tile, radius, terrain: self.find_next_region(tile, radius, terrain),
+            "findNextTileOfType": lambda this, tile, radius, terrain, result:
+                self.find_next_tile_of_type(tile, radius, terrain, result),
+            "updateTilesWithHeat": lambda this, tiles, radius: self.update_tiles_with_heat(tiles, radius),
+            # The region labels on the map: a picture only, the scripts get nothing back from it.
+            "spawnRegionText": lambda this, *args: None,
         }
         for k, fn in fns.items():
             world_table.newslot(k, NativeFn(fn, k))
@@ -401,7 +535,11 @@ class HexMap:
             return self.cols[x][y]
         return None
 
-    def _get_tile(self, this, coords):
+    def _get_tile(self, this, coords, y=None):
+        """World.getTile(coords) or World.getTile(X, Y) (Legends' hex helpers): hex coordinates (Tile.Coords).
+        UNVERIFIED: null for coordinates outside the map (Legends' callers keep inside it)."""
+        if y is not None:
+            return self.tile_at_coords(_to_int(coords), _to_int(y))
         return self.tile_at_coords(_to_int(R.get(coords, "X")), _to_int(R.get(coords, "Y")))
 
     def _is_valid_tile_square(self, this, x, y):
