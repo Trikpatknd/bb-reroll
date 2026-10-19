@@ -45,6 +45,14 @@ LAYOUT = "even-q-up"
 STOPS = ("accepted", "reseed")
 ACCEPTED = "World accepted."
 
+# The probe: one Math.rand(1, 2147483646) drawn where a whole map run stops (stop_at="reseed"), before the second
+# seedRandomString(Seed). In startNewCampaign that point comes right after EntityManager.buildRoadAmbushSpots() (vanilla
+# world_state.nut: buildRoadAmbushSpots(); seedRandomString(Seed) on the next line), and the in-game verifier
+# (bb_seedlab tools/verify_template.nut, map jobs) draws the same number there. The re-seed starts a new stream, so
+# the probe changes nothing the campaign start does later. It shows how many draws the whole map took: a map whose
+# terrain and towns are right but whose probe differs consumed its draws differently somewhere.
+PROBE_RANGE = (1, 2147483646)
+
 # The generator's attempt lines (Legends' isWorldAcceptable / isDesertAcceptable). The ratio's text is left out:
 # only the counts are compared with the game.
 _LAND_RE = re.compile(r"^Land Ocean ratio\S* >= \S+ :: Land :(\d+) Ocean:(\d+)$")
@@ -241,10 +249,12 @@ class MapRun:
         self._stop_at = None
         self._reseeds = 0
         self._draws = 0
+        self._probe = None
         self._saved = []
         math = eng.Math
         self._seed_string = math.get("seedRandomString")
         self._seed_int = math.get("seedRandom")
+        self._rand = math.get("rand")
         # What a run puts on ::World, ::Math and the root table (and takes away again afterwards).
         world = {name: _missing(name, why) for name, why in _NOT_YET.items()}
         world["resizeScene"] = NativeFn(self._resize_scene, "resizeScene")
@@ -317,6 +327,11 @@ class MapRun:
         if s == self._seed:
             self._reseeds += 1
             if self._reseeds == 2 and self._stop_at == "reseed":
+                # the probe (PROBE_RANGE): one more draw from the map's stream, not counted in the run's draws
+                rng = self.eng.rng
+                before = rng.draws
+                self._probe = R.call(self._rand, self.eng.Math, PROBE_RANGE)
+                self._draws -= rng.draws - before
                 raise StopCampaign("reseed")
         self._draws += self.eng.rng.draws
         return R.call(self._seed_string, this, (s,))
@@ -355,7 +370,8 @@ class MapRun:
     # ------------------------------------------------------------------ the run
     def run(self, seed, scenario, stop_at="reseed", layout=None):
         """Run the campaign start on the current world state up to stop_at (see the module text).
-        Returns {"log": logInfo lines, "draws": seeded draws, "seconds", "stub_uses": this run's only}."""
+        Returns {"log": logInfo lines, "draws": seeded draws, "seconds", "stub_uses": this run's only}, and for
+        stop_at="reseed" also "probe": the PROBE_RANGE draw at the stop (not counted in "draws")."""
         if stop_at not in STOPS:
             raise ValueError("stop_at must be one of %s, not %r" % (", ".join(STOPS), stop_at))
         layout = layout or LAYOUT
@@ -366,6 +382,7 @@ class MapRun:
         self._seed = seed
         self._stop_at = stop_at
         self._reseeds = 0
+        self._probe = None
         self._speed = 1.0
         stubs_before = dict(eng.stub_uses)
         log = []
@@ -401,4 +418,7 @@ class MapRun:
         if not stopped:
             raise MapError("the campaign start ran to its end without reaching the stop %r" % stop_at)
         stubs = {k: n - stubs_before.get(k, 0) for k, n in eng.stub_uses.items() if n != stubs_before.get(k, 0)}
-        return {"log": log, "draws": draws, "seconds": seconds, "stub_uses": stubs}
+        out = {"log": log, "draws": draws, "seconds": seconds, "stub_uses": stubs}
+        if stop_at == "reseed":
+            out["probe"] = self._probe
+        return out

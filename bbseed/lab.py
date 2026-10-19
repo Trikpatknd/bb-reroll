@@ -365,7 +365,9 @@ class Lab:
 
         Returns {"log": [the logInfo lines of the run], "draws": seeded draws in the run, "seconds",
         "stub_uses": {(kind, name): uses in this run}}, and for stop_at="reseed" (the whole map) also
-        "map": mapgen.summary() - the terrain and the towns as plain data. Rosters are not changed by it. A run
+        "map": mapgen.summary() - the terrain and the towns as plain data - and "probe": one
+        Math.rand(*mapgen.PROBE_RANGE) drawn at the stop, before the second seeding (not counted in "draws"; the
+        in-game verifier draws the same number there). Rosters are not changed by it. A run
         that fails (a script error, or a native the lab does not model yet: mapgen.MapError) raises LabError."""
         if self._maps is None:
             self._maps = mapgen.MapRun(self.eng, self.eng.vm.compile(_SETTINGS + mapgen.START, "lab_map_start"),

@@ -94,7 +94,7 @@ TOWN_SEEDS = ("1234567890", "0000000001", "0000000002")
 ROSTER_SEEDS = ("0000000003", "0000000004")
 assert not set(TOWN_SEEDS) & set(ROSTER_SEEDS)
 ORIGINS = ("trader_scenario", "legends_noble_scenario")
-_PROBE = """
+_ENTITIES = """
 local out = { settlements = 0, placed = 0, occupied = 0, locations = 0 };
 foreach (s in ::World.EntityManager.getSettlements())
 {
@@ -114,8 +114,8 @@ def full_map(lab, seed):
         from bbseed.lab import big_stack
         out = lab.world_map(seed)
         eng = lab.lab.eng
-        probe = big_stack(lambda: eng.vm.compile(_PROBE, "test_full_map_probe").invoke(eng.root, ()))
-        out["probe"] = {k: probe.get(k) for k in ("settlements", "placed", "occupied", "locations")}
+        counts = big_stack(lambda: eng.vm.compile(_ENTITIES, "test_full_map_entities").invoke(eng.root, ()))
+        out["entities"] = {k: counts.get(k) for k in ("settlements", "placed", "occupied", "locations")}
         FULL_MAPS[seed] = out
     return FULL_MAPS[seed]
 
@@ -141,8 +141,8 @@ def test_legends_map_completes_with_towns(legends_lab):
         # the settlements registered themselves (settlement.onInit: EntityManager.addSettlement) and stand on
         # their tiles (location.onInit: IsOccupied)
         n = int(towns[0].split()[1])
-        assert out["probe"]["settlements"] == out["probe"]["placed"] == out["probe"]["occupied"] == n >= 19
-        assert out["probe"]["locations"] > n            # attached locations and the abandoned fortresses
+        assert out["entities"]["settlements"] == out["entities"]["placed"] == out["entities"]["occupied"] == n >= 19
+        assert out["entities"]["locations"] > n           # attached locations and the abandoned fortresses
 
 
 def test_summary_is_complete(legends_lab):
@@ -158,7 +158,7 @@ def test_summary_is_complete(legends_lab):
     assert m["attempts"] == sum(1 for e in events_from_log(out["log"]) if e[0] == "land") >= 1
     towns = m["towns"]
     assert towns and any(t["southern"] for t in towns) and any(t["port"] for t in towns)
-    assert len(towns) == out["probe"]["settlements"]              # every settlement the scripts registered
+    assert len(towns) == out["entities"]["settlements"]              # every settlement the scripts registered
     ocean, shore = TERRAIN_CHARS[1], TERRAIN_CHARS[16]
     seen = set()
     for t in towns:
@@ -175,6 +175,23 @@ def test_summary_is_complete(legends_lab):
                     for y in range(max(0, t["y"] - 1), min(170, t["y"] + 2))}
             assert near & {ocean, shore}, t
     assert json.loads(json.dumps(m)) == m                           # plain data: it goes between processes
+
+
+def test_probe_is_the_next_draw_of_the_maps_stream(legends_lab):
+    """out["probe"] (map-search Task 7) is one Math.rand(1, 2147483646) drawn at the stop: the next number of the
+    stream the campaign seed started, after all of the run's draws, and not counted in them. Checked against the RNG
+    alone (no new map: the cached full map of TOWN_SEEDS[0], ruling N)."""
+    from bbseed.mapgen import PROBE_RANGE
+    from bbseed.rng import MT64, sdbm64
+    seed = TOWN_SEEDS[0]
+    out = full_map(legends_lab, seed)
+    assert PROBE_RANGE == (1, 2147483646)
+    assert isinstance(out["probe"], int) and PROBE_RANGE[0] <= out["probe"] <= PROBE_RANGE[1]
+    stream = MT64(sdbm64(seed))
+    for _ in range(out["draws"]):
+        stream.next()
+    assert stream.rand(*PROBE_RANGE) == out["probe"]
+    assert "probe" not in legends_lab.world_map(seed, stop_at="accepted")      # only a whole map has the stop
 
 
 def test_terrain_chars_follow_the_games_terrain_table(legends_lab):
