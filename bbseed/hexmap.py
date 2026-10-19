@@ -37,9 +37,14 @@ _AXIAL = ((0, -1), (1, -1), (1, 0), (0, 1), (-1, 1), (-1, 0))
 _DIRECTION_OF = {delta: d for d, delta in enumerate(_AXIAL)}
 _SQRT3 = math.sqrt(3.0)
 
-# UNVERIFIED: the engine's pixel size of a tile. Pos only has to be a regular hex lattice, because the
-# generator averages Pos values and converts the average back with worldToTile (region labels).
-HEX_SIZE = 64.0
+# Tile.Pos, MEASURED in the game (map-search Task 7, Checkpoint B: 13 tiles x 40 maps, no exception):
+#   Pos = (120 + 180 * x, 60 + 120 * y + 60 if x is odd)      (x, y: the tile's square coordinates)
+# A hex lattice stretched sideways: columns 180 apart, rows 120 apart, the odd columns half a row higher (the even
+# columns sit lower, as in the measured layout). World.worldToTile(tile.Pos) gave the tile's Coords on all of them.
+# The only reader on the map's path is buildLabels (it averages Pos and converts the average back with worldToTile),
+# after buildRoads.
+POS_X0, POS_DX = 120.0, 180.0
+POS_Y0, POS_DY = 60.0, 120.0
 
 _ADDR_BASE = 0x60000000         # tile addresses come from the tile number, so building a map leaves
 #                                 the interpreter's address counter (R.new_addr) alone
@@ -107,7 +112,10 @@ class Tile(SqNative):
         self.y = y
         self.q = q                  # axial coordinates: q is the column, r the row along the column's slant
         self.r = r
-        self.ID = tile_id           # UNVERIFIED: the engine's numbering; scripts only need it unique
+        # The game's tile ID is an address-like number (1095924616 for (0, 0) in one campaign, another number in the
+        # next: map-search Task 7); the map's scripts use it for identity only (`ID != ID`, `array.find(tile.ID)`).
+        # Here: y * width + x, unique, which is all the scripts can tell.
+        self.ID = tile_id
         self.addr = _ADDR_BASE + 0x40 * tile_id
         self.nb = None              # the six neighbours (None at the border), set by HexMap
         self._sq = self._co = self._pos = None
@@ -164,8 +172,9 @@ class Tile(SqNative):
         engine: removeAutobahnkreuze (end of buildRoads), buildRoadSprites and the attached locations of
         refineSettlements all read HasRoad on tiles whose roads exist only as RoadDirections bits (the road
         details are spawned by buildRoadSprites, and only on tiles that already have HasRoad), so HasRoad
-        cannot come from the details. UNVERIFIED (Task 7): whether clear() of a road tile (a house tile, an
-        attached location) also takes its road away; here it does not."""
+        cannot come from the details. MEASURED in the game (map-search Task 7): at the end of the map, HasRoad equals
+        RoadDirections != 0 on every tile of 40 maps (952,000 tiles, 0 exceptions). Still UNVERIFIED: whether clear()
+        of a road tile takes its road away (here it does not); the 40 maps show no tile where the two disagree."""
         return self.RoadDirections != 0
 
     def _square_coords(self):
@@ -179,7 +188,9 @@ class Tile(SqNative):
         (config/z_legends_hex.nut): neighbour offsets N (0,1) NE (1,0) SE (1,-1) S (0,-1) SW (-1,0) NW (-1,1),
         and `getHexFromSquareY(x, y) = y - x / 2` (integer division), which in the measured layout even-q-up
         is exactly Y here (N is y+1, the even columns sit lower); it hands them to World.getTile(X, Y) when it
-        walks the rings around a settlement (updateSurroundingTileData)."""
+        walks the rings around a settlement (updateSurroundingTileData). MEASURED in the game (map-search Task 7):
+        13 tiles x 40 maps, Coords = (x, y - x / 2) on every one, World.getTile(Coords) gives the tile back and
+        getDistanceTo agrees."""
         v = self._co
         if v is None:
             v = self._co = Vec(self.q, -self.q - self.r)
@@ -370,29 +381,44 @@ class HexMap:
         """The tile with these internal axial coordinates (Tile.q, Tile.r), or None."""
         return self.tile(q, self._ysign * (r + self._half(q)))
 
+    @staticmethod
+    def pos_xy(x, y):
+        """The engine's Pos of the square (x, y), as a pair of floats (POS_X0 ...: measured, see the top)."""
+        return POS_X0 + POS_DX * x, POS_Y0 + POS_DY * y + (POS_DY / 2.0 if x & 1 else 0.0)
+
     def pos_of(self, tile):
-        """Tile.Pos. UNVERIFIED: the engine's pixel convention. A regular hex lattice (centre of the tile),
-        Y growing with the square y in every layout."""
+        """Tile.Pos: the centre of the tile in the engine's world coordinates (MEASURED, see POS_X0). It is a function
+        of the square coordinates only, so it is the same in every layout."""
         v = tile._pos
         if v is None:
-            q, r = tile.q, tile.r
-            v = tile._pos = Vec(f32(1.5 * HEX_SIZE * q), f32(self._ysign * _SQRT3 * HEX_SIZE * (r + q / 2.0)))
+            px, py = self.pos_xy(tile.x, tile.y)
+            v = tile._pos = Vec(f32(px), f32(py))
         return v
 
+    def coords_of_square(self, x, y):
+        """Coords (X, Y) of the square (x, y), also for a square off the map (see Tile._coords)."""
+        r = self._ysign * y - self._half(x)
+        return x, -x - r
+
     def world_to_tile(self, pos):
-        """Coords (a Vec) of the tile that contains the position; the position needs readable X and Y."""
-        px = R.get(pos, "X")
-        py = self._ysign * R.get(pos, "Y")
-        qf = (2.0 / 3.0) * px / HEX_SIZE
-        rf = (-px / 3.0 + _SQRT3 / 3.0 * py) / HEX_SIZE
-        sf = -qf - rf
-        q, r, s = math.floor(qf + 0.5), math.floor(rf + 0.5), math.floor(sf + 0.5)
-        dq, dr, ds = abs(q - qf), abs(r - rf), abs(s - sf)
-        if dq > dr and dq > ds:
-            q = -r - s
-        elif dr > ds:
-            r = -q - s
-        return Vec(int(q), int(-q - r))         # as Coords (see Tile._coords)
+        """World.worldToTile: Coords (a Vec) of the tile whose centre is nearest to the position, the distance
+        measured with y scaled by sqrt(3) (that makes the stretched lattice a regular hex lattice, whose nearest
+        centre is the hex the point lies in). MEASURED: worldToTile(tile.Pos) is the tile's Coords. UNVERIFIED:
+        which tile the engine gives for a point near a border between two. The position needs readable X and Y."""
+        px = float(R.get(pos, "X"))
+        py = float(R.get(pos, "Y"))
+        xf = (px - POS_X0) / POS_DX
+        best = None
+        for x in range(math.floor(xf) - 1, math.floor(xf) + 3):
+            cx = POS_X0 + POS_DX * x
+            yf = (py - POS_Y0 - (POS_DY / 2.0 if x & 1 else 0.0)) / POS_DY
+            for y in range(math.floor(yf) - 1, math.floor(yf) + 3):
+                cy = py - (POS_Y0 + POS_DY * y + (POS_DY / 2.0 if x & 1 else 0.0))
+                d = (px - cx) ** 2 + 3.0 * cy ** 2
+                if best is None or d < best[0]:
+                    best = (d, x, y)
+        cx, cy = self.coords_of_square(best[1], best[2])
+        return Vec(int(cx), int(cy))            # as Coords (see Tile._coords)
 
     # ------------------------------------------------------------------ state
     def reset(self):
@@ -418,7 +444,8 @@ class HexMap:
         """The tiles at exactly `radius` from `tile`, in ring order; tiles off the map are left out. radius 0 is
         the tile. The order is Legends' own ring walk (config/z_legends_hex.nut traverseCircle): from the tile
         `radius` steps SW, `radius` steps in each direction N, NE, SE, S, SW, NW, every tile after a step.
-        UNVERIFIED (Task 7): the order of the engine's own queries. Where the generator uses an order-dependent
+        UNVERIFIED (the Task 7 run did not settle it: stage 2): the order of the engine's own queries. Where the
+        generator uses an order-dependent
         query (findNextTileOfType's pick, which tile findNextRegion's answer comes from) only the label's place
         and the tiles' Region number depend on it, not a draw or a count."""
         if radius == 0:
@@ -445,7 +472,7 @@ class HexMap:
     def query_tiles_in_range(self, tile, lo, hi, callback, data):
         """World.queryTilesInRange(tile, min, max, callback, data): callback(tile, data) for every tile at
         distance min..max. The generator's only caller (getTerrainInRegion) counts the terrain types, so the
-        order (ring by ring, ring order; UNVERIFIED until Task 7) does not change its result."""
+        order (ring by ring, ring order; UNVERIFIED, stage 2) does not change its result."""
         lo, hi = _to_int(lo), _to_int(hi)
         for t in self.tiles_in_range(tile, lo, hi):
             R.call(callback, None, (t, data))
@@ -470,7 +497,7 @@ class HexMap:
         failed 9 times in 7 of those maps; with the condition the lab fails 5 to 7 times in 4 to 7 maps, 3 to 6 of
         them among the game's 7, under each of four findNextRegion models; over all 96 generations 21 maps fail in
         both (about 12 expected without a link) and the count is equal in 65 (MODLOG "TOWNS AND REGIONS").
-        UNVERIFIED (Task 7): the order and whether the tile itself counts; only whether a spot exists changes the
+        UNVERIFIED (stage 2): the order and whether the tile itself counts; only whether a spot exists changes the
         run (the label's place does not)."""
         radius = _to_int(radius)
         for t in self.tiles_in_range(tile, 0, radius):

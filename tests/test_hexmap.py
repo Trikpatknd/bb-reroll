@@ -161,17 +161,33 @@ def test_neighbours_differ_by_the_axial_directions(layout):
     assert seen == [(0, -1), (1, -1), (1, 0), (0, 1), (-1, 1), (-1, 0)] and set(seen) == deltas
 
 
-@pytest.mark.parametrize("layout", LAYOUTS)
-def test_positions_are_regular_hexes_and_convert_back(layout):
-    m = HexMap(None, 9, 8, layout)
-    t = m.tile(4, 4)
+# Tile.Pos as the game gave it, square (x, y) -> (Pos.X, Pos.Y): the in-game map dump of map-search Task 7 (13 tiles,
+# the same in all 40 maps); World.worldToTile(Pos) gave each tile's Coords there.
+GAME_POS = {(0, 0): (120, 60), (1, 0): (300, 120), (0, 1): (120, 180), (1, 1): (300, 240), (2, 0): (480, 60),
+            (2, 1): (480, 180), (4, 5): (840, 660), (5, 5): (1020, 720), (70, 85): (12720, 10260),
+            (71, 85): (12900, 10320), (139, 0): (25140, 120), (0, 169): (120, 20340), (139, 169): (25140, 20400)}
 
-    def dist(a, b):
-        a, b = R.get(a, "Pos"), R.get(b, "Pos")
-        return ((R.get(a, "X") - R.get(b, "X")) ** 2 + (R.get(a, "Y") - R.get(b, "Y")) ** 2) ** 0.5
-    d0 = dist(t, m.neighbour(t, 0))
-    assert d0 > 0 and all(abs(dist(t, m.neighbour(t, d)) - d0) < 1e-3 for d in range(6))
-    # a position inside a tile gives that tile back; the centre of a tile is its Pos
+
+def test_positions_are_the_games():
+    m = HexMap(None, 140, 170, "even-q-up")
+    for (x, y), want in GAME_POS.items():
+        pos = R.get(m.tile(x, y), "Pos")
+        assert (R.get(pos, "X"), R.get(pos, "Y")) == want, (x, y)
+        c = m.world_to_tile(pos)
+        assert (R.get(c, "X"), R.get(c, "Y")) == (x, y - x // 2), (x, y)      # the game's Coords of that tile
+    # the neighbours in the measured layout sit where the directions say: N up (+Y), NE / SE to the right
+    t = m.tile(70, 85)
+    p = R.get(t, "Pos")
+    steps = [(R.get(R.get(m.neighbour(t, d), "Pos"), "X") - R.get(p, "X"),
+              R.get(R.get(m.neighbour(t, d), "Pos"), "Y") - R.get(p, "Y")) for d in range(6)]
+    assert steps == [(0, 120), (180, 60), (180, -60), (0, -120), (-180, -60), (-180, 60)]
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_positions_convert_back(layout):
+    """worldToTile gives a tile's Coords for its Pos, and for a point well inside the tile (the cell's border is
+    UNVERIFIED), in every layout (Pos depends on the square coordinates only; Coords on the layout)."""
+    m = HexMap(None, 9, 8, layout)
     for x in range(9):
         for y in range(8):
             tile = m.tile(x, y)
@@ -179,9 +195,13 @@ def test_positions_are_regular_hexes_and_convert_back(layout):
             c = m.world_to_tile(pos)
             assert m.tile_at_coords(R.get(c, "X"), R.get(c, "Y")) is tile
             # createVec(x, y) is a Stub with the fields X and Y; worldToTile reads whatever has them
-            off = Stub(None, "vec", {"X": R.get(pos, "X") + 0.3 * d0, "Y": R.get(pos, "Y") - 0.2 * d0})
-            near = m.world_to_tile(off)
-            assert m.tile_at_coords(R.get(near, "X"), R.get(near, "Y")) is tile
+            for dx, dy in ((30, -24), (-40, 20), (0, 50), (60, 0)):
+                off = Stub(None, "vec", {"X": R.get(pos, "X") + dx, "Y": R.get(pos, "Y") + dy})
+                near = m.world_to_tile(off)
+                assert m.tile_at_coords(R.get(near, "X"), R.get(near, "Y")) is tile, (x, y, dx, dy)
+    # a point off the map still has Coords (the generator averages positions of tiles on the map, so it never asks)
+    c = m.world_to_tile(Stub(None, "vec", {"X": -400.0, "Y": -400.0}))
+    assert m.tile_at_coords(R.get(c, "X"), R.get(c, "Y")) is None
 
 
 @pytest.mark.parametrize("layout", LAYOUTS)
