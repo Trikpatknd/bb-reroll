@@ -44,6 +44,7 @@ def test_legends_map_reaches_world_accepted(legends_lab):
     assert out["draws"] > 140 * 170          # one land/sea draw per tile at least
     needed = {"getTileSquare", "getNextTile", "hasNextTile", "getSurroundingTilesOfType", "spawnDetail", "setBrush"}
     assert not {n for (_k, n) in out["stub_uses"]} & needed      # modelled, not stubbed
+    assert "map" not in out          # the summary is of a whole map: no towns exist at this stop
 
 
 def _natives(eng):
@@ -142,6 +143,53 @@ def test_legends_map_completes_with_towns(legends_lab):
         n = int(towns[0].split()[1])
         assert out["probe"]["settlements"] == out["probe"]["placed"] == out["probe"]["occupied"] == n >= 19
         assert out["probe"]["locations"] > n            # attached locations and the abandoned fortresses
+
+
+def test_summary_is_complete(legends_lab):
+    """The summary of a whole map (map-search Task 6), taken from the cached full map of TOWN_SEEDS[0]: no map is
+    built here (ruling N). That the map does not depend on the origin is measured in the lab suite
+    (bb_seedlab tests/test_map_origin.py)."""
+    import json
+    from bbseed.mapgen import LAYOUT, TERRAIN_CHARS, events_from_log
+    out = full_map(legends_lab, "1234567890")
+    m = out["map"]
+    assert m["size"] == [140, 170] and m["layout"] == LAYOUT
+    assert len(m["terrain"]) == 140 * 170 and set(m["terrain"]) <= set(TERRAIN_CHARS)
+    assert m["attempts"] == sum(1 for e in events_from_log(out["log"]) if e[0] == "land") >= 1
+    towns = m["towns"]
+    assert towns and any(t["southern"] for t in towns) and any(t["port"] for t in towns)
+    assert len(towns) == out["probe"]["settlements"]              # every settlement the scripts registered
+    ocean, shore = TERRAIN_CHARS[1], TERRAIN_CHARS[16]
+    seen = set()
+    for t in towns:
+        assert set(t) == {"name", "script", "size", "x", "y", "southern", "military", "port", "faction"}
+        assert isinstance(t["name"], str) and t["name"] and isinstance(t["script"], str) and t["script"]
+        assert t["size"] in (1, 2, 3) and 0 <= t["x"] < 140 and 0 <= t["y"] < 170
+        assert all(isinstance(t[k], bool) for k in ("southern", "military", "port"))
+        assert t["faction"] is None or isinstance(t["faction"], str)
+        assert (t["x"], t["y"]) not in seen
+        seen.add((t["x"], t["y"]))
+        assert m["terrain"][t["y"] * 140 + t["x"]] not in (ocean, shore), t        # a town stands on land
+        if t["port"]:        # only a plausibility check of the game's own flag: water in the 3x3 squares round it
+            near = {m["terrain"][y * 140 + x] for x in range(max(0, t["x"] - 1), min(140, t["x"] + 2))
+                    for y in range(max(0, t["y"] - 1), min(170, t["y"] + 2))}
+            assert near & {ocean, shore}, t
+    assert json.loads(json.dumps(m)) == m                           # plain data: it goes between processes
+
+
+def test_terrain_chars_follow_the_games_terrain_table(legends_lab):
+    """TERRAIN_CHARS / TERRAIN_NAMES have one entry per value of the game's Const.World.TerrainType (Legends
+    adds two to the 19 of the base game), in the order of the values."""
+    from bbseed.lab import big_stack
+    from bbseed.mapgen import TERRAIN_CHARS, TERRAIN_NAMES
+    eng = legends_lab.lab.eng
+    table = big_stack(lambda: eng.vm.compile("return ::Const.World.TerrainType;", "test_terrain_table").invoke(eng.root, ()))
+    values = dict(table.d)
+    count = values.pop("COUNT")
+    assert count == len(TERRAIN_CHARS) == len(TERRAIN_NAMES)
+    assert set(values.values()) == set(range(count))
+    for name, value in values.items():
+        assert TERRAIN_NAMES[value] == name or (name, value) == ("Land", 2), (name, value)     # Land is Plains
 
 
 def test_harmless_stubs_all_have_a_reason():

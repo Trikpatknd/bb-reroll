@@ -14,6 +14,9 @@ instantiates every script under `scripts/mapgen/templates/` (mod hooks applied, 
 out by `m.Name`, the same instance per name. The lab runs root_state.onInit() at start-up (World.start_main_menu),
 so the game's own MapGen is there; nothing here replaces it.
 
+A run that goes to the second seeding also hands back `summary()`: the finished map as plain data (terrain, towns,
+ports), which `mapdraw` draws and the map conditions read.
+
 The tile world is `hexmap.HexMap`, made by the `World.resizeScene` native the first time and reused after that
 (reset to blank tiles), like every other per-run structure here: a map run builds no new tile world.
 
@@ -25,7 +28,7 @@ import time
 
 from .hexmap import LAYOUTS, HexMap, MapError, NotModelled  # noqa: F401  (MapError/NotModelled: mapgen's API)
 from .sq import runtime as R
-from .sq.runtime import MISSING, NativeFn, SqError, SqTable
+from .sq.runtime import MISSING, NativeFn, SqError, SqTable, tostring
 
 # The hex layout of the engine's tile grid (see hexmap.py), measured against the 96 world generations of the
 # in-game logs (map-search Task 4; bb_seedlab MODLOG "CHECKPOINT A"): N is y+1 (high y is north:
@@ -62,6 +65,107 @@ def events_from_log(lines):
         elif line == ACCEPTED:
             events.append(["accepted"])
     return events
+
+# ---------------------------------------------------------------------------------------------- the map summary
+# The terrain of the summary: ONE CHARACTER PER VALUE of the game's Const.World.TerrainType, the character at index i
+# standing for the value i (the base game has 0..18, COUNT = 19; Legends adds SwampGreen 19 and SwampForest 20 and
+# sets COUNT = 21; `Land` is the base game's second name for Plains, value 2). The table is written out here, in the
+# order of the values, because a summary has to be readable without the game; a game test keeps it in step with the
+# scripts' own table. Lower-case letters are Legends' additions. 'O' is the ocean and 'L' the plains, as in the
+# hand-made summaries of the tests.
+_TERRAIN = (
+    ("Impassable", "X"), ("Ocean", "O"), ("Plains", "L"), ("Swamp", "S"), ("Hills", "H"), ("Forest", "F"),
+    ("SnowyForest", "J"), ("LeaveForest", "V"), ("AutumnForest", "A"), ("Mountains", "M"), ("Urban", "U"),
+    ("Farmland", "G"), ("Snow", "N"), ("Badlands", "B"), ("Tundra", "T"), ("Steppe", "E"), ("Shore", "C"),
+    ("Desert", "D"), ("Oasis", "Q"), ("SwampGreen", "g"), ("SwampForest", "f"),
+)
+TERRAIN_CHARS = "".join(char for _name, char in _TERRAIN)
+TERRAIN_NAMES = tuple(name for name, _char in _TERRAIN)         # the name of each value (index = value)
+
+
+def terrain_string(hm):
+    """The terrain of a tile world as one string, a character of TERRAIN_CHARS per tile. The ORDER is y-major: the
+    row y = 0 first, and x = 0.. within a row, then y = 1, ... So the string starts at the SOUTH edge (high y is
+    north in the measured layout) and index = y * width + x. A tile type that has no character is an error."""
+    chars = TERRAIN_CHARS
+    cols = hm.cols
+    out = []
+    for y in range(hm.size_y):
+        for x in range(hm.size_x):
+            t = cols[x][y].Type
+            i = int(t)
+            if i != t or not 0 <= i < len(chars):
+                raise MapError("tile (%d, %d) has terrain type %r, which TERRAIN_CHARS has no character for" % (x, y, t))
+            out.append(chars[i])
+    return "".join(out)
+
+
+# The settlements the scripts registered (settlement.onInit: EntityManager.addSettlement), in creation order.
+_TOWNS = """
+local out = [];
+foreach (s in ::World.EntityManager.getSettlements())
+{
+    local tile = s.getTile();
+    local owner = s.getOwner();
+    out.push({
+        name = s.getName(), script = s.ClassName, size = s.getSize(),
+        x = tile.SquareCoords.X, y = tile.SquareCoords.Y,
+        southern = s.isSouthern(), military = s.isMilitary(), port = s.m.IsCoastal,
+        faction = owner == null ? null : owner.getName()
+    });
+}
+return out;
+"""
+_TOWN_KEYS = ("name", "script", "size", "x", "y", "southern", "military", "port", "faction")
+
+
+def summary(lab, log=()):
+    """The map a finished (stop_at="reseed") world_map run left in `lab`, as plain data (it goes between processes
+    and into JSON):
+
+      "size":    [width, height] in tiles ([140, 170])
+      "layout":  the hex layout the run used (LAYOUT), see hexmap.py
+      "terrain": width * height characters of TERRAIN_CHARS, y-major: row y = 0 first (the SOUTH edge: high y is
+                 north), x = 0.. within a row; index = y * width + x (see terrain_string)
+      "towns":   one dict per settlement, in the order the scripts created them:
+                   name, script (the settlement's script class name, e.g. "small_farming_village", "city_state"),
+                   size (getSize(): 1, 2 or 3), x and y (its tile's square coordinates), southern (isSouthern()),
+                   military (isMilitary()), port (the settlement's own m.IsCoastal after the run: the game's rule,
+                   never worked out again here), faction (the name of its owner faction, or None)
+      "attempts": how many times the generator built the land and sea before it accepted a world (`log`: the run's
+                 lines; from events_from_log)
+
+    Not yet compared with the game (map-search Task 7): the towns' positions, kinds, sizes, names and port flags; only
+    their COUNT was (96 of 96 logged generations, Task 5). UNVERIFIED (stage 2): `faction`, and the NAMES of the
+    city states: they depend on random draws after the roads are built, which are not exact until the lab has the
+    game's own path finder. No condition uses them. The terrain is the lab's at the stop; tiles the game changes after
+    buildRoads (if any) may differ."""
+    run = lab._maps
+    hm = None if run is None else run.hexmap
+    if hm is None:
+        raise MapError("no map has been run on this lab")
+    eng = lab.eng
+    try:
+        rows = eng.vm.compile(_TOWNS, "lab_map_towns").invoke(eng.root, ())
+    except SqError:
+        eng.vm.note_trace(0)
+        del eng.vm.stack[:]
+        raise
+    towns = []
+    for row in rows:
+        town = {k: row.get(k) for k in _TOWN_KEYS}
+        for k in ("name", "script"):
+            town[k] = tostring(town[k])
+        if town["faction"] is not None:
+            town["faction"] = tostring(town["faction"])
+        for k in ("size", "x", "y"):
+            town[k] = int(town[k])
+        for k in ("southern", "military", "port"):
+            town[k] = bool(town[k])
+        towns.append(town)
+    return {"size": [hm.size_x, hm.size_y], "layout": hm.layout, "terrain": terrain_string(hm), "towns": towns,
+            "attempts": sum(1 for e in events_from_log(log) if e[0] == "land")}
+
 
 # The campaign start itself; the lab puts its campaign settings on the world state first (lab._SETTINGS).
 START = "::World.State.startNewCampaign();"

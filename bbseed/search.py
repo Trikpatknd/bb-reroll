@@ -20,6 +20,10 @@ Criteria follow BB Reroll's model (and its config keys, see --criteria):
 The seeds found are plain campaign seeds: typed into the new-campaign screen of a game
 with the same game version, mods and mod settings, they give this roster. They are made
 of digits only, so the game's case-sensitive seed text cannot be mistyped.
+
+The world map of a seed (about 40 s): its towns and ports, and with --svg a picture, north at the top:
+
+    python -m bbseed.search --profile legends --map 1234567890 --svg map.svg
 """
 import argparse
 import json
@@ -396,6 +400,58 @@ def _print_seed(profile, origin, seeds, mod_settings=None):
     big_stack(run)
 
 
+def _ascii(text):
+    """The console here is cp1252: names with other characters are printed with '?' in their place."""
+    return str(text).encode("ascii", "replace").decode()
+
+
+def map_report(seed, m, origin=None, profile=None, seconds=None):
+    """A map summary (mapgen.summary) as text lines for the console: the towns (name, kind = the settlement's script,
+    size, port, southern, military) and the port counts. ASCII only."""
+    towns = m["towns"]
+    ports = [t for t in towns if t["port"]]
+    southern = [t for t in towns if t["southern"]]
+    head = ["seed %s" % seed]
+    if origin:
+        head.append("origin %s" % origin)
+    if profile:
+        head.append("profile %s" % profile)
+    head.append("layout %s" % m["layout"])
+    head.append("%d attempt%s" % (m["attempts"], "" if m["attempts"] == 1 else "s"))
+    if seconds is not None:
+        head.append("%.0f s" % seconds)
+    lines = ["map of %s" % ", ".join(head), "   %d x %d tiles, %d towns" % (m["size"][0], m["size"][1], len(towns)), ""]
+    width = max([len(t["name"]) for t in towns] + [4])
+    kind = max([len(t["script"]) for t in towns] + [4])
+    lines.append("   %-*s  %-*s  size  port  southern  military" % (width, "name", kind, "kind"))
+    for t in towns:
+        lines.append("   %-*s  %-*s  %-4d  %-4s  %-8s  %s" % (
+            width, _ascii(t["name"]), kind, _ascii(t["script"]), t["size"], "yes" if t["port"] else "no",
+            "yes" if t["southern"] else "no", "yes" if t["military"] else "no"))
+    lines.append("")
+    lines.append("ports: %d (southern %d, other %d)" % (len(ports), sum(1 for t in ports if t["southern"]),
+                                                       sum(1 for t in ports if not t["southern"])))
+    lines.append("towns: %d southern, %d military, size 1/2/3: %d/%d/%d" % (
+        len(southern), sum(1 for t in towns if t["military"]), *(sum(1 for t in towns if t["size"] == n) for n in (1, 2, 3))))
+    return lines
+
+
+def _print_map(profile, origin, seed, svg_path=None, mod_settings=None):
+    from . import mapdraw
+    from .lab import Lab, big_stack
+
+    def run():
+        lab = Lab(profile, mod_settings)
+        return lab, lab.world_map(seed, origin)
+    lab, out = big_stack(run)
+    for line in map_report(seed, out["map"], origin, lab.profile, out["seconds"]):
+        print(line)
+    if svg_path:
+        with open(svg_path, "w", encoding="utf-8") as f:
+            f.write(mapdraw.svg(out["map"]))
+        print("\npicture written to %s" % svg_path)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m bbseed.search", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -405,6 +461,9 @@ def main(argv=None):
     ap.add_argument("--origin", help="origin script name, e.g. trader_scenario (see --list-origins)")
     ap.add_argument("--list-origins", action="store_true", help="list the origins of the profile and exit")
     ap.add_argument("--show", nargs="+", metavar="SEED", help="print the roster of these seeds and exit")
+    ap.add_argument("--map", metavar="SEED", help="build the world map of this seed (about 40 s), print its towns and "
+                                                  "ports and exit; the origin is trader_scenario unless --origin is given")
+    ap.add_argument("--svg", metavar="PATH", help="with --map: also write the map as an SVG picture (north at the top)")
     ap.add_argument("--stars", nargs=2, action="append", metavar=("SLOT", "SPEC"), default=[],
                     help='minimum stars for a roster slot (1, 2, ... or "*"), e.g. --stars 1 "res2 fat2"')
     ap.add_argument("--tier", nargs=2, action="append", metavar=("SLOT", "SPEC"), default=[],
@@ -428,12 +487,16 @@ def main(argv=None):
 
     if args.list_origins:
         return _print_origins(args.profile)
-    if not args.origin:
-        ap.error("--origin is required")
     mod_settings = {}
     for item in args.mod_setting:
         key, _, value = item.partition("=")
         mod_settings[key] = _value(value)
+    if args.map:
+        return _print_map(args.profile, args.origin or "trader_scenario", args.map, args.svg, mod_settings)
+    if args.svg:
+        ap.error("--svg goes with --map")
+    if not args.origin:
+        ap.error("--origin is required")
     if args.show:
         return _print_seed(args.profile, args.origin, args.show, mod_settings)
 

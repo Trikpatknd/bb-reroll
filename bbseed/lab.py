@@ -364,8 +364,9 @@ class Lab:
         layout: one of hexmap.LAYOUTS (None: mapgen.LAYOUT).
 
         Returns {"log": [the logInfo lines of the run], "draws": seeded draws in the run, "seconds",
-        "stub_uses": {(kind, name): uses in this run}}. Rosters are not changed by it. A run that fails
-        (a script error, or a native the lab does not model yet: mapgen.MapError) raises LabError."""
+        "stub_uses": {(kind, name): uses in this run}}, and for stop_at="reseed" (the whole map) also
+        "map": mapgen.summary() - the terrain and the towns as plain data. Rosters are not changed by it. A run
+        that fails (a script error, or a native the lab does not model yet: mapgen.MapError) raises LabError."""
         if self._maps is None:
             self._maps = mapgen.MapRun(self.eng, self.eng.vm.compile(_SETTINGS + mapgen.START, "lab_map_start"),
                                        self.world)
@@ -373,7 +374,10 @@ class Lab:
         self.world.build_state()
         self._state_spent = True          # the campaign start is left half done: roster() builds a new state
         try:
-            return self._maps.run(seed, scenario, stop_at, layout)
+            out = self._maps.run(seed, scenario, stop_at, layout)
+            if stop_at == "reseed":
+                out["map"] = mapgen.summary(self, out["log"])
+            return out
         except SqError as e:
             raise LabError("map of seed %r: %s (at %s)" % (
                 seed, tostring(e.value), " > ".join(self.eng.vm.last_trace[-6:]))) from e
