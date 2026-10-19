@@ -19,11 +19,15 @@ its `ActionPointCosts[tile.Type]` is a finite number > 0, and with `RoadOnly` it
 - a negative cost blocks (the plan's wording; no script table has one).
 - the start tile is never entered, so its own cost does not matter: a port's deep-sea route starts on its
   (land) settlement tile, which the ship table blocks, and the game does have ports.
-- UNVERIFIED (Task 7): an occupied tile (a town, a location, a house tile: IsOccupied) can be entered like any
-  other; only the cost table and RoadOnly block. isEmpty() depends on this: buildSettlements' checks route
-  through earlier towns (and end on one: the goal is itself an occupied town tile, so a rule that blocked occupied
-  tiles would need an exception for the goal), a coastal town's deep-sea route (findAccessibleOceanEdge) passes
-  earlier harbours, and the attached-location and fortress checks pass other locations.
+- an occupied tile (IsOccupied: a town, an attached location, an occupied mountain, a house tile) can be entered
+  and passed like any other; only the cost table and RoadOnly block. MEASURED in the game (map-search Task 7,
+  40 maps; questions chosen on each map, bb_seedlab MODLOG "CHECKPOINT B"): findPath(S, G).isEmpty() was false in
+  198 of 198 cases where the only route from S to G led through an occupied tile (only that tile's and G's
+  terrain types enterable; towns 40, locations 38, mountains 40, house tiles 40), true in 43 of 43 controls with
+  the occupied tile's type blocked as well (an infinite cost blocks a type), and false in 160 of 160 routes whose
+  goal was the occupied tile itself. isEmpty() depends on it: buildSettlements' checks route through earlier
+  towns and end on one, a coastal town's deep-sea route (findAccessibleOceanEdge) passes earlier harbours, and
+  the attached-location and fortress checks pass other locations.
 Reachability does not depend on how the engine searches, so it is answered from connected components (cached
 until a tile's Type or road changes), which costs nothing per question.
 
@@ -163,7 +167,7 @@ class Navigator(SqNative):
     def _component_map(self, blocked, road_only):
         """The connected parts of the tiles a route may enter. Made again only when a tile's Type changed (or, for
         RoadOnly, its roads): the road builder's many RoadDirections writes leave the other answers cached.
-        UNVERIFIED (Task 7): IsOccupied plays no part (see the module text); the cache does not watch it."""
+        IsOccupied plays no part (MEASURED, see the module text), so the cache does not watch it."""
         hm = self.hexmap
         version = (hm.type_version, hm.road_version) if road_only else hm.type_version
         key = (blocked, road_only)
