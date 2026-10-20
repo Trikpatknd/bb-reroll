@@ -380,15 +380,17 @@ class Lab:
         "map": mapgen.summary() - the terrain and the towns as plain data - and "probe": one
         Math.rand(*mapgen.PROBE_RANGE) drawn at the stop, before the second seeding (not counted in "draws"; the
         in-game verifier draws the same number there). Rosters are not changed by it. A run
-        that fails (a script error, or a native the lab does not model yet: mapgen.MapError) raises LabError."""
-        if self._maps is None:
-            self._maps = mapgen.MapRun(self.eng, self.eng.vm.compile(_SETTINGS + mapgen.START, "lab_map_start"),
-                                       self.world)
-            self._blackmarket = self.eng.vm.compile(_BLACKMARKET, "lab_blackmarket")
-        scenario = self.scenario(origin)
-        self.world.build_state()
-        self._state_spent = True          # the campaign start is left half done: roster() builds a new state
+        that fails (a script error, or a native the lab does not model yet: mapgen.MapError) raises LabError, also
+        when the map path itself cannot be set up (the first call makes mapgen.MapRun, which runs scripts)."""
         try:
+            if self._maps is None:
+                blackmarket_script = self.eng.vm.compile(_BLACKMARKET, "lab_blackmarket")
+                self._maps = mapgen.MapRun(self.eng, self.eng.vm.compile(_SETTINGS + mapgen.START, "lab_map_start"),
+                                           self.world)
+                self._blackmarket = blackmarket_script
+            scenario = self.scenario(origin)
+            self._state_spent = True      # the campaign start is left half done: roster() builds a new state
+            self.world.build_state()
             if blackmarket is not None:
                 self._blackmarket.invoke(self.eng.root, (blackmarket,))
             out = self._maps.run(seed, scenario, stop_at, layout)
@@ -396,6 +398,9 @@ class Lab:
                 out["map"] = mapgen.summary(self, out["log"])
             return out
         except SqError as e:
+            if self.eng.vm.stack:         # an error outside the run (the run notes and clears its own)
+                self.eng.vm.note_trace(0)
+                del self.eng.vm.stack[:]
             raise LabError("map of seed %r: %s (at %s)" % (
                 seed, tostring(e.value), " > ".join(self.eng.vm.last_trace[-6:]))) from e
         except mapgen.MapError as e:

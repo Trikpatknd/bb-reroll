@@ -189,10 +189,15 @@ class FakeLab:
     roster_calls = 0
     world_map_calls = 0
 
-    def __init__(self, map_errors=(), second_map=None):
+    def __init__(self, map_errors=(), second_map=None, map_crash=None, roster_crash=None, first_map=None):
+        """map_crash / roster_crash: an exception (not a LabError) world_map / roster raises for every seed.
+        first_map(summary): what the first build of a seed's map gives instead."""
         FakeLab.roster_calls = FakeLab.world_map_calls = 0
         self.map_errors = map_errors
         self.second_map = second_map
+        self.first_map = first_map
+        self.map_crash = map_crash
+        self.roster_crash = roster_crash
         self.builds = {}
         self.blackmarket = []
 
@@ -204,6 +209,8 @@ class FakeLab:
 
     def roster(self, seed, origin, fresh=True, probe=None):
         FakeLab.roster_calls += 1
+        if self.roster_crash is not None:
+            raise self.roster_crash
         return self._bros(seed)
 
     def roster_with_perks(self, seed, origin):
@@ -213,10 +220,14 @@ class FakeLab:
     def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0):
         FakeLab.world_map_calls += 1
         self.blackmarket.append(blackmarket)
+        if self.map_crash is not None:
+            raise self.map_crash
         if self.map_errors is True or seed in self.map_errors:
             raise LabError("map of seed %r: the index '0' does not exist" % seed)
         self.builds[seed] = self.builds.get(seed, 0) + 1
         summary = fake_map(int(seed) % 10)
+        if self.builds[seed] == 1 and self.first_map is not None:
+            summary = self.first_map(summary)
         if self.builds[seed] == 2 and self.second_map is not None:
             summary = self.second_map(summary)
         return {"map": summary, "seconds": 0.0, "log": []}
@@ -310,6 +321,80 @@ def test_a_map_generator_that_never_works_is_one_fatal_event(monkeypatch):
     fatal = [p for kind, _i, p in events if kind == "fatal"][0]
     assert fatal.startswith("Map conditions do not work with this game setup: ") and "0000000000" in fatal
     assert FakeLab.world_map_calls == 2        # the first failure could be the seed's own: one more seed is tried
+
+
+def test_a_map_error_in_roster_and_map_mode_is_skipped(monkeypatch):
+    """With roster conditions too, a roster passer whose map run fails is an error event; its roster still counts in
+    the odds (without a map), and the worker goes on."""
+    events = run_worker(monkeypatch, FakeLab(map_errors={"0000000009"}),
+                        criteria={"stars_by_slot": {"1": "hp1"}, "map": {"ports": 9}}, limit=30)
+    errors = [p for kind, _i, p in events if kind == "error"]
+    assert len(errors) == 1 and "0000000009" in errors[0]
+    assert [m["seed"] for m in matches_of(events)] == ["0000000019", "0000000029"]
+    assert events[-1][0] == "done" and not [e for e in events if e[0] == "fatal"]
+    odds = odds_of(events, map_wanted=True)
+    assert odds.tested == 30 and odds.passed[0] == 15 and odds.map == [14, 2]
+
+
+def test_the_held_error_of_the_only_map_run_is_sent_at_the_end(monkeypatch):
+    """A worker whose first map run fails holds that error until the next map tells whether every map fails. When
+    there is no next map (one checked seed), the error is sent at the end, and it is no fatal event."""
+    events = run_worker(monkeypatch, FakeLab(map_errors={"0000000005"}), criteria={"map": {"ports": 1}},
+                        seeds=["0000000005"])
+    kinds = [kind for kind, _i, _p in events]
+    assert kinds == ["ready", "error", "progress", "done"]
+    assert "0000000005" in events[1][2]
+
+
+def test_a_map_code_exception_that_is_no_lab_error_is_a_map_fatal(monkeypatch):
+    """Fix round 1: an exception of the map code that is not a LabError (a bug, or map data the code cannot read)
+    must not kill the worker silently (search() would wait forever): one MAP_FATAL event, the worker stops."""
+    for lab in (FakeLab(map_crash=RuntimeError("tile natives are missing")),
+                FakeLab(first_map=lambda m: dict(m, towns=[dict(m["towns"][0], size=4)]))):   # town_type: ValueError
+        events = run_worker(monkeypatch, lab, criteria={"map": {"ports": 1}}, limit=30)
+        kinds = [kind for kind, _i, _p in events]
+        assert kinds == ["ready", "fatal"], kinds
+        fatal = events[1][2]
+        assert fatal.startswith(S.MAP_FATAL) and "(seed 0000000000)" in fatal
+        assert ("RuntimeError: tile natives are missing" in fatal) or ("ValueError: town" in fatal)
+
+
+def test_an_unexpected_roster_exception_is_a_fatal_event(monkeypatch, capsys):
+    """Fix round 1, the roster path (the same gap from before Task 9): one fatal event with the exception's type and
+    text and the seed, instead of a worker that dies silently."""
+    events = run_worker(monkeypatch, FakeLab(roster_crash=KeyError("talents")), criteria={"stars_by_slot": {"1": "hp1"}},
+                        limit=30)
+    assert [kind for kind, _i, _p in events] == ["ready", "fatal"]
+    assert events[1][2] == "KeyError: 'talents' (seed 0000000000)"
+    assert "Traceback" in capsys.readouterr().err          # the worker's console gets the whole traceback
+
+
+def test_world_map_turns_a_map_path_that_cannot_load_into_a_lab_error(monkeypatch):
+    """Fix round 1: the first world_map() makes mapgen.MapRun, which runs scripts. A script error there (a game
+    setup whose map scripts the lab cannot run) must be a LabError like any failed map run, so the worker's
+    two-failure rule turns it into MAP_FATAL; before, it escaped as SqError. No game needed: a Lab shell."""
+    from bbseed import lab as L, mapgen
+    from bbseed.sq.runtime import SqError
+
+    class VM:
+        def __init__(self):
+            self.stack, self.last_trace = ["frame"], []
+
+        def compile(self, src, name):
+            return object()
+
+        def note_trace(self, depth):
+            self.last_trace = ["map_generator (scripts/mapgen/map_generator.nut:12)"]
+
+    def cannot_load(*args):
+        raise SqError("the index 'MapGen' does not exist")
+
+    monkeypatch.setattr(mapgen, "MapRun", cannot_load)
+    lab = L.Lab.__new__(L.Lab)
+    lab.eng, lab.world, lab._maps, lab._blackmarket = SimpleNamespace(vm=VM(), root=None), None, None, None
+    with pytest.raises(LabError, match=r"map of seed '42': the index 'MapGen' does not exist \(at map_generator"):
+        lab.world_map("42")
+    assert lab._maps is None and lab._blackmarket is None and lab.eng.vm.stack == []    # tried again next time
 
 
 def test_the_stable_flag_covers_the_map(monkeypatch):
@@ -417,6 +502,22 @@ def test_search_ends_at_the_first_map_fatal(monkeypatch):
     assert found == []
     fatal = [p for k, p in events if k == "fatal"]
     assert len(fatal) == 1 and fatal[0].startswith("Map conditions do not work with this game setup: ")
+    assert events[-1][0] == "finished"
+
+
+def test_search_returns_after_unexpected_worker_exceptions(monkeypatch):
+    """Fix round 1: before it, a worker exception that was not a LabError ended the worker without "done" or
+    "fatal", and search() waited until Stop. Map path: one MAP_FATAL ends the search. Roster path: every worker
+    sends its fatal event and search() returns when the last one has."""
+    found, events = run_search(monkeypatch, lambda: FakeLab(map_crash=RuntimeError("no tiles")), {"map": {"ports": 1}},
+                               workers=3, max_seeds=30, count=1)
+    fatal = [p for k, p in events if k == "fatal"]
+    assert found == [] and len(fatal) == 1 and fatal[0].startswith(S.MAP_FATAL + "RuntimeError: no tiles")
+    assert events[-1][0] == "finished"
+    found, events = run_search(monkeypatch, lambda: FakeLab(roster_crash=RuntimeError("bad roster")),
+                               {"stars_by_slot": {"1": "hp1"}}, workers=2, max_seeds=30, count=1)
+    fatal = [p for k, p in events if k == "fatal"]
+    assert found == [] and len(fatal) == 2 and all(p.startswith("RuntimeError: bad roster (seed ") for p in fatal)
     assert events[-1][0] == "finished"
 
 

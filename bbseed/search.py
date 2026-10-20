@@ -38,6 +38,7 @@ import queue
 import random
 import sys
 import time
+import traceback
 
 STATS = ("hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf")
 
@@ -255,8 +256,11 @@ class Odds:
     A condition on the roster as a whole ("any" backgrounds) counts as one more factor.
 
     The map conditions are one more factor, "map", with a count of its own: the map is built only for some seeds
-    (with roster conditions: only for the seeds whose roster met them), so its rate is over the maps built. The
-    map is made before the second seeding and the roster after it (engine fact 2), so the two are independent.
+    (with roster conditions: only for the seeds whose roster met them), so its rate is over the maps built.
+    Multiplying it with the roster's rates ASSUMES the map and the roster are independent. That is an approximation,
+    not true by construction: both seedings use the same seed string (engine fact 2), so the roster's draws replay
+    the first draws of the map's stream. It is plausible because a map's ports and towns depend on thousands of
+    draws; it is not measured.
     With map conditions only, a seed is added with no slot results (its roster has no condition to meet)."""
 
     def __init__(self, map_wanted=False):
@@ -390,13 +394,16 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     A map run that fails is an "error" event for that seed and the worker goes on (about 3 in 1,000 Legends seeds
     raise in guaranteeAllBuildingsInSettlements). Only when the worker's first two map runs both fail, without one
     that worked, is it a "fatal" event (MAP_FATAL + the first error) and the worker stops: one bad seed first must
-    not end the search."""
+    not end the search. An exception of the map code that is not a LabError (a bug, or map data the code cannot
+    read) is a MAP_FATAL event at once. Any other unexpected exception is a "fatal" event too ("<type>: <text>
+    (seed ...)"): a worker never dies without telling search(), which would otherwise wait for it forever."""
     from .lab import LabError, big_stack, without_perks
     from .mapgen import failure as map_failure
 
     want_map = criteria.get("map")
     map_first = want_map is not None and not roster_conditions(criteria)
     checking = seeds is not None
+    state = {"tested": 0, "last": 0.0, "maps_work": False, "first_map_error": None, "seed": None}
 
     def numbered():
         n = start + index
@@ -411,17 +418,34 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             out.put(("fatal", index, "%s: %s" % (type(e).__name__, e)))
             return
         out.put(("ready", index, lab.info()))
-        state = {"tested": 0, "last": time.time(), "maps_work": False, "first_map_error": None}
+        state["last"] = time.time()
         odds = Odds()
 
         def progress():
             out.put(("progress", index, (state["tested"], odds.take())))
             state["tested"], state["last"] = 0, time.time()
 
+        def map_code(fn, *args):
+            """fn(*args) on the map path. A LabError passes through; any other exception is one MAP_FATAL event
+            and _MapsDoNotWork (the worker stops, search() ends)."""
+            try:
+                return fn(*args)
+            except LabError:
+                raise
+            except Exception as e:
+                out.put(("fatal", index, MAP_FATAL + "%s: %s (seed %s)" % (type(e).__name__, e, state["seed"])))
+                raise _MapsDoNotWork() from e
+
+        def world_map(seed):
+            return map_code(lambda: lab.world_map(seed, origin, blackmarket=SEARCH_BLACKMARKET)["map"])
+
+        def map_fails(summary):
+            return map_code(map_failure, summary, want_map)
+
         def build_map(seed):
             """The seed's map summary for the sift; None when its run failed (reported). Raises _MapsDoNotWork."""
             try:
-                summary = lab.world_map(seed, origin, blackmarket=SEARCH_BLACKMARKET)["map"]
+                summary = world_map(seed)
             except LabError as e:
                 if state["maps_work"]:
                     out.put(("error", index, str(e)))
@@ -443,7 +467,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 summary = build_map(seed)
                 if summary is None:
                     return None
-                ok = map_failure(summary, want_map) is None
+                ok = map_fails(summary) is None
                 odds.add([], map=ok)
                 if not (ok or checking):
                     return None
@@ -459,7 +483,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             if summary is None:
                 odds.add_roster(roster, criteria)
                 return None
-            map_ok = map_failure(summary, want_map) is None
+            map_ok = map_fails(summary) is None
             odds.add_roster(roster, criteria, map=map_ok)
             return (roster, summary) if (ok and map_ok) or checking else None
 
@@ -469,11 +493,11 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             confirmed = lab.roster_with_perks(seed, origin)
             confirmed_map = None
             if summary is not None:
-                confirmed_map = lab.world_map(seed, origin, blackmarket=SEARCH_BLACKMARKET)["map"]
+                confirmed_map = world_map(seed)
             progress()                                   # current count when the match shows
             failure = first_failure(confirmed, criteria)
             if failure is None and confirmed_map is not None:
-                failure = map_failure(confirmed_map, want_map)
+                failure = map_fails(confirmed_map)
             if checking or failure is None:
                 stable = without_perks(confirmed) == without_perks(roster) and (
                     summary is None or _towns_key(confirmed_map) == _towns_key(summary))
@@ -486,25 +510,35 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 out.put(("error", index, "seed %s: its map met the map conditions, but not when it was built "
                                          "again (%s) — skipped" % (seed, failure)))
 
-        try:
-            for seed in (seeds[index::workers] if checking else numbered()):
-                state["tested"] += 1
-                try:
-                    found = sift(seed)
-                    if found is not None:
-                        confirm(seed, *found)
-                except LabError as e:
-                    out.put(("error", index, str(e)))
-                if time.time() - state["last"] >= 1.0:
-                    progress()
-        except _MapsDoNotWork:
-            return
+        for seed in (seeds[index::workers] if checking else numbered()):
+            state["tested"] += 1
+            state["seed"] = seed
+            try:
+                found = sift(seed)
+                if found is not None:
+                    confirm(seed, *found)
+            except LabError as e:
+                out.put(("error", index, str(e)))
+            if time.time() - state["last"] >= 1.0:
+                progress()
         if state["first_map_error"] is not None and not state["maps_work"]:
             out.put(("error", index, state["first_map_error"]))     # the worker's only map run failed
         progress()
         out.put(("done", index, None))
 
-    big_stack(run)
+    def run_to_the_end():
+        """run(), and whatever happens a last event: a worker that dies without "done" or "fatal" would make
+        search() wait for it forever."""
+        try:
+            run()
+        except _MapsDoNotWork:
+            pass                            # its MAP_FATAL event is sent
+        except Exception as e:
+            if sys.stderr is not None:
+                traceback.print_exc()
+            out.put(("fatal", index, "%s: %s (seed %s)" % (type(e).__name__, e, state["seed"])))
+
+    big_stack(run_to_the_end)
 
 
 def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, start=None, on_event=None,
