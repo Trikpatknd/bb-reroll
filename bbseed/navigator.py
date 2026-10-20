@@ -22,7 +22,7 @@ its `ActionPointCosts[tile.Type]` is a finite number > 0, and with `RoadOnly` it
 - an occupied tile (IsOccupied: a town, an attached location, an occupied mountain, a house tile) can be entered
   and passed like any other; only the cost table and RoadOnly block. MEASURED in the game (map-search Task 7,
   40 maps; questions chosen on each map, bb_seedlab MODLOG "CHECKPOINT B"): findPath(S, G).isEmpty() was false in
-  198 of 198 cases where the only route from S to G led through an occupied tile (only that tile's and G's
+  158 of 158 cases where the only route from S to G led through an occupied tile (only that tile's and G's
   terrain types enterable; towns 40, locations 38, mountains 40, house tiles 40), true in 43 of 43 controls with
   the occupied tile's type blocked as well (an infinite cost blocks a type), and false in 160 of 160 routes whose
   goal was the occupied tile itself. isEmpty() depends on it: buildSettlements' checks route through earlier

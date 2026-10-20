@@ -86,9 +86,10 @@ def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
 
 
 # ---------------------------------------------------------------- whole maps (stop_at="reseed"), map-search Task 5
-# At most 5 whole maps in the suite (ruling N): the town test's 3 (shared through FULL_MAPS, one world_map(seed) per
-# seed per test session) and the roster test's 2, which it always builds itself between the rosters (its seeds are
-# its own, so no other test can have built them first, whatever the order the tests run in).
+# At most 5 whole maps in this file (ruling N; the repo suite builds 7: these 5 plus the 2 in test_offline_map.py):
+# the town test's 3 (shared through FULL_MAPS, one world_map(seed) per seed per test session) and the roster test's 2,
+# which it always builds itself between the rosters (its seeds are its own, so no other test can have built them
+# first, whatever the order the tests run in).
 FULL_MAPS = {}
 TOWN_SEEDS = ("1234567890", "0000000001", "0000000002")
 ROSTER_SEEDS = ("0000000003", "0000000004")
