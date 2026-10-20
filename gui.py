@@ -348,6 +348,7 @@ class _MapWindow(ctk.CTkToplevel):
         super().__init__(app)
         self._app, self._key = app, key
         summary, band = entry["map"], entry.get("north_band")
+        self.summary, self.band = summary, band     # what the picture shows (App._show_map compares them)
         self.title(f"Map of seed {entry['seed']} - {entry['origin']}")
         self.configure(fg_color=PALETTE["bg"])
         self.resizable(False, False)
@@ -474,7 +475,8 @@ class App(ctk.CTk):
         self.map_vars:               dict[str, ctk.StringVar] = {}
         self.map_option_vars:        dict[str, ctk.StringVar] = {}
         self._map_widgets:           list = []          # the fields; they close with the view
-        self._map_off = False                           # a fatal map event ended the Map view for this session
+        self._map_off = False                           # a fatal map event turned map conditions off (until a Map
+        self._map_fatal_notice = None                   # Option, the setup or the game folder changes); its notice
         self._map_versions = (None, None)               # the game and Legends version the workers reported
         self._map_windows:           dict = {}          # (setup, origin, seed) -> the open map window
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
@@ -1204,9 +1206,23 @@ class App(ctk.CTk):
             else:
                 low, high = map_view.OPTION_RANGES[key]
                 entry(box, f"{label} ({low}-{high})", self.map_option_vars, key, options[key])
+            # a changed Map Option turns map conditions on again after a map fatal
+            self.map_option_vars[key].trace_add("write", self._lift_map_lockout)
 
     def _map_usable(self) -> bool:
         return map_view.view_state(self._legends(), self._map_off)[0]
+
+    def _lift_map_lockout(self, *_):
+        """Map conditions count again: the player changed a Map Option, the setup or the game folder (after a
+        fatal map event the cause can be a Map Option that the game cannot make a map of). The notice of the
+        map fatal goes away with it; another notice stays."""
+        if not self._map_off:
+            return
+        self._map_off = False
+        if self._map_fatal_notice and self.notice_var.get() == self._map_fatal_notice:
+            self._clear_notice()
+        self._map_fatal_notice = None
+        self._apply_map_state()
 
     def _map_verified(self) -> bool:
         """Were maps of this game and Legends version checked against the real game? The versions the workers
@@ -1221,10 +1237,11 @@ class App(ctk.CTk):
         if not hasattr(self, "map_note"):       # the window is still being built
             return
         usable, why = map_view.view_state(self._legends(), self._map_off)
+        opened = map_view.fields_open(self._legends())      # also while conditions are off: a Map Option can fix it
         for widget in self._map_widgets:
-            widget.configure(state="normal" if usable else "disabled")
+            widget.configure(state="normal" if opened else "disabled")
             if isinstance(widget, ctk.CTkEntry):
-                widget.configure(text_color=PALETTE["text"] if usable else PALETTE["faint"])
+                widget.configure(text_color=PALETTE["text"] if opened else PALETTE["faint"])
         lines = [why] if why else []
         if usable and not self._map_verified():
             lines.append(map_view.NOT_VERIFIED)
@@ -1264,6 +1281,7 @@ class App(ctk.CTk):
         if self.origin_var.get() not in names:
             self.origin_var.set(names[0])
         self.sisters_menu.configure(state="normal" if self._legends() else "disabled")
+        self._lift_map_lockout()        # (also the game folder: it ends here)
         self._apply_map_state()
         self._on_origin_change(self.origin_var.get())
         if hasattr(self, "_catalog_stop"):     # also called while the window is being built
@@ -1455,6 +1473,7 @@ class App(ctk.CTk):
         os.environ["BBSEED_GAME_DATA"] = chosen
         O.refresh()
         self._map_versions = (None, None)       # another game: the versions of the last search do not count
+        self._lift_map_lockout()                # and a map fatal of the other game does not count either
         self.setup_menu.configure(values=list(O.SETUPS))
         if self.setup_var.get() not in O.SETUPS:
             self.setup_var.set(O.DEFAULT_SETUP)
@@ -1832,21 +1851,27 @@ class App(ctk.CTk):
     def _ev_fatal(self, payload):
         """A worker ended with an error. The first one of a run is the notice (each worker reports the same
         error), and the red banner stays: search() sends "finished" after a fatal too. Before the workers
-        are ready the search could not start; after that it stopped. A fatal map event turns the Map view
-        off for the session: the search for brothers alone works without it."""
+        are ready the search could not start. After that one search process stopped, and the others go on:
+        search() ends the whole run only for a map fatal. A map fatal always counts, also after another fatal:
+        it turns map conditions off until the player changes a Map Option, the setup or the game folder
+        (_lift_map_lockout); the search for brothers alone works without them."""
         from bbseed.search import MAP_FATAL
         text = str(payload)
+        if text.startswith(MAP_FATAL):
+            if self._run.get("map_fatal"):
+                return
+            self._run["map_fatal"] = True
+            self._run["fatal"] = self._run.get("fatal") or text
+            self._map_off = True
+            self._apply_map_state()
+            self._map_fatal_notice = f"{text[:400]} {map_view.MAP_FATAL_ADVICE}"
+            self._show_notice(self._map_fatal_notice, kind="error")
+            return
         if self._run.get("fatal"):
             return
         self._run["fatal"] = text
-        if text.startswith(MAP_FATAL):
-            self._map_off = True
-            self._apply_map_state()
-            self._show_notice(f"{text[:400]} The Map view is off until you start BB Reroll again. "
-                              f"Roster searches still work.", kind="error")
-            return
-        what = "stopped" if self._run.get("ready") else "cannot start"
-        self._show_notice(f"The search {what}: {text[:400]}", kind="error")
+        who = "A search process stopped" if self._run.get("ready") else "The search cannot start"
+        self._show_notice(f"{who}: {text[:400]}", kind="error")
 
     def _ev_finished(self, payload):
         tested, secs, found, stopped = payload
@@ -1857,13 +1882,15 @@ class App(ctk.CTk):
         self._set_watch_state("idle")
         self.watch_var.set("Idle")
         failed = bool(self._run.get("fatal"))       # the banner of the fatal stays; no "No seed matched" over it
+        # a map fatal ended the run; after another fatal the other workers may have gone on to the end
+        verb = "Stopped" if stopped or self._run.get("map_fatal") else "Search ended" if failed else "Search complete"
         if self._run["checking"]:
             self.status_var.set("The seed check is complete. See the results." if not failed else
                                 "The seed check stopped.")
         else:
             errors = self._run.get("errors", 0)
             self.status_var.set(
-                f"{'Stopped' if stopped or failed else 'Search complete'}: {tested:,} seed{'' if tested == 1 else 's'} tested "
+                f"{verb}: {tested:,} seed{'' if tested == 1 else 's'} tested "
                 f"in {self._fmt_duration(secs)}, {found} match{'' if found == 1 else 'es'}"
                 f"{f', {errors} could not be tested' if errors else ''}."
                 + (f" {self._run['odds_text']}" if not found and self._run.get("odds_text") else ""))
@@ -2073,10 +2100,14 @@ class App(ctk.CTk):
         window = self._map_windows.get(key)
         try:
             if window is not None and window.winfo_exists():
-                window.deiconify()
-                window.lift()
-                window.focus_force()
-                return
+                # The map depends on the Map Options and the picture on the north band, so the same seed found
+                # again can have another map: the window of the old one is not brought forward but replaced.
+                if window.summary is entry["map"] and window.band == entry.get("north_band"):
+                    window.deiconify()
+                    window.lift()
+                    window.focus_force()
+                    return
+                window.destroy()
         except Exception:
             pass
         self._map_windows.pop(key, None)

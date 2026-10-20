@@ -599,6 +599,33 @@ def test_a_second_click_brings_the_window_forward_and_closing_leaves_nothing(map
     assert [w for w in app.winfo_children() if isinstance(w, ctk.CTkToplevel)] == []
 
 
+def test_the_same_seed_with_a_new_map_gets_a_fresh_window(map_app):
+    # The map depends on the Map Options: a seed that is found again after a change of Settlements has another map.
+    # The result replaces the old one; its Show map must not bring the old window forward.
+    app = map_app
+    app._run = dict(RUN, north_band=33)
+    old = result(app, "2222222222", small_map(30, 40))
+    app._show_map(old)
+    first = next(iter(app._map_windows.values()))
+    assert len([i for i in canvas_of(first).find_all() if canvas_of(first).type(i) == "rectangle"]) == 30 * 40
+    new = result(app, "2222222222", small_map(32, 44))          # the same seed, a new map (a new event)
+    assert len(app._matches) == 1 and app._matches[0] is new
+    app._show_map(new)
+    pump(app, lambda: False, 0.2)
+    (window,) = app._map_windows.values()
+    assert window is not first, "a window with the old map is not reused"
+    assert not first.winfo_exists(), "and it does not stay open beside the new one"
+    canvas = canvas_of(window)
+    assert len([i for i in canvas.find_all() if canvas.type(i) == "rectangle"]) == 32 * 44
+    app._show_map(new)                                          # the same result again: the same window
+    assert next(iter(app._map_windows.values())) is window
+    # the band of the run is part of the picture too: the same map found with another band is drawn again
+    other_band = dict(new, north_band=60)
+    app._show_map(other_band)
+    (again,) = app._map_windows.values()
+    assert again is not window and again.band == 60 and not window.winfo_exists()
+
+
 def test_the_whole_legends_map_fits_a_screen_1440_pixels_high(map_app):
     app = map_app
     app._run = dict(RUN, north_band=33)
@@ -623,7 +650,8 @@ def test_a_fatal_before_the_workers_are_ready_cannot_start_and_after_it_stopped(
     app._run = dict(RUN)
     app._ev_ready((2, 2, ROSTER_INFO))
     app._ev_fatal("KeyError: 'x' (seed 123)")
-    assert shown == [("The search stopped: KeyError: 'x' (seed 123)", "error")]
+    # search() goes on with the other workers after a fatal that is not a map fatal: not "the search stopped"
+    assert shown == [("A search process stopped: KeyError: 'x' (seed 123)", "error")]
 
 
 def test_several_identical_fatals_show_one_notice(map_app, monkeypatch):
@@ -644,12 +672,34 @@ def test_fatal_then_finished_keeps_the_red_banner(map_app):
     app._ev_ready((1, 1, ROSTER_INFO))
     app._ev_fatal("ValueError: bad (seed 5)")
     red = app.notice_banner.cget("fg_color")
-    assert app.notice_var.get().startswith("The search stopped: ValueError: bad (seed 5)")
+    assert app.notice_var.get().startswith("A search process stopped: ValueError: bad (seed 5)")
     app._ev_finished((12, 3.0, 0, False))           # search() sends this after a fatal, with stopped = False
-    assert app.notice_var.get().startswith("The search stopped: ValueError: bad (seed 5)")
+    assert app.notice_var.get().startswith("A search process stopped: ValueError: bad (seed 5)")
     assert app.notice_banner.cget("fg_color") == red == app._NOTICE_COLORS["error"][0]
-    assert "Search complete" not in app.status_var.get()
+    # the other workers may have gone on to the end: the status does not say the search "stopped" or "completed"
+    assert app.status_var.get().startswith("Search ended: 12 seeds tested in 3s, 0 matches.")
     assert "No seed matched" not in app.notice_var.get()
+
+
+def test_a_map_fatal_after_a_different_fatal_still_turns_the_map_view_off(map_app, calls):
+    from bbreroll import map_view
+    from bbseed.search import MAP_FATAL
+    app = map_app
+    app.map_vars["ports"].set("3")
+    app._run = dict(RUN)
+    app._searching = True
+    app._ev_ready((2, 2, ROSTER_INFO))
+    app._ev_fatal("OSError: no memory")             # one worker; the other goes on
+    assert not app._map_off and app.notice_var.get().startswith("A search process stopped: OSError")
+    app._ev_fatal(MAP_FATAL + "KeyError: 'x' (seed 5)")      # search() ends on this one
+    assert app._map_off, "first-fatal-only must not hide a map fatal"
+    assert app.notice_var.get().startswith(MAP_FATAL + "KeyError: 'x' (seed 5)")
+    assert map_view.TURNED_OFF in app.map_note_var.get()
+    app._ev_fatal("OSError: another (seed 9)")      # a later fatal of another kind changes nothing
+    assert app.notice_var.get().startswith(MAP_FATAL)
+    app._ev_finished((3, 5.0, 0, False))
+    assert app.status_var.get().startswith("Stopped: 3 seeds tested")
+    assert "map" not in search_now(app, calls)[0]["criteria"]
 
 
 def test_a_map_fatal_turns_the_map_view_off_and_leaves_roster_searches_alone(map_app, calls):
@@ -664,11 +714,83 @@ def test_a_map_fatal_turns_the_map_view_off_and_leaves_roster_searches_alone(map
     app._ev_finished((0, 1.0, 0, False))
     assert app._map_off
     assert app.notice_var.get().startswith(MAP_FATAL + "KeyError: 'x' (seed 5)")
+    assert "Change a Map Option in the Map view to turn them on again." in app.notice_var.get()
     assert "Roster searches still work" in app.notice_var.get()
     assert map_view.TURNED_OFF in app.map_note_var.get()
-    assert all(str(w.cget("state")) == "disabled" for w in app._map_widgets)
+    # the fields stay open: the player must be able to change a Map Option
+    assert all(str(w.cget("state")) == "normal" for w in app._map_widgets)
     (call,) = search_now(app, calls)
-    assert "map" not in call["criteria"], "the roster search goes on without the closed Map view"
+    assert "map" not in call["criteria"], "the roster search goes on without map conditions"
+    assert call["mod_settings"] == {"mod_legends:GenderEquality": "Enabled"}
+
+
+def lockout(app):
+    """The state after a map fatal: map conditions off, the red notice up."""
+    from bbseed.search import MAP_FATAL
+    app.map_vars["ports"].set("3")
+    app._run = dict(RUN)
+    app._searching = True
+    app._ev_ready((1, 1, ROSTER_INFO))
+    app._ev_fatal(MAP_FATAL + "KeyError: 'x' (seed 5)")
+    app._ev_finished((0, 1.0, 0, False))
+    assert app._map_off and app.notice_var.get()
+
+
+def test_changing_a_map_option_turns_map_conditions_on_again(map_app, calls):
+    app = map_app
+    lockout(app)
+    assert "map" not in search_now(app, calls)[0]["criteria"]
+    app.map_option_vars["LandRatio"].set("52")      # the player types in a Map Option field
+    assert not app._map_off
+    assert app.notice_var.get() == "", "the notice about the map fatal goes away with the lockout"
+    assert "turn them on again" not in app.map_note_var.get()
+    (call,) = search_now(app, calls)
+    assert call["criteria"]["map"]["ports"] == 3 and call["mod_settings"]["mod_legends:LandRatio"] == 52
+    # a Yes / No Map Option does it too
+    lockout(app)
+    app.map_option_vars["StackCitadels"].set("Yes")
+    assert not app._map_off
+    # a condition field alone does not: the cause of the fatal can be the Map Options
+    lockout(app)
+    app.map_vars["ports"].set("5")
+    assert app._map_off
+    # another notice (not the map fatal's) is left alone
+    app._clear_notice()
+    app._show_notice("Another notice.", kind="info")
+    app.map_option_vars["Water"].set("40")
+    assert not app._map_off and app.notice_var.get() == "Another notice."
+
+
+def test_changing_the_setup_turns_map_conditions_on_again(map_app, calls):
+    app = map_app
+    lockout(app)
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    assert not app._map_off
+    app.setup_var.set("Legends")
+    app._on_setup_change()
+    assert all(str(w.cget("state")) == "normal" for w in app._map_widgets)
+    assert search_now(app, calls)[0]["criteria"]["map"]["ports"] == 3
+
+
+def test_a_new_game_folder_turns_map_conditions_on_again(map_app, calls, monkeypatch):
+    import gui
+    from tkinter import filedialog
+    from bbseed import gamedata
+    app = map_app
+    lockout(app)
+    folder = app._game_folder
+    monkeypatch.setenv("BBSEED_GAME_DATA", "")
+    monkeypatch.setattr(filedialog, "askdirectory", lambda **k: "X:/Battle Brothers")
+    monkeypatch.setattr(gamedata, "as_data_dir", lambda chosen: Path(chosen) / "data")
+    monkeypatch.setattr(app, "_warn_old_mod", lambda: None)
+    try:
+        app._searching = False
+        app._on_game_folder()
+        assert not app._map_off
+        assert search_now(app, calls)[0]["criteria"]["map"]["ports"] == 3
+    finally:
+        app._game_folder = folder
 
 
 def test_the_estimate_waits_for_the_first_maps_and_a_missing_chance_shows_nothing(map_app):

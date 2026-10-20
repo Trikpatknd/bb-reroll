@@ -50,7 +50,10 @@ HELP = ("Set the minimum number of ports and towns. A port lets you travel by sh
 OPTIONS_TITLE = "Map Options. Use the same values as in the Mod Options of the game."
 NOT_VERIFIED = "Map results are not verified for this game version."
 NEEDS_LEGENDS = "Map conditions need the Legends setup for now."
-TURNED_OFF = "The Map view is off. Map conditions do not work with this game setup."
+TURNED_OFF = ("Map conditions are off. They did not work with this game setup. "
+              "Change a Map Option to turn them on again.")
+MAP_FATAL_ADVICE = ("Map conditions are off. Change a Map Option in the Map view to turn them on again. "
+                    "Roster searches still work.")
 
 
 def default_conditions():
@@ -196,13 +199,20 @@ def legends_version_from_files(mod_files):
 
 
 def view_state(legends, off):
-    """(are the fields open?, the line that says why not - or None). The maps are made for Legends only; `off` is a
-    session that met a fatal map event."""
-    if off:
-        return False, TURNED_OFF
+    """(do map conditions count?, the line that says why not - or None). The maps are made for Legends only; `off`
+    is a session that met a fatal map event, until the player changes a Map Option, the setup or the game folder."""
     if not legends:
         return False, NEEDS_LEGENDS
+    if off:
+        return False, TURNED_OFF
     return True, None
+
+
+def fields_open(legends):
+    """May the player type in the fields? On Legends always, also while map conditions are off: the player must be
+    able to change a Map Option, which turns them on again (the extreme Land Mass Ratio and Water values can make
+    a map that the game never finishes). Vanilla and Modded have no map to set."""
+    return bool(legends)
 
 
 # ------------------------------------------------------------------ the odds estimate while maps are built

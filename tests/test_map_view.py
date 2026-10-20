@@ -198,8 +198,14 @@ def test_the_view_state_says_why_the_fields_are_closed():
     usable, line = V.view_state(legends=False, off=False)
     assert not usable and line == "Map conditions need the Legends setup for now."
     usable, line = V.view_state(legends=True, off=True)
-    assert not usable and line == "The Map view is off. Map conditions do not work with this game setup."
+    assert not usable and line == ("Map conditions are off. They did not work with this game setup. "
+                                   "Change a Map Option to turn them on again.")
     assert V.view_state(legends=False, off=True)[0] is False
+
+
+def test_the_fields_stay_open_while_the_conditions_are_off_so_a_map_option_can_be_changed():
+    assert V.fields_open(legends=True)
+    assert not V.fields_open(legends=False)
 
 
 # ------------------------------------------------------------------ texts
@@ -212,7 +218,7 @@ def test_the_help_text_names_the_map_time_and_the_map_options():
 
 
 def test_the_texts_follow_the_simplified_writing_rules():
-    for text in (V.HELP, V.NOT_VERIFIED, V.NEEDS_LEGENDS, V.TURNED_OFF, V.WAIT, V.OPTIONS_TITLE):
+    for text in (V.HELP, V.NOT_VERIFIED, V.NEEDS_LEGENDS, V.TURNED_OFF, V.MAP_FATAL_ADVICE, V.WAIT, V.OPTIONS_TITLE):
         assert "n't" not in text and "'s " not in text and "criteria" not in text.lower(), text
         assert all(len(sentence.split()) <= 25 for sentence in text.replace("\n", " ").split(". ")), text
 
