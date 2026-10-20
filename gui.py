@@ -66,11 +66,14 @@ except Exception:
 from bbreroll import offline_origins as O
 from bbreroll import star_limits
 from bbreroll import backgrounds as background_limits
+from bbreroll import map_conditions
+from bbreroll import map_view
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
     explain_failure, roster_lines, sanitize_trait, to_int,
 )
 from bbreroll.seed_report import build_seed_report
+from bbseed import mapdraw
 
 
 # ─────────────────────── paths ───────────────────────
@@ -335,6 +338,94 @@ class _TraitEditDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class _MapWindow(ctk.CTkToplevel):
+    """The map of one result on a canvas: one rectangle per tile, a circle per town, a ring round each port and
+    the north band's line, north at the top. The geometry and the colours are the ones of bbseed/mapdraw.svg().
+    It is not modal and lives until it is closed; App._map_windows keeps it by (setup, origin, seed)."""
+
+    def __init__(self, app, key, entry, screen_height=None):
+        import tkinter as tk
+        super().__init__(app)
+        self._app, self._key = app, key
+        summary, band = entry["map"], entry.get("north_band")
+        self.title(f"Map of seed {entry['seed']} - {entry['origin']}")
+        self.configure(fg_color=PALETTE["bg"])
+        self.resizable(False, False)
+        self.scale = map_view.canvas_scale(summary, screen_height or self.winfo_screenheight())
+        width, height = mapdraw.picture_size(summary, self.scale)
+        self.info_var = ctk.StringVar()
+        self._line = map_conditions.map_line(summary, band or map_view.DEFAULT_NORTH_BAND)
+        self.info_var.set(self._line)
+        ctk.CTkLabel(self, textvariable=self.info_var, font=(FONT, 12), text_color=PALETTE["text"], anchor="w").pack(
+            fill="x", padx=12, pady=(8, 4))
+        self.canvas = tk.Canvas(self, width=round(width), height=round(height), bg=PALETTE["field"],
+                                highlightthickness=0)
+        self.canvas.pack(padx=12)
+        self._draw(summary, band, round(width))
+        self._legend(band)
+        self.bind("<Destroy>", self._forget, add="+")
+        # beside the main window, and not lower than the screen allows
+        self.update_idletasks()
+        top = max(0, min(app.winfo_rooty() + 20, (screen_height or self.winfo_screenheight()) - self.winfo_reqheight() - 60))
+        self.geometry(f"+{max(0, app.winfo_rootx() + 40)}+{top}")
+
+    def _forget(self, event):
+        if event.widget is self and self._app._map_windows.get(self._key) is self:
+            del self._app._map_windows[self._key]
+
+    def _draw(self, summary, band, width):
+        canvas, scale = self.canvas, self.scale
+        # Every edge is rounded once from the unscaled cell, so two tiles that touch share their edge: no gaps and
+        # no overlap at any scale.
+        for x0, y0, x1, y1, colour in mapdraw.cells(summary, 1):
+            canvas.create_rectangle(round(x0 * scale), round(y0 * scale), round(x1 * scale), round(y1 * scale),
+                                    fill=colour, outline="")
+        if band is not None:
+            y = mapdraw.band_y(summary, band, scale)
+            canvas.create_line(0, y, width, y, fill=mapdraw.BAND_COLOUR, width=max(1, round(1.5 * scale)),
+                               dash=(max(2, round(8 * scale)), max(2, round(5 * scale))))
+        for cx, cy, r, fill, port, label in mapdraw.town_marks(summary, scale):
+            items = [canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=fill, outline="#111111",
+                                        width=max(1, round(scale)))]
+            if port:
+                ring = r + 2.5 * scale
+                items.append(canvas.create_oval(cx - ring, cy - ring, cx + ring, cy + ring, outline=mapdraw.PORT_RING,
+                                                width=max(1, round(1.5 * scale))))
+            for item in items:
+                canvas.tag_bind(item, "<Enter>", lambda _e, text=label: self.info_var.set(text))
+                canvas.tag_bind(item, "<Leave>", lambda _e: self.info_var.set(self._line))
+        # north is at the top: an arrow on a dark plate in the corner (it must show on snow and on sea)
+        canvas.create_polygon(4, 4, 32, 4, 32, 44, 4, 44, fill="#111111", outline="#ffffff")
+        canvas.create_polygon(18, 8, 26, 24, 18, 20, 10, 24, fill="#ffffff", outline="#ffffff")
+        canvas.create_text(18, 35, text="N", fill="#ffffff", font=(FONT, 11, "bold"))
+
+    def _legend(self, band):
+        """One line under the map: what the circles, the ring and the dashed line mean."""
+        import tkinter as tk
+        legend = ctk.CTkFrame(self, fg_color="transparent")
+        legend.pack(fill="x", padx=12, pady=(4, 8))
+
+        def chip(draw, bg=PALETTE["bg"]):
+            c = tk.Canvas(legend, width=18, height=16, bg=bg, highlightthickness=0)
+            draw(c)
+            c.pack(side="left")
+
+        def text(label):
+            ctk.CTkLabel(legend, text=label, font=(FONT, 11), text_color=PALETTE["muted"]).pack(side="left", padx=(2, 12))
+
+        for kind, label in (("town", "Town"), ("military", "Stronghold"), ("southern", "City state")):
+            chip(lambda c, k=kind: c.create_oval(4, 3, 14, 13, fill=mapdraw.TOWN_FILL[k], outline="#111111"))
+            text(label)
+        # the ring is dark blue: it needs a light plate (on the map it lies on the coast)
+        chip(lambda c: (c.create_oval(5, 4, 13, 12, fill=mapdraw.TOWN_FILL["town"], outline="#111111"),
+                        c.create_oval(2, 1, 16, 15, outline=mapdraw.PORT_RING, width=2)), bg="#cfd8dc")
+        text("Port")
+        if band is not None:
+            chip(lambda c: c.create_line(0, 8, 18, 8, fill=mapdraw.BAND_COLOUR, width=2, dash=(4, 2)))
+            text(f"North band: the top {band:g} %")
+        text("North is at the top.")
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -379,6 +470,13 @@ class App(ctk.CTk):
         self._background_ids:        dict[str, dict[str, str]] = {}
         self._background_widgets:    dict[str, "ctk.CTkOptionMenu"] = {}
         self._pending_backgrounds:   dict[str, str] = {}    # saved conditions, until the catalog shows the menus
+        # the Map view: the conditions and the Map Options as the player typed them (bbreroll/map_view.py)
+        self.map_vars:               dict[str, ctk.StringVar] = {}
+        self.map_option_vars:        dict[str, ctk.StringVar] = {}
+        self._map_widgets:           list = []          # the fields; they close with the view
+        self._map_off = False                           # a fatal map event ended the Map view for this session
+        self._map_versions = (None, None)               # the game and Legends version the workers reported
+        self._map_windows:           dict = {}          # (setup, origin, seed) -> the open map window
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
         self.required_vars: dict[str, ctk.BooleanVar] = {}
         self.banned_known   = self._saved_list("known_banned", DEFAULT_BANNED)
@@ -487,12 +585,13 @@ class App(ctk.CTk):
         self.grid_title = _title(cond, "STARS")
         self.grid_title.grid(row=0, column=0, sticky="w", padx=14, pady=(10, 0))
         self.grid_mode_var = ctk.StringVar(value="Stars")
-        ctk.CTkSegmentedButton(cond, values=["Stars", "Stat rolls", "Backgrounds"], variable=self.grid_mode_var,
-                               command=self._on_grid_mode, font=(FONT, 12), height=28,
-                               fg_color=PALETTE["control"], selected_color=PALETTE["accent"],
-                               selected_hover_color=PALETTE["accent_hover"], unselected_color=PALETTE["control"],
-                               unselected_hover_color=PALETTE["control_hover"], text_color=PALETTE["text"],
-                               ).grid(row=0, column=1, sticky="e", padx=14, pady=(10, 0))
+        self.grid_switch = ctk.CTkSegmentedButton(
+            cond, values=["Stars", "Stat rolls", "Backgrounds", "Map"], variable=self.grid_mode_var,
+            command=self._on_grid_mode, font=(FONT, 12), height=28,
+            fg_color=PALETTE["control"], selected_color=PALETTE["accent"],
+            selected_hover_color=PALETTE["accent_hover"], unselected_color=PALETTE["control"],
+            unselected_hover_color=PALETTE["control_hover"], text_color=PALETTE["text"])
+        self.grid_switch.grid(row=0, column=1, sticky="e", padx=14, pady=(10, 0))
         self.grid_help = _hint(cond, self._GRID_HELP["Stars"])
         self.grid_help.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=(2, 0))
         self.origin_info_var = ctk.StringVar(value="")
@@ -507,6 +606,7 @@ class App(ctk.CTk):
         self.backgrounds_frame = ctk.CTkFrame(cond, fg_color="transparent")
         self.backgrounds_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
         self.backgrounds_frame.grid_remove()
+        self._build_map_view(cond)
         # why a stars cell is closed: one colour per reason
         self.stars_legend = ctk.CTkFrame(cond, fg_color="transparent")
         self.stars_legend.grid(row=4, column=0, columnspan=2, sticky="w", padx=14, pady=(0, 10))
@@ -798,10 +898,11 @@ class App(ctk.CTk):
                        "background. Other origins always give the same backgrounds.\n"
                        "Row Any brother: at least one brother must have this background. Use it with the stat "
                        "rolls: a high roll is high for the background of the brother.",
+        "Map": map_view.HELP,
     }
     _SET_ROW = "Set row"
     ANY_BACKGROUND = "Any background"
-    _GRID_TITLES = {"Stars": "STARS", "Stat rolls": "STAT ROLLS", "Backgrounds": "BACKGROUNDS"}
+    _GRID_TITLES = {"Stars": "STARS", "Stat rolls": "STAT ROLLS", "Backgrounds": "BACKGROUNDS", "Map": "MAP"}
 
     # closed cells: why they are closed decides their look (legend under the grid)
     _CLOSED = {"never": ("never", "never_text"), "fixed": ("fixed", "fixed_text"), "full": ("full", "full_text")}
@@ -878,7 +979,7 @@ class App(ctk.CTk):
         self.grid_help.configure(text=self._GRID_HELP[mode])
         for widget, show in ((self.stars_frame, stars), (self.origin_info_label, stars),
                              (self.stars_legend, stars), (self.tiers_frame, mode == "Stat rolls"),
-                             (self.backgrounds_frame, mode == "Backgrounds")):
+                             (self.backgrounds_frame, mode == "Backgrounds"), (self.map_frame, mode == "Map")):
             widget.grid() if show else widget.grid_remove()
 
     def _grid_header(self, frame):
@@ -1061,6 +1162,98 @@ class App(ctk.CTk):
         self._rebuild_tiers_grid(n, facts)
         self._rebuild_backgrounds_view(n, facts)
 
+    # ── the Map view (the logic is in bbreroll/map_view.py) ──
+    _MAP_TIPS = {"ports": "The least number of ports on the map. A port lets you travel by ship.",
+                 "ports_south": "The least number of ports of the city states in the south.",
+                 "ports_north": "The least number of ports in the north band. City states do not count here.",
+                 "north_band": "The top part of the map, in percent. A northern port is a port in this part."}
+
+    def _build_map_view(self, parent):
+        """The least ports and towns a map must have, and the Map Options of the game: the map depends on them."""
+        frame = self.map_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
+        frame.grid_remove()
+        self.map_note_var = ctk.StringVar(value="")
+        self.map_note = ctk.CTkLabel(frame, textvariable=self.map_note_var, justify="left", anchor="w",
+                                     font=(FONT, 11), text_color=PALETTE["star"], wraplength=880)
+        self.map_note.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 4))
+        self.map_note.grid_remove()
+        conditions, options = map_view.default_conditions(), map_view.default_options()
+
+        def line(row):
+            box = ctk.CTkFrame(frame, fg_color="transparent")
+            box.grid(row=row, column=0, sticky="w", padx=(4, 0), pady=2)
+            return box
+
+        def entry(box, label, variables, key, default, tooltip=None):
+            var = variables[key] = ctk.StringVar(value=default)
+            self._map_widgets.append(_field(box, label, lambda p: _entry(p, var, 70), tooltip=tooltip))
+
+        top, towns = line(1), line(2)
+        for key, label in map_view.CONDITION_LABELS.items():
+            entry(top, label, self.map_vars, key, conditions[key], self._MAP_TIPS[key])
+        for key, label in map_view.TOWN_LABELS.items():
+            entry(towns, label, self.map_vars, key, conditions[key], f"The least number of {label.lower()} on the map.")
+        _hint(frame, map_view.OPTIONS_TITLE).grid(row=3, column=0, sticky="w", padx=4, pady=(6, 0))
+        box = line(4)
+        for key, label in map_view.OPTION_LABELS.items():
+            if key in map_view.YES_NO_OPTIONS:
+                var = self.map_option_vars[key] = ctk.StringVar(value=options[key])
+                # no tooltip: they got stuck on dropdowns
+                self._map_widgets.append(_field(box, label, lambda p: _menu(p, [map_view.YES, map_view.NO], var, 80)))
+            else:
+                low, high = map_view.OPTION_RANGES[key]
+                entry(box, f"{label} ({low}-{high})", self.map_option_vars, key, options[key])
+
+    def _map_usable(self) -> bool:
+        return map_view.view_state(self._legends(), self._map_off)[0]
+
+    def _map_verified(self) -> bool:
+        """Were maps of this game and Legends version checked against the real game? The versions the workers
+        reported win over what the mod file names say."""
+        found = O.FOUND or {}
+        game = self._map_versions[0] or found.get("game_version")
+        legends = self._map_versions[1] or map_view.legends_version_from_files(found.get("mods"))
+        return map_view.verified(game, legends)
+
+    def _apply_map_state(self):
+        """Open or close the fields and show the line that says why (not Legends, turned off, version)."""
+        if not hasattr(self, "map_note"):       # the window is still being built
+            return
+        usable, why = map_view.view_state(self._legends(), self._map_off)
+        for widget in self._map_widgets:
+            widget.configure(state="normal" if usable else "disabled")
+            if isinstance(widget, ctk.CTkEntry):
+                widget.configure(text_color=PALETTE["text"] if usable else PALETTE["faint"])
+        lines = [why] if why else []
+        if usable and not self._map_verified():
+            lines.append(map_view.NOT_VERIFIED)
+        self.map_note_var.set("\n".join(lines))
+        self.map_note.grid() if lines else self.map_note.grid_remove()
+
+    def _map_setup(self):
+        """(map conditions or None, Map Options or None, errors) from the fields; nothing while the view is closed."""
+        if not self._map_usable():
+            return None, None, []
+        return map_view.build({k: v.get() for k, v in self.map_vars.items()},
+                              {k: v.get() for k, v in self.map_option_vars.items()})
+
+    def _set_map_fields(self, map_criteria, options):
+        """Fill the fields from map conditions and numeric Map Options (the self-test's spec); None: the defaults."""
+        conditions, texts = map_view.fields_from_spec(map_criteria, options)
+        for key, var in self.map_vars.items():
+            var.set(conditions[key])
+        for key, var in self.map_option_vars.items():
+            var.set(texts[key])
+
+    def _restore_map_values(self, data):
+        """The Map view's values from a settings file; a file from before the Map view gives the defaults."""
+        conditions, options = map_view.from_settings(data)
+        for key, var in self.map_vars.items():
+            var.set(conditions[key])
+        for key, var in self.map_option_vars.items():
+            var.set(options[key])
+
     # ── game setup / origin ──
     def _legends(self) -> bool:
         return O.SETUPS.get(self.setup_var.get(), (None, False))[1]
@@ -1071,6 +1264,7 @@ class App(ctk.CTk):
         if self.origin_var.get() not in names:
             self.origin_var.set(names[0])
         self.sisters_menu.configure(state="normal" if self._legends() else "disabled")
+        self._apply_map_state()
         self._on_origin_change(self.origin_var.get())
         if hasattr(self, "_catalog_stop"):     # also called while the window is being built
             self.after(10, self._ensure_catalog)
@@ -1260,6 +1454,7 @@ class App(ctk.CTk):
         self._game_folder = chosen
         os.environ["BBSEED_GAME_DATA"] = chosen
         O.refresh()
+        self._map_versions = (None, None)       # another game: the versions of the last search do not count
         self.setup_menu.configure(values=list(O.SETUPS))
         if self.setup_var.get() not in O.SETUPS:
             self.setup_var.set(O.DEFAULT_SETUP)
@@ -1346,7 +1541,7 @@ class App(ctk.CTk):
                 backgrounds_by_slot[slot] = [bid]
             else:
                 backgrounds_by_slot.pop(slot, None)
-        return {
+        criteria = {
             "stars_by_slot": stars_by_slot,
             "tiers_by_slot": tiers_by_slot,
             "backgrounds_by_slot": backgrounds_by_slot,
@@ -1354,6 +1549,10 @@ class App(ctk.CTk):
             "required": [t for t, v in self.required_vars.items() if v.get()],
             "required_mode": self.required_mode_var.get(),
         }
+        map_criteria = self._map_setup()[0]
+        if map_criteria:            # only a run with a map condition has the key (a map costs about 40 s)
+            criteria["map"] = map_criteria
+        return criteria
 
     def _restore_criteria(self):
         """Tick the traits and set the stars the last session ended with."""
@@ -1408,28 +1607,34 @@ class App(ctk.CTk):
             return
         criteria = self._gather_criteria()
         numbers, errors = self._numbers()
-        if errors:
-            messagebox.showerror("Cannot search", "\n".join(errors))
+        _map, map_options, map_errors = self._map_setup()
+        if errors or map_errors:
+            messagebox.showerror("Cannot search", "\n".join(errors + map_errors))
             return
-        # Pre-flight: trivially-passing criteria match every seed immediately.
-        if is_trivial(criteria):
+        # Pre-flight: trivially-passing criteria match every seed immediately (a map condition is a condition).
+        if is_trivial(criteria) and not criteria.get("map"):
             if not messagebox.askyesno("No conditions", "You set no stars, no stat rolls, no backgrounds and no traits. "
                                        "Each seed matches.\n\nSearch?"):
                 return
         # Pre-flight: criteria no seed can meet — stars an origin fixes lower, stats a brother never
-        # gets stars in, more starred stats than he can have (the game's own facts, when known).
+        # gets stars in, more starred stats than he can have (the game's own facts, when known), and map
+        # conditions that no map can meet with these Map Options.
         facts = self._slot_facts(self.origin_var.get())
+        found = []
         if facts is not None:
             found = (star_limits.problems(facts, criteria["stars_by_slot"])
                      + star_limits.roll_problems(facts, criteria["tiers_by_slot"])
                      + background_limits.problems(facts, criteria["backgrounds_by_slot"], self._background_names()))
-            if found and not messagebox.askyesno(
+        if criteria.get("map"):
+            found += map_conditions.problems(criteria["map"], map_options)
+        if found:
+            if not messagebox.askyesno(
                     "Impossible conditions",
                     f"No seed can match these conditions for {self.origin_var.get()}:\n\n"
                     + "\n".join(f"  • {p}" for p in found) + "\n\nSearch?"):
                 return
-        # Without them: hardcoded-stars unsatisfiability from the built-in table (the Gladiators-bear case).
-        elif self._legends():
+        # Without the game's facts: hardcoded-stars unsatisfiability from the built-in table (the Gladiators-bear case).
+        if facts is None and self._legends():
             conflicts = origin_conflicts(self.origin_var.get(), criteria["stars_by_slot"])
             if conflicts:
                 lines = "\n".join(
@@ -1452,16 +1657,32 @@ class App(ctk.CTk):
             messagebox.showerror("Check a seed", "Write the seed as in the game: 1 to 10 characters.")
             return
         numbers, _errors = self._numbers()
+        map_errors = self._map_setup()[2]
+        if map_errors:          # a map condition makes the check build the map of the seed too
+            messagebox.showerror("Check a seed", "\n".join(map_errors))
+            return
         self._launch(self._gather_criteria(), numbers, seeds=[seed])
 
     def _launch(self, criteria, numbers, seeds):
-        from bbseed.search import search
+        from bbseed.search import normalize, roster_conditions, search
         setup, origin = self.setup_var.get(), self.origin_var.get()
         profile = O.SETUPS[setup][0]
         scenario = O.SCENARIO[origin]
         workers = 1 if seeds else numbers[WORKERS] or default_workers()
         mod_settings = {"mod_legends:GenderEquality": self.sisters_var.get()} if self._legends() else None
-        self._run = {"setup": setup, "origin": origin, "checking": bool(seeds)}
+        map_criteria = criteria.get("map")
+        map_first = False
+        if map_criteria:
+            # The Map Options change the map and nothing else, so only a run with a map condition sends them
+            # (a search for brothers alone must stay as it was). The workers report the values they used.
+            options = self._map_setup()[1] or map_view.default_option_values()
+            mod_settings = {**(mod_settings or {}), **map_view.mod_settings(options)}
+            try:        # no brother condition: the map is built for every seed (the estimate waits for maps)
+                map_first = not roster_conditions(normalize(criteria))
+            except ValueError:
+                pass
+        self._run = {"setup": setup, "origin": origin, "checking": bool(seeds), "map": map_criteria,
+                     "map_first": map_first, "north_band": (map_criteria or {}).get("north_band")}
         self._search_total = len(seeds) if seeds else numbers[SEEDS_TO_TEST]
         self._stop.clear()
         self._searching = True
@@ -1473,8 +1694,9 @@ class App(ctk.CTk):
         self.stop_btn.configure(state="normal")
         self._set_watch_state("waiting")
         self.watch_var.set(f"Loading the game scripts in {workers} worker{'' if workers == 1 else 's'}")
-        self.status_var.set(f"Checking seed {seeds[0]}." if seeds else
-                            f"Searching {origin} ({setup}): a maximum of {self._search_total:,} seeds.")
+        self.status_var.set((f"Checking seed {seeds[0]}." if seeds else
+                             f"Searching {origin} ({setup}): a maximum of {self._search_total:,} seeds.")
+                            + (f" {map_view.WAIT}" if map_criteria else ""))
         put = self._events.put
 
         def run():
@@ -1514,15 +1736,21 @@ class App(ctk.CTk):
         ready, total, info = payload
         self.watch_var.set(f"Loading: {ready} of {total} workers are ready")
         legends = info.get("legends_version")
+        self._run["ready"] = ready              # a fatal after this is not "cannot start"
         self._report_info = {
             "version": legends or f"Vanilla {info.get('game_version')}",
             "build_name": info.get("legends_build") if legends else None,
             "battle_sisters": info.get("battle_sisters") if legends else "n/a (no Legends)",
             "origin": self._run["origin"],
-            "map_options": {},
+            # the Map Options the workers used: they are part of the post only for a run with map conditions
+            # (a roster does not depend on them; a post for a roster alone says "any")
+            "map_options": dict(info.get("map_options") or {}) if self._run.get("map") else {},
             "game_version": info.get("game_version"),
             "mods": info.get("mods") or [],
         }
+        if legends:
+            self._map_versions = (info.get("game_version"), legends)
+            self._apply_map_state()
 
     def _ev_progress(self, payload):
         tested, secs, _found = payload[:3]
@@ -1539,6 +1767,8 @@ class App(ctk.CTk):
         if hint:
             self.status_var.set(hint)
             self._run["odds_text"] = hint
+        elif self._wait_text(odds):         # the first maps are still being built
+            self.status_var.set(self._wait_text(odds))
         never = odds.get("never") or []
         self._run["never"] = never
         if never and odds.get("tested", 0) >= 300 and not self._run.get("warned_never"):
@@ -1551,14 +1781,26 @@ class App(ctk.CTk):
             self._run["warned_never"] = True
             self._show_notice(f"No brother had the background of row Any brother in {odds['tested']:,} seeds. "
                               f"Possibly no seed matches. Select a different background.", kind="info")
+        elif odds.get("never_map") and odds.get("maps", 0) >= 20 and not self._run.get("warned_never"):
+            self._run["warned_never"] = True
+            self._show_notice(f"No map met the map conditions in {odds['maps']:,} maps. Possibly no seed matches. "
+                              f"Use easier map conditions.", kind="info")
+        self._run["never_map"] = bool(odds.get("never_map"))
+
+    def _wait_text(self, odds):
+        """The note while the first maps are built (a map takes about 40 seconds); "" for other runs."""
+        return map_view.wait_note(odds) if self._run.get("map") else ""
 
     def _odds_text(self, odds, rate):
-        """'Approximately 1 in 3,400 seeds matches (...). At this speed, that is 1 match in ...' (or nothing)"""
-        chance, tested = odds.get("chance"), odds.get("tested", 0)
-        if not chance or tested < 100:
+        """'Approximately 1 in 3,400 seeds matches (...). At this speed, that is 1 match in ...' (or nothing).
+        With map conditions it waits for maps, not for seeds, and "chance" can be None until a map is built."""
+        chance, tested, maps = odds.get("chance"), odds.get("tested", 0), odds.get("maps", 0)
+        map_run = bool(self._run.get("map"))
+        if not chance or not map_view.estimate_ready(odds, map_run, self._run.get("map_first", False)):
             return ""
         one_in = 1 / chance
-        text = f"Approximately 1 in {one_in:,.0f} seeds matches (from {tested:,} seeds)."
+        basis = f"{tested:,} seeds, {maps:,} maps" if map_run else f"{tested:,} seeds"
+        text = f"Approximately 1 in {one_in:,.0f} seeds matches (from {basis})."
         if rate > 0:
             text += f" At this speed, that is 1 match in approximately {self._fmt_duration(one_in / rate)}."
         return text
@@ -1568,7 +1810,8 @@ class App(ctk.CTk):
         self._matches = [m for m in self._matches if not (
             m["seed"] == payload["seed"] and m["origin"] == self._run["origin"] and m["setup"] == self._run["setup"])]
         entry = dict(payload, ts=time.time(), origin=self._run["origin"], setup=self._run["setup"],
-                     checked=self._run["checking"], info=dict(self._report_info))
+                     checked=self._run["checking"], info=dict(self._report_info),
+                     north_band=self._run.get("north_band"))     # the band of this run: the map's ports count by it
         self._matches.insert(0, entry)
         self._render_match_list()
         self.match_pane.grid()
@@ -1587,7 +1830,23 @@ class App(ctk.CTk):
             self._show_notice(f"BB Reroll cannot test a seed: {payload[:300]}", kind="warn")
 
     def _ev_fatal(self, payload):
-        self._show_notice(f"The search cannot start: {payload[:400]}", kind="error")
+        """A worker ended with an error. The first one of a run is the notice (each worker reports the same
+        error), and the red banner stays: search() sends "finished" after a fatal too. Before the workers
+        are ready the search could not start; after that it stopped. A fatal map event turns the Map view
+        off for the session: the search for brothers alone works without it."""
+        from bbseed.search import MAP_FATAL
+        text = str(payload)
+        if self._run.get("fatal"):
+            return
+        self._run["fatal"] = text
+        if text.startswith(MAP_FATAL):
+            self._map_off = True
+            self._apply_map_state()
+            self._show_notice(f"{text[:400]} The Map view is off until you start BB Reroll again. "
+                              f"Roster searches still work.", kind="error")
+            return
+        what = "stopped" if self._run.get("ready") else "cannot start"
+        self._show_notice(f"The search {what}: {text[:400]}", kind="error")
 
     def _ev_finished(self, payload):
         tested, secs, found, stopped = payload
@@ -1597,22 +1856,27 @@ class App(ctk.CTk):
         self.stop_btn.configure(state="disabled")
         self._set_watch_state("idle")
         self.watch_var.set("Idle")
+        failed = bool(self._run.get("fatal"))       # the banner of the fatal stays; no "No seed matched" over it
         if self._run["checking"]:
-            self.status_var.set("The seed check is complete. See the results.")
+            self.status_var.set("The seed check is complete. See the results." if not failed else
+                                "The seed check stopped.")
         else:
             errors = self._run.get("errors", 0)
             self.status_var.set(
-                f"{'Stopped' if stopped else 'Search complete'}: {tested:,} seed{'' if tested == 1 else 's'} tested "
+                f"{'Stopped' if stopped or failed else 'Search complete'}: {tested:,} seed{'' if tested == 1 else 's'} tested "
                 f"in {self._fmt_duration(secs)}, {found} match{'' if found == 1 else 'es'}"
                 f"{f', {errors} could not be tested' if errors else ''}."
                 + (f" {self._run['odds_text']}" if not found and self._run.get("odds_text") else ""))
-            if not found and not stopped and tested:
+            if not found and not stopped and not failed and tested:
                 never = self._run.get("never") or []
                 if never:
                     who = ", ".join(str(n) for n in never)
                     self._show_notice(f"No seed matched in {tested:,} seeds. Brother {who} never matched the "
                                       f"conditions. Use easier conditions for "
                                       f"{'this brother' if len(never) == 1 else 'these brothers'}.", kind="info")
+                elif self._run.get("never_map"):
+                    self._show_notice(f"No seed matched in {tested:,} seeds. No map met the map conditions. "
+                                      f"Use easier map conditions.", kind="info")
                 else:
                     self._show_notice(f"No seed matched in {tested:,} seeds. Use easier conditions or test more "
                                       f"seeds.", kind="info")
@@ -1775,6 +2039,11 @@ class App(ctk.CTk):
                                   lambda e=entry: self._toggle_perks(e), width=92, height=26, font=(FONT, 11))
                 details.pack(side="left", padx=2)
                 _attach_tooltip(details, "Show the stat rolls of each brother and, with Legends, his perk trees.")
+            if entry.get("map"):
+                map_btn = _button(buttons, "Show map", lambda e=entry: self._show_map(e), width=84, height=26,
+                                  font=(FONT, 11))
+                map_btn.pack(side="left", padx=2)
+                _attach_tooltip(map_btn, "Show the world map of this seed with its towns and ports. North is at the top.")
             remove = _button(buttons, "✕", lambda e=entry: self._dismiss_match(e), kind="ghost", width=28, height=26,
                              font=(FONT, 11))
             remove.pack(side="left", padx=(6, 0))
@@ -1794,6 +2063,31 @@ class App(ctk.CTk):
                 ctk.CTkLabel(card, text="\n".join(lines), font=(FONT, 11), justify="left", anchor="w", wraplength=880,
                              text_color=PALETTE["muted"]).grid(row=3, column=0, columnspan=3, sticky="w",
                                                                padx=12, pady=(0, 10))
+
+    def _show_map(self, entry: dict, screen_height=None):
+        """The map of a result in a window of its own. A second click on the same result brings its window
+        forward; a closed window leaves nothing behind (App._map_windows forgets it)."""
+        if not entry.get("map"):
+            return
+        key = (entry["setup"], entry["origin"], entry["seed"])
+        window = self._map_windows.get(key)
+        try:
+            if window is not None and window.winfo_exists():
+                window.deiconify()
+                window.lift()
+                window.focus_force()
+                return
+        except Exception:
+            pass
+        self._map_windows.pop(key, None)
+        try:
+            self._map_windows[key] = _MapWindow(self, key, entry, screen_height=screen_height)
+        except Exception as e:      # a damaged map: no half-built window stays open
+            known = list(self._map_windows.values())
+            for child in self.winfo_children():
+                if isinstance(child, _MapWindow) and child not in known:
+                    child.destroy()
+            self.status_var.set(f"Cannot draw the map: {type(e).__name__}: {e}")
 
     def _toggle_perks(self, entry: dict):
         entry["show_perks"] = not entry.get("show_perks")
@@ -1831,6 +2125,8 @@ class App(ctk.CTk):
             report_info=entry.get("info") or self._report_info,
             tool_version=APP_VERSION,
             roster=entry.get("roster"),
+            game_map=entry.get("map") or None,      # None, never {}: a post without a map stays as it was
+            north_band=entry.get("north_band") or map_view.DEFAULT_NORTH_BAND,
         )
 
     def _copy_seed_share(self, entry: dict):
@@ -1870,6 +2166,7 @@ class App(ctk.CTk):
                 var.set(str(data[key]))
         if data.get("battle_sisters") in O.BATTLE_SISTERS:
             self.sisters_var.set(data["battle_sisters"])
+        self._restore_map_values(data)
         # Layered display-name overrides — only persist deltas from the builtin
         # map so a future TRAIT_NAMES update flows through automatically.
         overrides = data.get("display_overrides") or {}
@@ -1887,6 +2184,8 @@ class App(ctk.CTk):
                 tid: name for tid, name in self.trait_display.items()
                 if TRAIT_NAMES.get(tid) != name
             }
+            criteria = self._gather_criteria()
+            criteria.pop("map", None)       # the Map view's values are saved as typed, below
             SETTINGS_PATH.write_text(json.dumps({
                 "v":                 SETTINGS_VERSION,
                 "geometry":          self.geometry(),
@@ -1900,7 +2199,9 @@ class App(ctk.CTk):
                 "display_overrides": overrides,
                 "known_banned":      list(self.banned_known),
                 "known_required":    list(self.required_known),
-                "criteria":          self._gather_criteria(),
+                "criteria":          criteria,
+                **map_view.to_settings({k: v.get() for k, v in self.map_vars.items()},
+                                       {k: v.get() for k, v in self.map_option_vars.items()}),
             }, indent=2), encoding="utf-8")
         except Exception:
             pass
@@ -1955,6 +2256,9 @@ class App(ctk.CTk):
             self.count_var.set(str(spec.get("count", 2)))
             self.workers_var.set(str(spec.get("workers", 4)))
             self.share_desc_var.set(spec.get("description", ""))
+            # the Map view: the spec's conditions and Map Options, else the defaults (never the player's saved ones)
+            self._set_map_fields(spec.get("map"), spec.get("map_options"))
+            self._apply_map_state()
             if spec.get("search") is False:     # a picture of the window only: no search
                 self.after(1000, lambda: self._selftest_done((0, 0.0, 0, False)))
             elif spec.get("check"):
@@ -1972,7 +2276,7 @@ class App(ctk.CTk):
             for m in self._matches:
                 m["show_perks"] = True
             self._render_match_list()
-        Path(spec["out"]).write_text(json.dumps({
+        report = {
             "finished": list(payload), "status": self.status_var.get(), "notice": self.notice_var.get(),
             "title": self.title(), "setups": list(O.SETUPS),
             "catalog": self._catalog() is not None, "origin_info": self.origin_info_var.get(),
@@ -1981,33 +2285,56 @@ class App(ctk.CTk):
             "cells": {f"{slot}:{stat}": len(w.cget("values")) - 1 for (slot, stat), w in self.stars_widgets.items()},
             "backgrounds": {slot: len(ids) for slot, ids in self._background_ids.items()},
             "criteria": self._gather_criteria(),
+            "map_note": self.map_note_var.get(),
             "matches": [{"seed": m["seed"], "origin": m["origin"], "stable": m["stable"], "failure": m["failure"],
-                         "checked": m["checked"], "lines": roster_lines(m["roster"])} for m in self._matches],
+                         "checked": m["checked"], "lines": roster_lines(m["roster"]),
+                         "map": map_conditions.map_line(m["map"], m.get("north_band") or map_view.DEFAULT_NORTH_BAND)
+                                if m.get("map") else None} for m in self._matches],
             "share": None if not self._matches else self._share_report(self._matches[0]),
-        }, indent=2), encoding="utf-8")
+        }
+        Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
         if spec.get("screenshot"):          # a picture of the window, to check the layout unattended
+            self._grab(self, spec["screenshot"])
+        shown = next((m for m in self._matches if m.get("map")), None) if spec.get("show_map") else None
+        if shown is not None:               # the map window of the first result with a map, in a second picture
             try:
-                from PIL import ImageGrab
-                # the picture is of the screen: this window must be on top (the player's own BB Reroll
-                # window can be open at the same place)
-                self.deiconify()
-                self.lift()
-                self.attributes("-topmost", True)
+                self._show_map(shown)
+                window = self._map_windows[(shown["setup"], shown["origin"], shown["seed"])]
                 self.update()
-                time.sleep(0.4)
-                self.update()
-                x, y = self.winfo_rootx(), self.winfo_rooty()
-                box = (x, y, x + self.winfo_width(), y + self.winfo_height())
-                try:        # this process is not DPI aware (see main): Tk's pixels are scaled screen pixels
-                    import ctypes
-                    scale = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100.0
-                except Exception:
-                    scale = 1.0
-                ImageGrab.grab(bbox=tuple(int(v * scale) for v in box)).save(spec["screenshot"])
-            except Exception:
-                pass
+                report["map_window"] = {"title": window.title(), "scale": window.scale, "info": window.info_var.get(),
+                                        "canvas": [int(window.canvas.cget("width")), int(window.canvas.cget("height"))],
+                                        "items": len(window.canvas.find_all())}
+                Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
+                if spec.get("screenshot"):
+                    shot = Path(spec["screenshot"])
+                    self._grab(window, str(shot.with_name(shot.stem + "_map" + shot.suffix)))
+            except Exception as e:
+                report["map_window"] = {"error": f"{type(e).__name__}: {e}"}
+                Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
         if spec.get("close_after") is not None:
             self.after(int(spec["close_after"] * 1000), self.destroy)
+
+    def _grab(self, window, path):
+        """A picture of `window` from the screen (needs Pillow). The picture is of the screen, so the window
+        must be on top: the player's own BB Reroll window can be open at the same place."""
+        try:
+            from PIL import ImageGrab
+            window.deiconify()
+            window.lift()
+            window.attributes("-topmost", True)
+            window.update()
+            time.sleep(0.4)
+            window.update()
+            x, y = window.winfo_rootx(), window.winfo_rooty()
+            box = (x, y, x + window.winfo_width(), y + window.winfo_height())
+            try:        # this process is not DPI aware (see main): Tk's pixels are scaled screen pixels
+                import ctypes
+                scale = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100.0
+            except Exception:
+                scale = 1.0
+            ImageGrab.grab(bbox=tuple(int(v * scale) for v in box)).save(path)
+        except Exception:
+            pass
 
 
 # ─────────────────────── entry ───────────────────────
