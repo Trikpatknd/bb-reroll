@@ -106,6 +106,16 @@ def test_failure_uses_the_default_north_band():
     assert mapgen.failure(s, {"ports_north": 1, "north_band": 50}) is None
 
 
+def test_failure_reads_the_band_only_for_northern_ports():
+    """Carried from Task 8's review: problems() ignores the band without a northern-port condition, so failure()
+    must too (a worker would otherwise stop on a band the pre-search check let through)."""
+    assert mapgen.failure(S, {"ports": 1, "north_band": 150}) is None
+    assert mapgen.failure(S, {"ports": 3, "north_band": -5}) == "Ports: 2, needs 3"
+    assert mapgen.failure(S, {"towns": {"city_state": 1}, "north_band": 0}) is None
+    with pytest.raises(ValueError):
+        mapgen.failure(S, {"ports_north": 1, "north_band": 150})
+
+
 def test_failure_rejects_an_unknown_town_type():
     with pytest.raises(ValueError):
         mapgen.failure(S, {"towns": {"castle": 1}})

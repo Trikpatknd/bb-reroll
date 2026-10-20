@@ -86,10 +86,11 @@ def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
 
 
 # ---------------------------------------------------------------- whole maps (stop_at="reseed"), map-search Task 5
-# At most 5 whole maps in this file (ruling N; the repo suite builds 7: these 5 plus the 2 in test_offline_map.py):
-# the town test's 3 (shared through FULL_MAPS, one world_map(seed) per seed per test session) and the roster test's 2,
-# which it always builds itself between the rosters (its seeds are its own, so no other test can have built them
-# first, whatever the order the tests run in).
+# At most 7 whole maps in this file (ruling N, amended in map-search Task 9; the repo suite builds 9: these 7 plus the
+# 2 in test_offline_map.py): the town test's 3 (shared through FULL_MAPS, one world_map(seed) per seed per test
+# session), the roster test's 2, which it always builds itself between the rosters (its seeds are its own, so no
+# other test can have built them first, whatever the order the tests run in), and the search test's 2 (the sift map
+# and the confirming map of one checked seed, in the search's own worker process).
 FULL_MAPS = {}
 TOWN_SEEDS = ("1234567890", "0000000001", "0000000002")
 ROSTER_SEEDS = ("0000000003", "0000000004")
@@ -224,6 +225,25 @@ def test_map_limits_follow_the_games_settlement_lists(legends_lab):
             assert all(c["towns"][k] <= lim["towns"][k] for k in TOWN_TYPE_KEYS), (seed, band, c)
             criteria = dict({k: c[k] for k in M.PORT_KEYS}, north_band=band, towns=c["towns"])
             assert M.problems(criteria) == [], (seed, band, c)
+
+
+def test_real_search_finds_a_port_rich_map(legends_lab):
+    """search() with a map condition, in a real worker process (map-search Task 9). The seed is checked (seeds=[...]),
+    not searched for: a search would build a whole map (~40 s) per seed tested. A checked seed goes the whole map
+    path all the same — the sift map, the roster, the confirming roster and map, the stable flag, the payload — with
+    two whole maps. TOWN_SEEDS[0] has 1 port at Legends' default Map Options (map-search Task 6); its map from this
+    module's lab (FULL_MAPS: no new map when the town tests ran first) must be the search's."""
+    from bbseed.search import search
+    seed = TOWN_SEEDS[0]
+    events = []
+    found = search("legends", "trader_scenario", {"map": {"ports": 1}}, workers=1, seeds=[seed],
+                   on_event=lambda kind, payload: events.append((kind, payload)))
+    assert not [e for e in events if e[0] in ("error", "fatal")], events
+    [match] = found
+    assert match["seed"] == seed and match["failure"] is None and match["stable"]
+    assert len(match["roster"]) == 2 and all(bro.get("perk_groups") for bro in match["roster"])   # confirmed roll
+    assert sum(t["port"] for t in match["map"]["towns"]) >= 1
+    assert match["map"] == full_map(legends_lab, seed)["map"]
 
 
 def test_probe_is_the_next_draw_of_the_maps_stream(legends_lab):

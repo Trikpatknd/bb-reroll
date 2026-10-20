@@ -103,8 +103,10 @@ LAB_TERRAIN_CRC32 = {"1234567890": 0xFB00CA26, "0000000002": 0x610612B9}
 # Legends counts the black markets it builds in ::Const.World.Buildings.Blackmarket and never resets it (its
 # Buildings.reset() resets Stables only), so what refineSettlements draws depends on the campaigns started before in the
 # same game session: 0 on the first one, at least 2 after any map (2 or more all act alike). The towns and the terrain
-# before the roads do not depend on it; the terrain after the roads does. Set as in the in-game run: 1234567890 was its
-# first campaign, 0000000002 its third.
+# before the roads do not depend on it; the terrain after the roads does. Set as in the in-game run (Lab.world_map's
+# blackmarket): 1234567890 was its first campaign, 0000000002 its third. The fixture builds 0000000002 first, on a new
+# lab (counter 0 there): its terrain pin then also checks that the parameter sets the counter (built at counter 0 its
+# terrain CRC is 0x08A7E610, measured in map-search Task 9; 1234567890's is the same at 0 and 2).
 BLACKMARKET_BEFORE = {"1234567890": 0, "0000000002": 2}
 
 MAPS = {}
@@ -121,11 +123,9 @@ def maps():
         info = lab.info()
         if (info["game_version"], info["legends_version"]) != ("1.5.2.3", "19.4.22"):
             return info, None
-        counter = lab.eng.vm.compile("::Const.World.Buildings.Blackmarket = vargv[0];", "test_blackmarket")
         out = {}
-        for seed in GAME_TOWNS:
-            counter.invoke(lab.eng.root, (BLACKMARKET_BEFORE[seed],))
-            out[seed] = lab.world_map(seed, ORIGIN)["map"]
+        for seed in sorted(GAME_TOWNS):            # 0000000002 (counter 2) first, then 1234567890 (counter 0)
+            out[seed] = lab.world_map(seed, ORIGIN, blackmarket=BLACKMARKET_BEFORE[seed])["map"]
         return info, out
     if not MAPS:
         info, built = big_stack(run)

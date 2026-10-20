@@ -43,6 +43,11 @@ local settings = {
 };
 ::World.State.m.CampaignSettings = settings;
 """
+# Legends' black-market counter before a map run (Lab.world_map's blackmarket); a game without it is left alone
+_BLACKMARKET = """
+if ("Buildings" in ::Const.World && "Blackmarket" in ::Const.World.Buildings)
+    ::Const.World.Buildings.Blackmarket = vargv[0];
+"""
 # the roster: what startNewCampaign does after the world is generated
 _START = _SETTINGS + """
 ::Math.seedRandomString(settings.Seed);
@@ -225,6 +230,7 @@ class Lab:
         self._scenarios = {}
         self._rolls = None
         self._maps = None               # mapgen.MapRun, made by the first world_map()
+        self._blackmarket = None        # the compiled _BLACKMARKET, made with it
         self._state_spent = False       # a map run used the world state: the next roster needs a new one
         self._stash_capacity = eng.vm.compile("return ::World.Assets.getStash().getCapacity();", "lab_cap").invoke(eng.root, ())
         for key, value in (mod_settings or {}).items():
@@ -357,11 +363,17 @@ class Lab:
         return bros
 
     # ------------------------------------------------------------------ maps
-    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None):
+    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0):
         """The game's own campaign start (world_state.startNewCampaign, every mod hook included) on a
         fresh world state, stopped where the map is wanted (see mapgen.py): stop_at="accepted" right after
         the generator logs "World accepted.", "reseed" at the second Math.seedRandomString(seed).
         layout: one of hexmap.LAYOUTS (None: mapgen.LAYOUT).
+        blackmarket: the value Legends' black-market counter (::Const.World.Buildings.Blackmarket) gets before the
+        run. The game never resets it: it is 0 in the first campaign after the game starts and 2 or more in every
+        later one (each map counts the black markets it builds), and what refineSettlements draws depends on it.
+        0 (the default) builds every map as a first campaign, so a map does not depend on the maps this lab built
+        before; None leaves the counter as the last run left it. The towns, their ports and the terrain before the
+        roads do not depend on it (measured, map-search Task 7). A game without the counter (no Legends) ignores it.
 
         Returns {"log": [the logInfo lines of the run], "draws": seeded draws in the run, "seconds",
         "stub_uses": {(kind, name): uses in this run}}, and for stop_at="reseed" (the whole map) also
@@ -372,10 +384,13 @@ class Lab:
         if self._maps is None:
             self._maps = mapgen.MapRun(self.eng, self.eng.vm.compile(_SETTINGS + mapgen.START, "lab_map_start"),
                                        self.world)
+            self._blackmarket = self.eng.vm.compile(_BLACKMARKET, "lab_blackmarket")
         scenario = self.scenario(origin)
         self.world.build_state()
         self._state_spent = True          # the campaign start is left half done: roster() builds a new state
         try:
+            if blackmarket is not None:
+                self._blackmarket.invoke(self.eng.root, (blackmarket,))
             out = self._maps.run(seed, scenario, stop_at, layout)
             if stop_at == "reseed":
                 out["map"] = mapgen.summary(self, out["log"])

@@ -248,13 +248,14 @@ def failure(summary, map_criteria):
 
     map_criteria: {"ports": n, "ports_south": n, "ports_north": n, "north_band": percent (missing or None:
     DEFAULT_NORTH_BAND), "towns": {key: n}}. Every number is a minimum; 0 or missing is no condition. A town key
-    that is not in TOWN_TYPE_KEYS is an error."""
+    that is not in TOWN_TYPE_KEYS is an error. The band is read only when "ports_north" is set (as problems() in
+    bbreroll/map_conditions.py does): without a northern-port condition any band value is ignored."""
     c = map_criteria or {}
     want_towns = c.get("towns") or {}
     unknown = set(want_towns) - set(TOWN_TYPE_KEYS)
     if unknown:
         raise ValueError("unknown town types %s (known: %s)" % (sorted(unknown), ", ".join(TOWN_TYPE_KEYS)))
-    band = c.get("north_band")
+    band = c.get("north_band") if c.get("ports_north") else None
     have = counts(summary, DEFAULT_NORTH_BAND if band is None else band)
     for key in PORT_KEYS:
         need = c.get(key) or 0
