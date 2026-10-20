@@ -8,9 +8,13 @@ name, the Battle Sisters setting) and the tool version for the footer.
 Map Options: the starting brothers are rolled from the seed text alone, after
 the map is made — they are the same whatever the Map Options are, so the post
 says so unless the caller knows the options and passes them.
+
+A search with map conditions passes the map of the seed (game_map, a map summary): the post then
+adds a 'Map:' line and always lists the Map Options, because the map depends on them.
 """
 
 from bbreroll.criteria import STATS
+from bbreroll.map_conditions import DEFAULT_NORTH_BAND, map_line
 
 GITHUB_URL = "github.com/Trikpatknd/bb-reroll"
 
@@ -59,9 +63,25 @@ def _mods_text(mods) -> str:
     return ", ".join(p for p in parts if p) or "none"
 
 
-def build_seed_report(origin, description, seed, report_info, tool_version, roster=None) -> str:
+def _map_text(game_map, north_band) -> str:
+    """'Map: Ports 7 (south 2, north 3) · 3 city states'. The north band sets which ports are northern, so a band
+    other than the default is named: 'Map: Ports 7 (south 2, north 3) · 3 city states · north band: the top 50 % of
+    the map'. A reader can search again with the same band."""
+    text = "Map: " + map_line(game_map, north_band)
+    if north_band != DEFAULT_NORTH_BAND:
+        text += f" · north band: the top {north_band:g} % of the map"
+    return text
+
+
+def build_seed_report(origin, description, seed, report_info, tool_version, roster=None,
+                      game_map=None, north_band=DEFAULT_NORTH_BAND) -> str:
     """Return the ready-to-paste Discord post as a single string. With the seed's
-    roster, a 'Bros:' line lists every brother's talent stars."""
+    roster, a 'Bros:' line lists every brother's talent stars.
+
+    game_map: the seed's map summary (bbseed.mapgen.summary), from a search with map conditions;
+    north_band: the band percent that search used. With a map the post has a 'Map:' line and
+    lists every Map Option (one the game did not report shows as unknown); without it nothing
+    changes."""
     report_info = report_info or {}
     map_options = report_info.get("map_options") or {}
 
@@ -80,13 +100,17 @@ def build_seed_report(origin, description, seed, report_info, tool_version, rost
         lines.append(f"Game version: {report_info.get('game_version') or _UNKNOWN}")
         lines.append(f"Mods: {_mods_text(report_info['mods'])}")
     lines.append("")
-    if map_options:
+    with_map = game_map is not None
+    if with_map:
+        lines.append(_map_text(game_map, north_band))
+    if map_options or with_map:
         lines.append("Map Options:")
         for key, label in _MAP_OPTION_LABELS:
-            if key not in map_options:
-                continue
-            raw = map_options[key]
-            lines.append(f"{label}: {_yes_no(raw) if key in _BOOLEAN_KEYS else raw}")
+            if key in map_options and not (with_map and map_options[key] is None):
+                raw = map_options[key]
+                lines.append(f"{label}: {_yes_no(raw) if key in _BOOLEAN_KEYS else raw}")
+            elif with_map:      # the map depends on every option: say which one is not known
+                lines.append(f"{label}: {_UNKNOWN}")
     else:
         lines.append(_ANY_MAP)
 

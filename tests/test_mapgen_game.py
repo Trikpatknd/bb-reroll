@@ -227,6 +227,19 @@ def test_map_limits_follow_the_games_settlement_lists(legends_lab):
             assert M.problems(criteria) == [], (seed, band, c)
 
 
+def test_info_reports_the_map_options_at_legends_defaults(legends_lab):
+    """Lab.info()["map_options"] (map-search Task 10) is what the seed post prints as the Map Options: the seven
+    settings of Legends' Map Options page, read from MSU. A lab with default settings reports Legends' defaults, as
+    plain ints and bools (they go between processes and into JSON). No map is built here."""
+    from bbreroll import map_conditions as M
+    from bbseed.lab import MAP_OPTION_KEYS
+    options = legends_lab.info()["map_options"]
+    assert tuple(options) == MAP_OPTION_KEYS
+    assert options == M.MAP_OPTION_DEFAULTS
+    for key, default in M.MAP_OPTION_DEFAULTS.items():
+        assert type(options[key]) is type(default), (key, options[key])
+
+
 def test_real_search_finds_a_port_rich_map(legends_lab):
     """search() with a map condition, in a real worker process (map-search Task 9). The seed is checked (seeds=[...]),
     not searched for: a search would build a whole map (~40 s) per seed tested. A checked seed goes the whole map

@@ -103,6 +103,12 @@ return out;
 """
 STAT_ORDER = ("hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf")      # order of the `base` / `shown` lists
 
+# The Map Options of Legends' MSU page "Map Options" that change the generated map (mod_legends/register/modsettings.nut;
+# the page's DebugMap only reveals the map), by their setting ids, in the order of the seed post.
+# bbreroll/seed_report.py lists the same keys with their labels: a test keeps both lists equal (bbseed never
+# imports bbreroll).
+MAP_OPTION_KEYS = ("LandRatio", "Water", "Snowline", "Settlements", "Factions", "StackCitadels", "AllTradeLocations")
+
 # Legends' perk trees, the way its character tooltip lists them (background.getPerkGroups():
 # the complete perk groups per category, then the perks that belong to no complete group).
 # The base game has fixed trees per background: null there.
@@ -282,10 +288,12 @@ class Lab:
         return s
 
     def info(self):
-        """What a seed found here is valid for: the game setup the lab loaded."""
+        """What a seed found here is valid for: the game setup the lab loaded. "map_options": the values of
+        MAP_OPTION_KEYS this lab uses ({key: int or bool}); a setting the game does not have is left out, so a game
+        without Legends or without MSU gives {}."""
         root = self.eng.root.d
         out = {"profile": self.profile, "game_version": self.eng.game_version, "legends_version": None,
-               "legends_build": None, "battle_sisters": None, "mods": self.mods()}
+               "legends_build": None, "battle_sisters": None, "mods": self.mods(), "map_options": {}}
         legends = root.get("Legends")
         if type(legends) is SqTable:
             out["legends_version"] = legends.get("Version")
@@ -294,6 +302,11 @@ class Lab:
                 out["battle_sisters"] = self.get_mod_setting("mod_legends", "GenderEquality")
             except LabError:
                 pass
+            for key in MAP_OPTION_KEYS:
+                try:
+                    out["map_options"][key] = self.get_mod_setting("mod_legends", key)
+                except LabError:
+                    pass
         return out
 
     def mods(self):
