@@ -176,6 +176,91 @@ def test_a_damaged_settings_file_gives_the_defaults_for_the_damaged_values():
     assert V.from_settings(None) == (V.default_conditions(), V.default_options())
 
 
+# ------------------------------------------------------------------ the saved Mod Options
+def test_saved_option_texts_fills_missing_with_defaults():
+    assert V.saved_option_texts({"Settlements": 24, "StackCitadels": True}) == option_texts(Settlements="24",
+                                                                                         StackCitadels="Yes")
+
+
+def test_saved_option_texts_none():
+    assert V.saved_option_texts(None) is None
+
+
+def test_saved_option_texts_takes_every_saved_value_as_text_in_the_games_order():
+    read = {"AllTradeLocations": True, "StackCitadels": False, "Factions": 6, "Settlements": 27, "Snowline": 80,
+            "Water": 33.5, "LandRatio": 61}
+    out = V.saved_option_texts(read)
+    assert out == {"LandRatio": "61", "Water": "33.5", "Snowline": "80", "Settlements": "27", "Factions": "6",
+                   "StackCitadels": "No", "AllTradeLocations": "Yes"}
+    assert list(out) == OPTION_KEYS
+
+
+def test_saved_option_texts_gives_the_default_for_a_value_of_the_wrong_kind():
+    read = {"Settlements": "24", "Water": True, "StackCitadels": "Yes", "Factions": None, "AllTradeLocations": 1}
+    assert V.saved_option_texts(read) == V.default_options()
+
+
+def test_the_saved_option_texts_are_the_texts_of_the_brief():
+    assert V.OPTIONS_TITLE == ("Map Options. The program reads them from your saved Mod Options. You can change them, "
+                               "for example to the Mod Options of a friend.")
+    assert V.READ_BUTTON == "Read my Mod Options"
+    assert V.OPTIONS_DIFFER == ("These Map Options are not the same as your saved Mod Options. Click Read my Mod "
+                                "Options to use the saved values.")
+    assert V.NO_SAVED_OPTIONS == "The program cannot read your saved Mod Options. It uses the values in the fields."
+
+
+def test_the_help_text_says_the_program_reads_the_saved_mod_options():
+    assert "The program reads them from your saved Mod Options (Legends Mod, page Map Options)." in V.HELP
+    assert "Write the same values" not in V.HELP
+
+
+def test_fill_at_startup_first_start():
+    saved = V.saved_option_texts({"Settlements": 24})
+    assert V.fill_at_startup({}, V.default_options(), saved) is True
+    assert V.fill_at_startup({"v": 4, "setup": "Legends"}, V.default_options(), saved) is True
+
+
+def test_fill_at_startup_untouched_fields():
+    current = option_texts(Settlements="24")
+    settings = {"map_options": current, "map_options_read": current}
+    assert V.fill_at_startup(settings, current, V.saved_option_texts({"Settlements": 25})) is True
+
+
+def test_fill_at_startup_keeps_typed_values():
+    """The player's typed values stay when they differ from the values the program last read."""
+    read = option_texts(Settlements="24")
+    typed = option_texts(Settlements="26")
+    settings = {"map_options": typed, "map_options_read": read}
+    assert V.fill_at_startup(settings, typed, V.saved_option_texts({"Settlements": 24})) is False
+
+
+def test_fill_at_startup_without_file():
+    assert V.fill_at_startup({}, V.default_options(), None) is False
+    assert V.fill_at_startup({"map_options": V.default_options()}, V.default_options(), None) is False
+
+
+def test_fill_at_startup_never_raises_on_damaged_settings():
+    current = V.default_options()
+    for settings in (None, [], "x", {"map_options": None, "map_options_read": [1]}, {"map_options_read": None}):
+        assert isinstance(V.fill_at_startup(settings, current, current), bool)
+
+
+def test_settings_round_trip_keeps_read():
+    conditions, options = texts(ports=5), option_texts(Settlements="24")
+    read = option_texts(Settlements="24", StackCitadels="Yes")
+    saved = V.to_settings(conditions, options, read=read)
+    assert saved["map_options_read"] == read
+    assert json.loads(json.dumps(saved))["map_options_read"] == read
+    assert "map_options_read" not in V.to_settings(conditions, options)
+
+
+def test_a_raw_read_is_kept_in_the_text_shape_of_the_map_options():
+    raw = {"LandRatio": 50, "Water": 38, "Snowline": 85, "Settlements": 24, "Factions": 3, "StackCitadels": True,
+           "AllTradeLocations": False}
+    saved = V.to_settings(texts(), option_texts(), read=raw)
+    assert saved["map_options_read"] == option_texts(Settlements="24", StackCitadels="Yes")
+
+
 # ------------------------------------------------------------------ the game version
 def test_only_the_game_and_legends_the_maps_were_checked_against_are_verified():
     assert V.verified("1.5.2.3", "19.4.22")
@@ -265,6 +350,7 @@ def test_the_tooltips_say_minimum_and_have_no_noun_stack():
 
 def test_the_texts_follow_the_simplified_writing_rules():
     for text in (V.HELP, V.NOT_VERIFIED, V.NEEDS_LEGENDS, V.TURNED_OFF, V.MAP_FATAL_ADVICE, V.WAIT, V.OPTIONS_TITLE,
+                 V.READ_BUTTON, V.OPTIONS_DIFFER, V.NO_SAVED_OPTIONS,
                  V.SLOW_OPTIONS, V.brother_estimate({"chance_brothers": 0.001, "tested": 500, "maps": 3}, True, False)):
         assert "n't" not in text and "'s " not in text and "criteria" not in text.lower(), text
         assert all(len(sentence.split()) <= 25 for sentence in text.replace("\n", " ").split(". ")), text

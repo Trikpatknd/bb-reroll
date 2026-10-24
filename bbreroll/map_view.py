@@ -1,6 +1,7 @@
-"""The GUI's Map view without tkinter: the fields and their texts, the checks that turn what the player typed into map
-conditions and Legends Map Options, the values the settings file keeps, and the small rules the window needs (when the
-view is closed, when the game version is not the verified one, when the odds estimate may show, how big the picture is).
+"""The GUI's Map view without tkinter: the fields and their texts, the checks that turn what the player typed or read
+from the saved Mod Options into map conditions and Legends Map Options, the values the settings file keeps, and the
+small rules the window needs (when the view is closed, when the game version is not the verified one, when the odds
+estimate may show, how big the picture is).
 Unit-tested (tests/test_map_view.py).
 
 Fields (all text, as the player typed them):
@@ -58,9 +59,14 @@ SLOW_OPTIONS = "A low Land Mass Ratio with a high Water value can make one map t
 HELP = ("Set the minimum number of ports and towns. A port lets you travel by ship. North band: the top part of the "
         "map, in percent. Each map takes about %d seconds with the default Map Options. Set brother conditions too, "
         "if you can. %s\n"
-        "The map depends on the Map Options of the game. Write the same values as in the Mod Options of the game "
+        "The map depends on the Map Options of the game. The program reads them from your saved Mod Options "
         "(Legends Mod, page Map Options). The Map Options do not change the brothers." % (MAP_SECONDS, SLOW_OPTIONS))
-OPTIONS_TITLE = "Map Options. Use the same values as in the Mod Options of the game."
+OPTIONS_TITLE = ("Map Options. The program reads them from your saved Mod Options. You can change them, "
+                 "for example to the Mod Options of a friend.")
+READ_BUTTON = "Read my Mod Options"
+OPTIONS_DIFFER = ("These Map Options are not the same as your saved Mod Options. Click Read my Mod Options to use the "
+                  "saved values.")
+NO_SAVED_OPTIONS = "The program cannot read your saved Mod Options. It uses the values in the fields."
 NEEDS_LEGENDS = "Map conditions need the Legends setup for now."
 TURNED_OFF = ("Map conditions are off. They did not work with this game setup. "
               "Change a Map Option to turn them on again.")
@@ -166,10 +172,21 @@ def mod_settings(options):
 
 
 # ------------------------------------------------------------------ the settings file
-def to_settings(conditions, options):
-    """The two dicts the settings file keeps for the Map view (the text as typed)."""
-    return {"map": {key: str(conditions.get(key, "")) for key in default_conditions()},
-            "map_options": {key: str(options.get(key, "")) for key in default_options()}}
+def to_settings(conditions, options, read=None):
+    """The dicts the settings file keeps for the Map view (the text as typed). With `read` (the Map Options read from
+    the saved Mod Options) also "map_options_read", in the same text shape."""
+    out = {"map": {key: str(conditions.get(key, "")) for key in default_conditions()},
+           "map_options": {key: str(options.get(key, "")) for key in default_options()}}
+    if read is not None:
+        out["map_options_read"] = {key: _as_text(read.get(key, ""), key) for key in default_options()}
+    return out
+
+
+def _as_text(value, key):
+    """A value as the settings file keeps it: text, a bool of a yes/no field as YES / NO."""
+    if isinstance(value, bool) and key in YES_NO_OPTIONS:
+        return YES if value else NO
+    return str(value)
 
 
 def _saved_text(value, default, yes_no):
@@ -192,6 +209,33 @@ def from_settings(data):
         out.append({name: _saved_text(saved.get(name), default, name in YES_NO_OPTIONS)
                     for name, default in defaults.items()})
     return out[0], out[1]
+
+
+def saved_option_texts(read):
+    """The seven Map Options as field texts, in default_options()' order, from the Mod Options read from the saved file
+    (msu_settings.read_map_options). A missing key or a value of the wrong kind has the default text; None when
+    nothing was read."""
+    if read is None:
+        return None
+    out = {}
+    for key, default in default_options().items():
+        value = read.get(key)
+        if key in YES_NO_OPTIONS:
+            out[key] = (YES if value else NO) if isinstance(value, bool) else default
+        else:
+            numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
+            out[key] = str(value) if numeric else default
+    return out
+
+
+def fill_at_startup(settings, current, saved):
+    """May start-up fill the fields with the saved Mod Options? Only when they were read (saved is not None) and the
+    settings file has no Map Options yet or still holds the values the program last read: fields the player changed
+    keep their values. Never raises: settings may be any dict from JSON, damaged or not."""
+    data = settings if isinstance(settings, dict) else {}
+    if saved is None:
+        return False
+    return "map_options" not in data or current == data.get("map_options_read")
 
 
 # ------------------------------------------------------------------ the game version and the view's state
