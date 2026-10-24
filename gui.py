@@ -1182,7 +1182,8 @@ class App(ctk.CTk):
 
     # ── the Map view (the logic is in bbreroll/map_view.py) ──
     def _build_map_view(self, parent):
-        """The minimum ports and towns a map must have, and the Map Options of the game: the map depends on them."""
+        """The minimum ports and towns a map must have. The Map Options of Legends are the other part: the map depends
+        on them, and the base game has none, so _apply_map_state shows that part on Legends only."""
         frame = self.map_frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
         frame.grid_remove()
@@ -1214,6 +1215,7 @@ class App(ctk.CTk):
         read.grid(row=0, column=1, sticky="w", padx=(12, 0))
         self._map_widgets.append(read)
         box = line(4)
+        self._map_options_parts = (bar, box)       # Legends only: _apply_map_state shows or hides both
         for key, label in map_view.OPTION_LABELS.items():
             if key in map_view.YES_NO_OPTIONS:
                 var = self.map_option_vars[key] = ctk.StringVar(value=options[key])
@@ -1225,8 +1227,22 @@ class App(ctk.CTk):
             # a changed Map Option turns map conditions on again after a map fatal
             self.map_option_vars[key].trace_add("write", self._lift_map_lockout)
 
+    def _setup_kind(self) -> str:
+        """The setup as the Map view sees it: a map_view.SETUP_KINDS value. A research Vanilla setup is "Vanilla"."""
+        if self._legends():
+            return "Legends"
+        return "Modded" if self._profile() == "modded" else "Vanilla"
+
+    def _dlc_complete(self) -> bool:
+        """Does the installed game have every DLC? A summary without the key does not (fail closed)."""
+        return bool((O.FOUND or {}).get("dlc_complete", False))
+
+    def _run_is_legends(self) -> bool:
+        """Is the search of the run (the current one or the last) a Legends search?"""
+        return O.SETUPS.get(self._run.get("setup"), (None, False))[1]
+
     def _map_usable(self) -> bool:
-        return map_view.view_state(self._legends(), self._map_off)[0]
+        return map_view.view_state(self._setup_kind(), self._map_off, self._dlc_complete())[0]
 
     def _lift_map_lockout(self, *_):
         """Map conditions count again: the player changed a Map Option, the setup or the game folder (after a
@@ -1242,25 +1258,34 @@ class App(ctk.CTk):
 
     def _map_verified(self) -> bool:
         """Were maps of this game, Legends version and mod set checked against the real game? The versions and
-        the mods the workers reported win over what the mod file names say."""
+        the mods the workers reported win over what the mod file names say. The base game loads no mod zip: its
+        maps are those of a game without mods, so the mods on disk and the Legends versions do not count there."""
         found = O.FOUND or {}
+        dlc = self._dlc_complete()
         game = self._map_versions[0] or found.get("game_version")
+        if self._setup_kind() == "Vanilla":
+            return map_view.verified(game, None, [], dlc)
         legends = self._map_versions[1] or map_view.legends_version_from_files(found.get("mods"))
         mods = found.get("mods") if self._map_mods is None else self._map_mods
-        return map_view.verified(game, legends, mods)
+        return map_view.verified(game, legends, mods, dlc)
 
     def _apply_map_state(self):
-        """Open or close the fields and show the line that says why (not Legends, turned off, version)."""
+        """Open or close the fields and show the line that says why (setup, DLCs, turned off, version). The Map
+        Options are shown on Legends only: the base game has none."""
         if not hasattr(self, "map_note"):       # the window is still being built
             return
-        usable, why = map_view.view_state(self._legends(), self._map_off)
-        opened = map_view.fields_open(self._legends())      # also while conditions are off: a Map Option can fix it
+        kind, dlc = self._setup_kind(), self._dlc_complete()
+        usable, why = map_view.view_state(kind, self._map_off, dlc)
+        opened = map_view.fields_open(kind, dlc)      # also while conditions are off: on Legends a Map Option fixes it
+        legends = kind == "Legends"
         for widget in self._map_widgets:
             widget.configure(state="normal" if opened else "disabled")
             if isinstance(widget, ctk.CTkEntry):
                 widget.configure(text_color=PALETTE["text"] if opened else PALETTE["faint"])
+        for part in self._map_options_parts:
+            part.grid() if legends else part.grid_remove()
         lines = [why] if why else []
-        if opened and self._options_note:
+        if legends and self._options_note:
             lines.append(self._options_note)
         if usable and not self._map_verified():
             lines.append(map_view.NOT_VERIFIED)
@@ -1272,7 +1297,8 @@ class App(ctk.CTk):
         if not self._map_usable():
             return None, None, []
         return map_view.build({k: v.get() for k, v in self.map_vars.items()},
-                              {k: v.get() for k, v in self.map_option_vars.items()})
+                              {k: v.get() for k, v in self.map_option_vars.items()},
+                              vanilla=self._setup_kind() == "Vanilla")
 
     def _set_map_fields(self, map_criteria, options):
         """Fill the fields from map conditions and numeric Map Options (the self-test's spec); None: the defaults."""
@@ -1709,7 +1735,8 @@ class App(ctk.CTk):
                      + star_limits.roll_problems(facts, criteria["tiers_by_slot"])
                      + background_limits.problems(facts, criteria["backgrounds_by_slot"], self._background_names()))
         if criteria.get("map"):
-            found += map_conditions.problems(criteria["map"], map_options)
+            found += map_conditions.problems(criteria["map"], map_options,
+                                             vanilla=self._setup_kind() == "Vanilla")
         if found:
             if not messagebox.askyesno(
                     "Impossible conditions",
@@ -1758,8 +1785,10 @@ class App(ctk.CTk):
         if map_criteria:
             # The Map Options change the map and nothing else, so only a run with a map condition sends them
             # (a search for brothers alone must stay as it was). The workers report the values they used.
-            options = self._map_setup()[1] or map_view.default_option_values()
-            mod_settings = {**(mod_settings or {}), **map_view.mod_settings(options)}
+            # The base game has no Map Options: it gets none, and mod_settings stays None (no mod key at all).
+            kind = self._setup_kind()
+            options = self._map_setup()[1] or (map_view.default_option_values() if kind == "Legends" else {})
+            mod_settings = {**(mod_settings or {}), **map_view.mod_settings(options, kind)}
             try:        # no brother condition: the map is built for every seed (the estimate waits for maps)
                 map_first = not roster_conditions(normalize(criteria))
             except ValueError:
@@ -1786,7 +1815,7 @@ class App(ctk.CTk):
             try:
                 search(profile, scenario, criteria, workers=workers, count=numbers[MATCHES_TO_FIND] or 1,
                        max_seeds=None if seeds else numbers[SEEDS_TO_TEST], seeds=seeds,
-                       mod_settings=mod_settings,
+                       mod_settings=mod_settings or None,
                        on_event=lambda kind, payload: put((kind, payload)), should_stop=self._stop.is_set)
             except Exception as e:      # report instead of dying silently in the thread
                 put(("fatal", f"{type(e).__name__}: {e}"))
@@ -1830,6 +1859,7 @@ class App(ctk.CTk):
             "map_options": dict(info.get("map_options") or {}) if self._run.get("map") else {},
             "game_version": info.get("game_version"),
             "mods": info.get("mods") or [],
+            "legends": bool(legends),       # the base game has no Map Options: the post says so (seed_report)
         }
         if legends:
             self._map_versions = (info.get("game_version"), legends)
@@ -1934,7 +1964,8 @@ class App(ctk.CTk):
             self._run["fatal"] = self._run.get("fatal") or text
             self._map_off = True
             self._apply_map_state()
-            self._map_fatal_notice = f"{text[:400]} {map_view.MAP_FATAL_ADVICE}"
+            advice = map_view.MAP_FATAL_ADVICE if self._run_is_legends() else map_view.MAP_FATAL_ADVICE_BASE
+            self._map_fatal_notice = f"{text[:400]} {advice}"
             self._show_notice(self._map_fatal_notice, kind="error")
             return
         if self._run.get("fatal"):

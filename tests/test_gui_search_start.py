@@ -19,7 +19,7 @@ def app(tmp_path_factory):
     from bbseed import profiles
 
     found = {"data": Path("X:/Battle Brothers/data"), "game_version": "1.5.2.3", "mods": ["mod_legends.zip"],
-             "legends": True, "reroll_mod": []}
+             "legends": True, "reroll_mod": [], "dlc_complete": True}
     mp = pytest.MonkeyPatch()
     mp.setattr(profiles, "installed_summary", lambda game_data=None: found)
     mp.setattr(gui, "SETTINGS_PATH", tmp_path_factory.mktemp("gui") / "settings.json")
@@ -31,10 +31,13 @@ def app(tmp_path_factory):
     O.refresh()
     try:
         window = gui.App()
-    except Exception as e:          # no display at all
+    except Exception as e:
         mp.undo()
         O.refresh()
-        pytest.skip("no display: %s" % e)
+        import tkinter as tk
+        if isinstance(e, tk.TclError):  # no display at all; any other error is a bug and must fail the tests
+            pytest.skip("no display: %s" % e)
+        raise
     window.withdraw()
     window.errors = errors
     yield window
@@ -395,21 +398,98 @@ def test_the_versions_the_workers_report_decide_the_note(map_app, monkeypatch):
     assert app.map_note_var.get() == ""
 
 
-def test_vanilla_closes_the_map_view(map_app, calls):
-    from bbreroll import map_view
+def test_map_view_opens_for_vanilla_with_all_dlc(map_app, calls):
+    # the base game (all DLCs, no mod) has the condition fields; it has no Map Options, so they are not shown
     app = map_app
+    app.map_vars["ports"].set("3")
+    app.map_option_vars["Water"].set("abc")         # typed on Legends: the base game does not read it
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    assert app._map_widgets and all(str(w.cget("state")) == "normal" for w in app._map_widgets)
+    bar, box = app._map_options_parts
+    assert not bar.grid_info() and not box.grid_info(), "the base game shows no Map Options"
+    assert app.map_note_var.get() == "", "all DLCs: verified, although the mod zip is on disk (it is not loaded)"
+    (call,) = search_now(app, calls)
+    assert call["criteria"]["map"]["ports"] == 3 and call["profile"] == "vanilla"
+    assert call["mod_settings"] is None, "no Map Option reaches a base game lab"
+    assert app.errors == [], "the Water typed for Legends is not checked for the base game"
+    app.setup_var.set("Legends")
+    app._on_setup_change()
+    assert bar.grid_info() and box.grid_info(), "back on Legends the Map Options are shown again"
+    assert app.map_vars["ports"].get() == "3", "the values stay"
+
+
+def test_vanilla_without_all_dlc_closes_the_map_view(map_app, calls, monkeypatch):
+    # Review Focus 4: a base game without every DLC has maps that the checks do not cover
+    from bbreroll import map_view
+    from bbreroll import offline_origins as O
+    app = map_app
+    monkeypatch.setitem(O.FOUND, "dlc_complete", False)
     app.map_vars["ports"].set("5")
     app.setup_var.set("Vanilla")
     app._on_setup_change()
-    assert app.map_note_var.get() == map_view.NEEDS_LEGENDS == "Map conditions need the Legends setup for now."
+    assert app.map_note_var.get() == map_view.NEEDS_ALL_DLC
     assert app._map_widgets and all(str(w.cget("state")) == "disabled" for w in app._map_widgets)
     (call,) = search_now(app, calls)
     assert "map" not in call["criteria"], "what is left in the closed fields is no condition"
     assert call["mod_settings"] is None
-    app.setup_var.set("Legends")
+
+
+def test_modded_closes_the_map_view(map_app, calls, monkeypatch):
+    # Review Focus 4: mods without Legends have no map view (their maps are not checked)
+    from bbreroll import map_view
+    from bbreroll import offline_origins as O
+    app = map_app
+    monkeypatch.setitem(O.SETUPS, "Modded", ("modded", False))
+    app.map_vars["ports"].set("5")
+    app.setup_var.set("Modded")
     app._on_setup_change()
-    assert all(str(w.cget("state")) == "normal" for w in app._map_widgets)
-    assert app.map_vars["ports"].get() == "5", "the values stay"
+    assert app.map_note_var.get() == map_view.NEEDS_SETUP
+    assert all(str(w.cget("state")) == "disabled" for w in app._map_widgets)
+    bar, box = app._map_options_parts
+    assert not bar.grid_info() and not box.grid_info()
+    (call,) = search_now(app, calls)
+    assert call["profile"] == "modded" and "map" not in call["criteria"]
+    assert call["mod_settings"] is None
+
+
+def test_vanilla_ignores_the_mods_and_legends_versions(map_app, monkeypatch):
+    # the base game loads no mod zip: the mods on disk and the Legends versions of an earlier run do not count
+    from bbreroll import map_view
+    from bbreroll import offline_origins as O
+    app = map_app
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    app._map_versions = ("1.5.2.3", "19.4.22")
+    app._map_mods = [{"file": "mod_other.zip", "id": None, "name": "other", "version": None}]
+    assert app._map_verified() is True
+    app._apply_map_state()
+    assert app.map_note_var.get() == ""
+    monkeypatch.setitem(O.FOUND, "game_version", "1.5.3.0")
+    app._map_versions = (None, None)
+    assert app._map_verified() is False
+    app._apply_map_state()
+    assert map_view.NOT_VERIFIED in app.map_note_var.get()
+
+
+def test_a_vanilla_map_fatal_says_start_the_program_again(map_app, calls):
+    # the base game has no Map Option to change: the map fatal says to start the program again
+    from bbreroll import map_view
+    from bbseed.search import MAP_FATAL
+    app = map_app
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    app.map_vars["ports"].set("3")
+    app._run = dict(RUN, setup="Vanilla")
+    app._searching = True
+    app._ev_ready((1, 1, VANILLA_INFO))
+    app._ev_fatal(MAP_FATAL + "KeyError: 'x' (seed 5)")
+    app._ev_finished((0, 1.0, 0, False))
+    assert app._map_off
+    assert app.notice_var.get().endswith(map_view.MAP_FATAL_ADVICE_BASE)
+    assert "Change a Map Option" not in app.notice_var.get()
+    assert app.map_note_var.get() == map_view.TURNED_OFF_BASE
+    assert "map" not in search_now(app, calls)[0]["criteria"], "a roster search goes on"
 
 
 # ---- the settings file
@@ -595,6 +675,8 @@ ROSTER_INFO = {"legends_version": "19.4.22", "legends_build": "Bandits & Greensk
                "game_version": "1.5.2.3", "mods": [{"name": "Legends Mod", "version": "19.4.22"}],
                "map_options": {"LandRatio": 50, "Water": 38, "Snowline": 85, "Settlements": 24, "Factions": 3,
                                "StackCitadels": False, "AllTradeLocations": True}}
+VANILLA_INFO = {"legends_version": None, "legends_build": None, "battle_sisters": None,
+                "game_version": "1.5.2.3", "mods": [], "map_options": {}}
 
 
 def test_a_roster_only_post_is_what_it_was_before_the_map_view(map_app, calls):
@@ -605,13 +687,27 @@ def test_a_roster_only_post_is_what_it_was_before_the_map_view(map_app, calls):
     app._ev_ready((1, 1, ROSTER_INFO))
     assert app._report_info == {"version": "19.4.22", "build_name": "Bandits & Greenskins",
                                 "battle_sisters": "Enabled", "origin": app._run["origin"], "map_options": {},
-                                "game_version": "1.5.2.3", "mods": ROSTER_INFO["mods"]}, \
+                                "game_version": "1.5.2.3", "mods": ROSTER_INFO["mods"], "legends": True}, \
         "no map condition: the Map Options are not part of the post"
     entry = result(app, "1111111111")
     expected = build_seed_report(origin=entry["origin"], description="", seed="1111111111",
                                  report_info=dict(app._report_info), tool_version=gui.APP_VERSION, roster=entry["roster"])
     assert app._share_report(entry) == expected
     assert "Map Options: any." in expected and "Map:" not in expected
+
+
+def test_a_vanilla_map_post_has_no_map_options(map_app, calls):
+    app = map_app
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    app.map_vars["ports"].set("2")
+    search_now(app, calls)
+    app._ev_ready((1, 1, VANILLA_INFO))
+    assert app._report_info["legends"] is False
+    text = app._share_report(result(app, "2222222222", small_map()))
+    assert "Map: Ports 2" in text
+    assert "Map Options: none. The base game has no Map Options." in text
+    assert "Land Mass Ratio" not in text and "Settlements:" not in text
 
 
 def test_the_post_call_gets_the_map_and_the_band_of_the_run(map_app, calls, monkeypatch):

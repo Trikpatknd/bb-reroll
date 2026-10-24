@@ -41,6 +41,7 @@ def test_info_lists_the_installed_mod_zips_with_their_versions(legends):
 @game_only
 def test_the_unmodded_game_has_no_mods(vanilla):
     assert _in_lab(vanilla, lambda lab: lab.info()["mods"]) == []
+    assert _in_lab(vanilla, lambda lab: lab.info()["dlc_complete"]) is True, "this install has every DLC"
 
 
 @game_only
