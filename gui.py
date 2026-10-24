@@ -74,6 +74,7 @@ from bbreroll.criteria import (
 )
 from bbreroll.seed_report import build_seed_report
 from bbseed import mapdraw
+from bbseed import msu_settings
 
 
 # ─────────────────────── paths ───────────────────────
@@ -512,6 +513,8 @@ class App(ctk.CTk):
                                    "battle_sisters": None, "origin": None,
                                    "map_options": {}}
         self._selftest = None
+        self._options_note: str | None = None      # the saved-options line of the Map view note (map_view texts)
+        self._options_read: dict | None = None     # the Map Options last read from the saved Mod Options (texts)
         # What each origin can roll, per game setup (profile -> catalog, None = could not be made).
         # Worked out from the game's scripts once per installed game, in the background.
         self._catalogs: dict = {}
@@ -523,6 +526,7 @@ class App(ctk.CTk):
         self._build_ui()
         self._load_settings()
         self._on_setup_change()        # origin list, brother count, stars grid for the saved setup/origin
+        self._startup_saved_options()  # the Map Options from the saved Mod Options (Legends only)
         self._restore_criteria()
         self._ready_status()
         self._warn_old_mod()
@@ -1203,7 +1207,12 @@ class App(ctk.CTk):
             entry(top, label, self.map_vars, key, conditions[key], map_view.CONDITION_TIPS[key])
         for key, label in map_view.TOWN_LABELS.items():
             entry(towns, label, self.map_vars, key, conditions[key], map_view.town_tip(label))
-        _hint(frame, map_view.OPTIONS_TITLE).grid(row=3, column=0, sticky="w", padx=4, pady=(6, 0))
+        bar = ctk.CTkFrame(frame, fg_color="transparent")       # the title of the Map Options and their read button
+        bar.grid(row=3, column=0, sticky="w", padx=4, pady=(6, 0))
+        _hint(bar, map_view.OPTIONS_TITLE, wrap=640).grid(row=0, column=0, sticky="w")
+        read = _button(bar, map_view.READ_BUTTON, self._read_saved_options, width=180)
+        read.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self._map_widgets.append(read)
         box = line(4)
         for key, label in map_view.OPTION_LABELS.items():
             if key in map_view.YES_NO_OPTIONS:
@@ -1251,6 +1260,8 @@ class App(ctk.CTk):
             if isinstance(widget, ctk.CTkEntry):
                 widget.configure(text_color=PALETTE["text"] if opened else PALETTE["faint"])
         lines = [why] if why else []
+        if opened and self._options_note:
+            lines.append(self._options_note)
         if usable and not self._map_verified():
             lines.append(map_view.NOT_VERIFIED)
         self.map_note_var.set("\n".join(lines))
@@ -1278,6 +1289,45 @@ class App(ctk.CTk):
             var.set(conditions[key])
         for key, var in self.map_option_vars.items():
             var.set(options[key])
+        read = data.get("map_options_read") if isinstance(data, dict) else None
+        self._options_read = read if isinstance(read, dict) and all(isinstance(v, str) for v in read.values()) else None
+
+    def _fill_options(self, texts: dict):
+        """The seven Map Options from the texts of the saved Mod Options; they are remembered for the settings file
+        ("map_options_read") and the note about the file goes."""
+        self._options_note = None
+        for key, var in self.map_option_vars.items():
+            var.set(texts[key])
+        self._options_read = texts
+
+    def _read_saved_options(self, show_note: bool = True) -> bool:
+        """The button: the Map Options from the saved Mod Options. False when nothing could be read: the fields stay
+        as they are and, with show_note, the Map view says so."""
+        texts = map_view.saved_option_texts(msu_settings.read_map_options())
+        if texts is None:
+            if show_note:
+                self._options_note = map_view.NO_SAVED_OPTIONS
+                self._apply_map_state()
+            return False
+        self._fill_options(texts)
+        self._apply_map_state()
+        return True
+
+    def _startup_saved_options(self):
+        """Start-up on Legends: the Map Options come from the saved Mod Options unless the player typed other values
+        since the program last read them (map_view.fill_at_startup); otherwise the Map view says when they differ. A
+        self-test never reads the file (its spec sets the Map Options). Switching the setup later does not read."""
+        if os.environ.get("BB_REROLL_SELFTEST") or not self._legends():
+            return
+        saved = map_view.saved_option_texts(msu_settings.read_map_options())
+        current = {key: var.get() for key, var in self.map_option_vars.items()}
+        if map_view.fill_at_startup(self._saved, current, saved):
+            self._fill_options(saved)
+        elif saved is None:
+            self._options_note = map_view.NO_SAVED_OPTIONS
+        elif saved != current:
+            self._options_note = map_view.OPTIONS_DIFFER
+        self._apply_map_state()
 
     # ── game setup / origin ──
     def _legends(self) -> bool:
@@ -2249,7 +2299,8 @@ class App(ctk.CTk):
                 "known_required":    list(self.required_known),
                 "criteria":          criteria,
                 **map_view.to_settings({k: v.get() for k, v in self.map_vars.items()},
-                                       {k: v.get() for k, v in self.map_option_vars.items()}),
+                                       {k: v.get() for k, v in self.map_option_vars.items()},
+                                       read=self._options_read),
             }, indent=2), encoding="utf-8")
         except Exception:
             pass

@@ -24,6 +24,7 @@ def app(tmp_path_factory):
     mp.setattr(profiles, "installed_summary", lambda game_data=None: found)
     mp.setattr(gui, "SETTINGS_PATH", tmp_path_factory.mktemp("gui") / "settings.json")
     mp.setattr(gui.App, "_ensure_catalog", lambda self: None)       # no game, no catalog
+    mp.setattr(gui.msu_settings, "read_map_options", lambda path=None: None)   # no test reads the player's file
     mp.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
     errors = []
     mp.setattr(gui.messagebox, "showerror", lambda *a, **k: errors.append(a))
@@ -180,6 +181,8 @@ def map_app(app):
 
     def reset():
         app._map_off = False
+        app._options_note = None
+        app._options_read = None
         app._map_versions = (None, None)
         app._map_mods = None
         if app.setup_var.get() != "Legends":        # (rebuilding the grids takes a second: only when needed)
@@ -441,6 +444,99 @@ def test_a_settings_file_from_before_the_map_view_loads_with_the_defaults(map_ap
     app._restore_map_values({"v": 4, "setup": "Legends", "criteria": {"stars_by_slot": {"*": {}}}})
     assert app.map_vars["ports"].get() == "0" and app.map_vars["north_band"].get() == "33"
     assert app.map_option_vars["Water"].get() == "38"
+
+
+# ---- the saved Mod Options (the Map Options the player saved in the game's Mod Options, read from MSU's file)
+def test_read_my_mod_options_fills_the_fields(map_app, monkeypatch):
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    app.map_option_vars["Water"].set("40")                  # typed: the read sets it back to the saved value
+    monkeypatch.setattr(gui.msu_settings, "read_map_options",
+                        lambda path=None: {"Settlements": 24, "StackCitadels": True})
+    assert app._read_saved_options() is True
+    texts = {key: var.get() for key, var in app.map_option_vars.items()}
+    assert texts["Settlements"] == "24" and texts["StackCitadels"] == "Yes"
+    defaults = map_view.default_options()
+    assert all(texts[key] == defaults[key] for key in texts if key not in ("Settlements", "StackCitadels")), \
+        "the Map Options the file does not hold have Legends' defaults"
+    assert texts["Water"] == defaults["Water"] == "38"
+    assert app._options_read == texts
+    assert map_view.NO_SAVED_OPTIONS not in app.map_note_var.get()
+
+
+def test_read_my_mod_options_without_file(map_app, monkeypatch):
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    app.map_option_vars["Settlements"].set("23")
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: None)
+    assert app._read_saved_options() is False
+    assert app.map_option_vars["Settlements"].get() == "23", "the fields stay as they are"
+    assert map_view.NO_SAVED_OPTIONS in app.map_note_var.get()
+    assert app._options_read is None
+
+
+def test_saved_settings_keep_the_read_values(map_app, monkeypatch):
+    import json
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: {"Settlements": 24})
+    app._read_saved_options()
+    app._save_settings()
+    data = json.loads(gui.SETTINGS_PATH.read_text(encoding="utf-8"))
+    assert data["map_options_read"]["Settlements"] == "24" and data["map_options_read"]["StackCitadels"] == "No"
+    assert set(data["map_options_read"]) == set(map_view.default_options())
+
+
+def test_start_up_fills_untouched_map_options(map_app, monkeypatch):
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: {"Settlements": 24})
+    monkeypatch.setattr(app, "_saved", {})                  # no Map Options in the settings file yet
+    app._startup_saved_options()
+    assert app.map_option_vars["Settlements"].get() == "24"
+    assert map_view.OPTIONS_DIFFER not in app.map_note_var.get()
+    assert app._options_read == map_view.saved_option_texts({"Settlements": 24})
+
+
+def test_start_up_keeps_typed_map_options(map_app, monkeypatch):
+    # the player typed 21 after the program last read the file (which held the defaults): the typed value stays
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: {"Settlements": 24})
+    read_before = map_view.default_options()
+    monkeypatch.setattr(app, "_saved", {"map_options": dict(read_before, Settlements="21"),
+                                        "map_options_read": read_before})
+    app.map_option_vars["Settlements"].set("21")
+    app._startup_saved_options()
+    assert app.map_option_vars["Settlements"].get() == "21", "the typed value is kept"
+    assert map_view.OPTIONS_DIFFER in app.map_note_var.get()
+
+
+def test_start_up_without_a_readable_file_keeps_the_fields(map_app, monkeypatch):
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    app.map_option_vars["Water"].set("40")
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: None)
+    monkeypatch.setattr(app, "_saved", {})
+    app._startup_saved_options()                            # no exception
+    assert app.map_option_vars["Water"].get() == "40"
+    assert map_view.NO_SAVED_OPTIONS in app.map_note_var.get()
+
+
+def test_a_self_test_never_reads_the_saved_options(map_app, monkeypatch):
+    import gui
+    app = map_app
+    seen = []
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: seen.append(path) or {"Settlements": 24})
+    monkeypatch.setenv("BB_REROLL_SELFTEST", "spec.json")
+    app._startup_saved_options()
+    assert seen == [] and app.map_option_vars["Settlements"].get() == "19"
 
 
 # ---- the seed post and the results
