@@ -332,8 +332,8 @@ class HexMap:
         """World.getNavigator() of this tile world, made on first use."""
         nav = self._navigator
         if nav is None:
-            from .navigator import Navigator
-            nav = self._navigator = Navigator(self)
+            from .navigator import Navigator, terrain_count
+            nav = self._navigator = Navigator(self, terrain_count(self.engine))
         return nav
 
     def _half(self, x):

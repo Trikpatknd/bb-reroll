@@ -28,6 +28,14 @@ its `ActionPointCosts[tile.Type]` is a finite number > 0, and with `RoadOnly` it
   goal was the occupied tile itself. isEmpty() depends on it: buildSettlements' checks route through earlier
   towns and end on one, a coastal town's deep-sea route (findAccessibleOceanEdge) passes earlier harbours, and
   the attached-location and fortress checks pass other locations.
+- the terrain types: `Const.World.TerrainType.COUNT` is 19 in the base game and 21 with Legends (SwampGreen 19,
+  SwampForest 20), but the cost tables the scripts hand over (`TerrainTypeNavCost`, `_Flat`, `_Ship`) have 19 entries
+  (MEASURED, Legends 19.4.22: the base game builds them from its own 19-entry speed table before Legends replaces it)
+  and the 18-entry table of buildAdditionalRoads lacks the 19th type (Oasis, on every map). A type past the end of a
+  table is blocked for the base game's own 19 types (UNVERIFIED, the roads are stage 2). Whether a tile of a type
+  Legends adds can be entered is not known: none of the 40 maps of Checkpoint B has one (bb_seedlab MODLOG) and
+  neither has any of 3 more maps checked when this rule was added; a question asked on a map that does have one
+  raises NavError (not modelled) instead of guessing.
 Reachability does not depend on how the engine searches, so it is answered from connected components (cached
 until a tile's Type or road changes), which costs nothing per question.
 
@@ -75,6 +83,26 @@ class Settings(SqNative):
         if key not in self.fields:
             raise SqError("the index '%s' does not exist" % tostring(key))
         self.fields[key] = value
+
+
+BASE_TYPES = 19             # the base game's Const.World.TerrainType.COUNT (Legends makes it 21)
+
+
+def terrain_count(engine):
+    """Const.World.TerrainType.COUNT of the scripts the engine loaded (21 with Legends). BASE_TYPES when there is no
+    such table: no engine, or a bare one without scripts (the unit tests); a count that is not a whole number of at
+    least BASE_TYPES is not modelled."""
+    count = None
+    if engine is not None:
+        count = engine.root
+        for key in ("Const", "World", "TerrainType", "COUNT"):
+            count = count.get(key) if type(count) is R.SqTable else None
+    if count is None:
+        return BASE_TYPES
+    if type(count) is not int or count < BASE_TYPES:
+        raise NavError("Const.World.TerrainType.COUNT is %s (not modelled: a whole number of %d or more)" % (
+            tostring(count), BASE_TYPES))
+    return count
 
 
 def _blocked_types(costs, ntypes):
@@ -144,9 +172,9 @@ _PATH_FN = {name: _path_fn(name) for name in ("isEmpty", "getSize", "getCurrent"
 class Navigator(SqNative):
     """::World.getNavigator() on the world map. `hexmap`: the tile world (bbseed.hexmap.HexMap)."""
 
-    def __init__(self, hexmap, ntypes=19):
+    def __init__(self, hexmap, ntypes=BASE_TYPES):
         self.hexmap = hexmap
-        self.ntypes = ntypes            # Const.World.TerrainType.COUNT
+        self.ntypes = ntypes            # Const.World.TerrainType.COUNT (terrain_count(engine))
         self.addr = R.new_addr()
         # (blocked types, road only) -> (the tile world's versions it was made at, {tile: component number})
         self._components = {}
@@ -164,20 +192,23 @@ class Navigator(SqNative):
         return Settings()
 
     # ------------------------------------------------------------------ reachability
-    def _component_map(self, blocked, road_only):
+    def _component_map(self, blocked, road_only, lacking=frozenset()):
         """The connected parts of the tiles a route may enter. Made again only when a tile's Type changed (or, for
         RoadOnly, its roads): the road builder's many RoadDirections writes leave the other answers cached.
-        IsOccupied plays no part (MEASURED, see the module text), so the cache does not watch it."""
+        IsOccupied plays no part (MEASURED, see the module text), so the cache does not watch it.
+        lacking: the types of Legends' that the cost table has no entry for (see findPath): a tile of one of them is
+        not modelled."""
         hm = self.hexmap
         version = (hm.type_version, hm.road_version) if road_only else hm.type_version
-        key = (blocked, road_only)
+        key = (blocked, road_only, lacking)
         made = self._components.get(key)
         if made is not None and made[0] == version:
             return made[1]
         comp = {}
-        self._components[key] = (version, comp)
         n = 0
         for t in hm.tiles:
+            if lacking and t.Type in lacking:       # (such a type is blocked: no search reaches the tile)
+                raise NavError("a tile of terrain type %s has no entry in the cost table (not modelled)" % t.Type)
             if t in comp or t.Type in blocked or (road_only and not t.RoadDirections):
                 continue
             n += 1
@@ -190,10 +221,11 @@ class Navigator(SqNative):
                             and (not road_only or v.RoadDirections):
                         comp[v] = n
                         stack.append(v)
+        self._components[key] = (version, comp)         # (not before: a NavError above must not leave a half map)
         return comp
 
-    def reachable(self, start, goal, blocked, road_only):
-        comp = self._component_map(blocked, road_only)
+    def reachable(self, start, goal, blocked, road_only, lacking=frozenset()):
+        comp = self._component_map(blocked, road_only, lacking)
         g = comp.get(goal)
         if g is None:                   # the goal cannot be entered
             return False
@@ -219,8 +251,11 @@ class Navigator(SqNative):
         if start is goal:
             raise NavError("findPath from a tile to itself (not modelled)")
         blocked = _blocked_types(f["ActionPointCosts"], self.ntypes)
+        # the types Legends adds (past the base game's 19) that this table has no entry for: nothing is known about
+        # entering such a tile, so a map that has one cannot be answered (module text)
+        lacking = frozenset(t for t in range(BASE_TYPES, self.ntypes) if t >= len(f["ActionPointCosts"]))
         road_only = bool(f["RoadOnly"])
-        found = self.reachable(start, goal, blocked, road_only)
+        found = self.reachable(start, goal, blocked, road_only, lacking)
         costs = list(f["ActionPointCosts"])
         road_mult = float(f["RoadMult"])
         return Path(self, found, lambda: self.astar(start, goal, costs, blocked, road_only, road_mult))

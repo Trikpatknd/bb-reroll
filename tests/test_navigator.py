@@ -165,3 +165,79 @@ def test_the_scripts_ask_it_through_world_get_navigator():
         print(n + " " + (last == b));
     ''', "t.nut")
     assert out == ["true", "false", "6 true"]          # past the water over (3, 1), as long as the distance
+
+
+# ---------------------------------------------------------------- the terrain types of Legends (final review 89)
+SWAMP_GREEN, SWAMP_FOREST, OASIS = 19, 20, 18
+SYMBOLS.update({"G": SWAMP_GREEN, "F": SWAMP_FOREST, "O": OASIS})
+
+
+def legends_map(rows, nav_types=21):
+    """small_map with a navigator that has `nav_types` terrain types (Legends: 21). The rows may name the types
+    Legends adds: G = SwampGreen, F = SwampForest, and O = Oasis (the 19th type of the base game)."""
+    from bbseed.navigator import Navigator
+    m, _nav = small_map(rows)
+    m._navigator = nav = Navigator(m, nav_types)
+    return m, nav
+
+
+def test_the_navigator_knows_the_games_terrain_count():
+    """HexMap.navigator reads Const.World.TerrainType.COUNT of the loaded scripts (21 with Legends, 19 in the base
+    game); with no scripts (a bare engine, no engine) it is the base game's 19; a bad count is not modelled."""
+    from bbseed.engine import Engine
+    from bbseed.navigator import BASE_TYPES, NavError, terrain_count
+    assert BASE_TYPES == 19 and terrain_count(None) == 19 and HexMap(None, 2, 2, "even-q-up").navigator.ntypes == 19
+    e = Engine([])
+    assert terrain_count(e) == 19
+    e.vm.run("::Const <- { World = { TerrainType = { COUNT = 21 } } };", "t.nut")
+    assert terrain_count(e) == 21
+    m = HexMap(e, 2, 2, "even-q-up")
+    assert m.navigator.ntypes == 21 and m.navigator is m.navigator
+    for bad in ("18", '"many"'):
+        e.vm.run("::Const.World.TerrainType.COUNT = %s;" % bad, "t2.nut")
+        with pytest.raises(NavError, match="TerrainType.COUNT"):
+            terrain_count(e)
+        with pytest.raises(NotModelled):
+            HexMap(e, 2, 2, "even-q-up").navigator
+
+
+def test_a_tile_of_a_type_legends_adds_that_the_cost_table_has_no_entry_for_is_not_modelled():
+    """MEASURED (Legends 19.4.22): the scripts' cost tables have 19 entries, Legends' COUNT is 21. A map without such
+    tiles (all 3 + 40 maps looked at) is answered as before; one with such a tile raises instead of guessing."""
+    from bbseed.navigator import NavError
+    table = costs(plains=10)                                    # 19 entries: no entry for types 19 and 20
+    for symbol in ("G", "F"):
+        m, nav = legends_map(["LLLLLLL", "LLLLLLL"])
+        s = settings(nav, ActionPointCosts=table)
+        assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0).isEmpty(None)
+        R.set_(m.tile(3, 1), "Type", {"G": SWAMP_GREEN, "F": SWAMP_FOREST}[symbol])
+        with pytest.raises(NavError, match="terrain type %d has no entry" % {"G": 19, "F": 20}[symbol]):
+            nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0)
+        with pytest.raises(NavError):                           # again: a half-made answer is not kept
+            nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0)
+        R.set_(m.tile(3, 1), "Type", PLAINS)                    # the tile is gone: answered again
+        assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0).isEmpty(None)
+
+
+def test_a_table_with_entries_for_every_type_answers_for_the_types_legends_adds():
+    m, nav = legends_map(["LLLLLLL", "LLLLLLL"])
+    R.set_(m.tile(3, 0), "Type", SWAMP_GREEN)
+    R.set_(m.tile(3, 1), "Type", SWAMP_FOREST)
+    table = costs(plains=10) + [0, 0]                           # 21 entries: both new types blocked
+    s = settings(nav, ActionPointCosts=table)
+    assert nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0).isEmpty(None)
+    table[SWAMP_GREEN] = 15.0                                   # one of them enterable
+    assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
+    table = costs(plains=10) + [12]                             # 20 entries: no entry for SwampForest only
+    with pytest.raises(NotModelled, match="terrain type 20"):
+        nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0)
+
+
+def test_a_type_of_the_base_game_past_the_end_of_a_table_is_still_blocked_on_a_legends_map():
+    """buildAdditionalRoads' table has 18 entries and every map has Oasis tiles (type 18): that rule is as it was."""
+    m, nav = legends_map(["LLLOLLL", "LLLOLLL"])
+    table = costs(plains=10)[:OASIS]                            # 18 entries
+    assert nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
+    table = costs(plains=10)
+    table[OASIS] = 10
+    assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)

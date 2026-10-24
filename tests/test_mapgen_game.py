@@ -291,6 +291,24 @@ def test_terrain_chars_follow_the_games_terrain_table(legends_lab):
         assert TERRAIN_NAMES[value] == name or (name, value) == ("Land", 2), (name, value)     # Land is Plains
 
 
+def test_the_navigators_terrain_count_is_the_games_and_its_cost_tables_miss_the_types_legends_adds(legends_lab):
+    """Final review 89, MEASURED on Legends 19.4.22: Const.World.TerrainType.COUNT is 21 (SwampGreen 19, SwampForest
+    20), the navigator reads it, and the three cost tables the scripts hand to createSettings have 19 entries - so a
+    tile of type 19 or 20 has no cost (the navigator then raises NavError, never guesses; no generated map has one)."""
+    from bbseed.lab import big_stack
+    from bbseed.navigator import BASE_TYPES, terrain_count
+    eng = legends_lab.lab.eng
+    script = eng.vm.compile("""
+        local out = [::Const.World.TerrainType.COUNT];
+        foreach (name in ["TerrainTypeNavCost", "TerrainTypeNavCost_Flat", "TerrainTypeNavCost_Ship"])
+            out.push(::Const.World[name].len());
+        return out;
+    """, "test_nav_tables")
+    count, *table_lengths = big_stack(lambda: script.invoke(eng.root, ()))
+    assert count == terrain_count(eng) == 21 and BASE_TYPES == 19
+    assert table_lengths == [19, 19, 19]
+
+
 def test_harmless_stubs_all_have_a_reason():
     from bbseed.mapgen import HARMLESS_STUBS, unexplained_stubs
     assert all(isinstance(why, str) and len(why) > 20 for why in HARMLESS_STUBS.values())
