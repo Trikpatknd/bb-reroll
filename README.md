@@ -1,6 +1,6 @@
 # BB Reroll
 
-Seed finder for **Battle Brothers** — vanilla or with the **Legends** mod. It searches campaign seeds for a starting roster that matches your criteria (talent stars per brother, banned and required traits) **without running the game**, and shows the full roster of every seed it finds. With Legends it can also search by the **world map**: the number of ports and towns.
+Seed finder for **Battle Brothers** — vanilla or with the **Legends** mod. It searches campaign seeds for a starting roster that matches your criteria (talent stars per brother, banned and required traits) **without running the game**, and shows the full roster of every seed it finds. With Legends, or with the base game and all its DLCs, it can also search by the **world map**: the number of ports and towns.
 
 The seeds are ordinary campaign seeds. Anyone with the same game version, mods and recruit-related Mod Options gets the same brothers by typing the seed into the New Campaign screen — no mod of ours needed on either side. For the map, the Map Options must be the same too.
 
@@ -19,13 +19,14 @@ Nothing is extracted or copied into the game, and no game or mod files are part 
 
 The search runs in parallel worker processes. Every match is rolled a second time on a freshly built game state before it is shown.
 
-The world map comes from the game's scripts in the same way. The game makes the map from the seed text, before it makes the brothers. BB Reroll runs the game's map scripts with stand-ins for the engine's map functions: the tile grid and the path finder. These stand-ins copy what the game does. This works with Legends only. Read **Map conditions** below.
+The world map comes from the game's scripts in the same way. The game makes the map from the seed text, before it makes the brothers. BB Reroll runs the game's map scripts with stand-ins for the engine's map functions: the tile grid and the path finder. These stand-ins copy what the game does. This works with Legends, and with the base game when all DLCs are installed. Read **Map conditions** below.
 
 ### What it was checked against
 
 - **Battle Brothers 1.5.2.3, unmodded** — rosters compared by hand in the real game.
 - **Battle Brothers 1.5.2.3 + Legends 19.4.22 + MSU 1.9.0 + Modern Hooks 0.6.0** — 96 real campaign starts (every searchable origin, two seeds each, plus searched and letter seeds) logged by the game and reproduced on every field: names, backgrounds, talents, traits, stats and gear.
 - **The world map, Battle Brothers 1.5.2.3 + Legends 19.4.22** — 40 maps made by the game itself, compared with the maps of this program. The game had these Map Options: Land Mass Ratio 55, Water 38, Snowline 85, Settlements 24, Factions 4, and Decked Out Citadels and All trade buildings available on. On all 40 maps, every town matches in kind, tile, size, port and name. Only the names of city states differ. The terrain before the roads are made matches too. 96 older logged map generations match up to the end of the land and sea step. Roads and some names do not match yet (see Limits).
+- **The world map, Battle Brothers 1.5.2.3 with all DLCs and no mods** — 40 maps made by the game itself, compared with the maps of this program. On all 40 maps, every town matches in kind, tile, size, port and name, the terrain before the roads matches, and the game needed the same number of land and sea attempts. The 40 rosters of these campaigns match too.
 
 Other versions are read the same way and will usually just work, but they are unverified until someone compares a seed in the game. Seeds are specific to the game version and mod versions: an update that changes how recruits are rolled changes what every seed gives.
 
@@ -76,7 +77,7 @@ Speed with Legends is about 3 seeds per second per worker; each worker takes ~15
 
 ### Map conditions
 
-Use them to search for seeds by their world map. They work with the **Legends** setup only. Open the switch **Map** above the grid. Each condition is a minimum. 0 is no condition. A map must meet all conditions.
+Use them to search for seeds by their world map. They work with the **Legends** setup, and with the **Vanilla** setup when all DLCs of the game are installed. The map of the base game depends on the DLCs, and the program can check it only with all of them. When a DLC is missing, the Map view stays closed and says why. Open the switch **Map** above the grid. Each condition is a minimum. 0 is no condition. A map must meet all conditions.
 
 | Field | What it counts |
 |---|---|
@@ -86,15 +87,17 @@ Use them to search for seeds by their world map. They work with the **Legends** 
 | North band (%) | The part of the map that counts as north: this percent of the map rows, counted from the north edge. The default is 33. |
 | City states, Strongholds, Villages, Towns, Cities | The number of towns of each type. |
 
-**Map Options.** The map depends on the Map Options of the game. The Map view has the seven Map Options of the Legends Mod: Land Mass Ratio, Water, Snowline, Settlements, Factions, Decked Out Citadels and All trade buildings available. They start with the Legends defaults (50, 38, 85, 19, 3, No, No). **Write the same values as in your own Mod Options** (Legends Mod, page Map Options). With other values the game makes a different map, and the seed does not match. The program does not read your saved Mod Options. The Map Options do not change the brothers. A search without map conditions does not use them.
+**Map Options.** With Legends, the map depends on the Map Options of the game. The Map view has the seven Map Options of the Legends Mod: Land Mass Ratio, Water, Snowline, Settlements, Factions, Decked Out Citadels and All trade buildings available. When the program starts, it reads them from your saved Mod Options (the file that MSU writes in `Documents\Battle Brothers\savegames`). If you typed other values since the last read, the program keeps your values and the Map view says that they are not the same as your saved Mod Options. **Read my Mod Options** reads the saved values again, for example after you changed them in the game. You can change the values, for example to search for the Map Options of a friend. Without a saved file, the fields start with the Legends defaults (50, 38, 85, 19, 3, No, No). With other values than in the game, the game makes a different map, and the seed does not match. The Map Options do not change the brothers. A search without map conditions does not use them. The base game has no Map Options: on the Vanilla setup the Map view shows only the conditions.
 
 **Speed.** One map takes about 40 seconds on one worker, with the default Map Options. A low Land Mass Ratio with a high Water value can make one map take many minutes. 8 workers make about 0.14 maps per second. Set brother conditions too: then the search builds a map only for the seeds whose brothers match. With map conditions alone, it builds a map for every seed. The estimate *Approximately 1 in N seeds matches* shows after 30 maps. With brother conditions, it also needs 100 tested seeds. Until it shows, a search with brother conditions says how often the brothers of a seed match, and how many maps are built. If no map meets the conditions in 100 maps, a notice says that such maps are rare. The search continues. Conditions that no map can meet (for example, more southern ports than the map has city states) are named before the search starts.
 
-**What to expect.** In a survey of 997 maps with the default Map Options, the median was 4 ports. 22.6 % of the maps had 5 or more ports, and 3.9 % had 6 or more. 39 % had at least one southern port. 22 % had at least one northern port (band 33 %). Every map had 6 strongholds.
+**What to expect.** In a survey of 997 maps with the default Map Options, the median was 4 ports. 22.6 % of the maps had 5 or more ports, and 3.9 % had 6 or more. 39 % had at least one southern port. 22 % had at least one northern port (band 33 %). Every map had 6 strongholds. In the 40 maps of the base game that were checked in the game, a map had 19 to 22 towns. Every map had 6 strongholds and 3 city states.
 
-**Results.** **Show map** on a result opens the map of the seed: terrain, towns and ports. North is at the top. A ring marks a port. A dashed line marks the north band. Point at a town to read its name and type. The names of city states say that they are not verified. **Copy seed post** adds a Map line and the Map Options to the post. **Check a seed** with a map condition builds the map of that seed too. If the map cannot be built, the result shows the brothers and says why.
+**Results.** **Show map** on a result opens the map of the seed: terrain, towns and ports. North is at the top. A ring marks a port. A dashed line marks the north band. Point at a town to read its name and type. The names of city states say that they are not verified. **Copy seed post** adds a Map line and the Map Options to the post (the base game has none). **Check a seed** with a map condition builds the map of that seed too. If the map cannot be built, the result shows the brothers and says why.
 
 The map depends on the seed, the Map Options, the game version and the mod versions. It does not depend on the origin. The brothers do not depend on the map. Deserters is the exception. It is not offered.
+
+**Legends: start the seed as your first campaign.** A seed gives this map when you start it as your first campaign after you start the game. Towns, ports and the land are the same in every campaign; other details can change. (Legends keeps a counter for the whole game session that changes some details after the roads are made. The base game has no such counter.)
 
 ### Star keys
 
@@ -124,9 +127,10 @@ python -m bbseed.catalog --profile legends     # what each origin's brothers can
 python -m bbseed.search --profile legends --origin trader_scenario --ports 5 --ports-north 1 --towns city_state=3 --workers 8
 python -m bbseed.search --profile legends --origin trader_scenario --ports 4 --mod-setting mod_legends:Settlements=24 --mod-setting mod_legends:StackCitadels=true
 python -m bbseed.search --profile legends --map 1234567890 --svg map.svg     # the map of one seed (about 40 s): towns and ports as text, a picture as SVG
+python -m bbseed.search --profile vanilla --origin trader_scenario --ports 4 --workers 8     # the base game (all DLCs): map conditions, no Map Options
 ```
 
-Map conditions: `--ports N`, `--ports-south N`, `--ports-north N`, `--north-band P` (default 33) and `--towns TYPE=N` (use it again for more types). The town types are `city_state`, `military` (strongholds), `size1` (villages), `size2` (towns) and `size3` (cities). Set the Map Options with `--mod-setting mod_legends:KEY=VALUE`. The keys are `LandRatio`, `Water`, `Snowline`, `Settlements`, `Factions`, `StackCitadels` and `AllTradeLocations` (the last two take `true` or `false`). Use the same values as in the Mod Options of your game; a key you leave out has the Legends default. `--map` uses the origin `trader_scenario` unless you give `--origin`; the map does not depend on it.
+Map conditions: `--ports N`, `--ports-south N`, `--ports-north N`, `--north-band P` (default 33) and `--towns TYPE=N` (use it again for more types). The town types are `city_state`, `military` (strongholds), `size1` (villages), `size2` (towns) and `size3` (cities). With Legends, set the Map Options with `--mod-setting mod_legends:KEY=VALUE` (the command line does not read your saved Mod Options). The keys are `LandRatio`, `Water`, `Snowline`, `Settlements`, `Factions`, `StackCitadels` and `AllTradeLocations` (the last two take `true` or `false`). Use the same values as in the Mod Options of your game; a key you leave out has the Legends default. `--map` uses the origin `trader_scenario` unless you give `--origin`; the map does not depend on it.
 
 ---
 
@@ -134,12 +138,12 @@ Map conditions: `--ports N`, `--ports-south N`, `--ports-north N`, `--north-band
 
 - **Deserters is not offered.** Its recruits are created after a step that depends on the generated map, so the seed text alone does not decide them.
 - **Vanilla's "Random" origin is not offered**: the game picks the origin with a random draw before the seed is used, so a seed cannot decide it. Pick the origin itself instead.
-- **Mod Options**: only Legends' Battle Sisters and the seven Map Options (for map conditions) can be set. Every other mod setting is taken at the mod's default; if you changed one that affects recruits, results can differ.
+- **Mod Options**: only Legends' Battle Sisters and the seven Map Options (for map conditions) can be set. The program reads only the Map Options from your saved Mod Options. Every other mod setting is taken at the mod's default; if you changed one that affects recruits, results can differ.
 - **Origins whose backgrounds change from seed to seed** (Legends' Random Party/Solo/Trio, Free Company, Peasant Militia) get no limits in the stars grid: what they can roll is only what a sample of seeds showed. Their background menus are exact: they hold the lists the origin picks from (a list the sample seeds never used, like Random Party's rare second list, can only show up when a brother who shares the first list used it).
 - **Other mods** are loaded as they are installed. A mod that needs engine functions the stand-in does not model stops the search with a load error instead of giving wrong results.
 - The game's **Map Options do not affect the starting brothers** (they are rolled from the seed after the map is made), only the map itself.
-- **Map conditions work with Legends only.** Vanilla is not offered yet. The maps are checked for game 1.5.2.3 with Legends 19.4.22, MSU and Modern Hooks. For other versions, or with other mods, the Map view says that the results are not verified. A map that needs an engine function the program does not model gives an error, and the search skips that seed.
-- **The Map Options must match yours.** Type the values of your Mod Options into the Map view. The program does not read them from the game. With other values the seed gives another map.
+- **Map conditions work with Legends and with the base game with all DLCs.** The maps are checked for game 1.5.2.3 with Legends 19.4.22, MSU and Modern Hooks, and for game 1.5.2.3 with all DLCs and no mods. For other versions, or with other mods, the Map view says that the results are not verified. On the base game with a DLC missing, the Map view stays closed. A map that needs an engine function the program does not model gives an error, and the search skips that seed.
+- **The Map Options must match the game.** The program reads them from your saved Mod Options, but you can change the fields. With other values than in the game, the seed gives another map.
 - **Roads are not exact.** The program does not copy the path finder of the game exactly. Its roads, region names, faction names and city-state names differ from the game. No condition uses them. The drawn map shows terrain, towns and ports, with no roads. A few terrain tiles near roads (1 to 24 of about 24,000) can differ from the game.
 - **The start position is not known.** The program does not find where your company starts on the map.
 - **Maps are slow.** One map takes about 40 seconds on one worker, with the default Map Options. A low Land Mass Ratio with a high Water value can make one map take many minutes. A map search tests far fewer seeds than a search for brothers alone. Set brother conditions too.
@@ -165,13 +169,14 @@ bb_reroll/
 │   ├── backgrounds.py            #   which backgrounds each brother can get → Backgrounds view, impossible criteria
 │   ├── seed_report.py            #   Discord seed-share post formatter (with the map and the Map Options)
 │   ├── map_conditions.py         #   map conditions: labels, what a map can have at most, impossible conditions, the post's map line
-│   ├── map_view.py               #   the Map view without tkinter: fields, checks, settings, Map Options
+│   ├── map_view.py               #   the Map view without tkinter: fields, checks, settings, Map Options, saved Mod Options
 │   └── trait_names.py            #   trait ID → display name
 ├── bbseed/                       # the search: the game's campaign-start scripts, run without the game
 │   ├── rng.py                    #   the game's seeded random generator
 │   ├── sq/                       #   Squirrel interpreter (source text and compiled scripts)
 │   ├── engine.py, world.py       #   stand-in for the engine's native side
-│   ├── gamedata.py, profiles.py  #   finds the install, reads its script archives, defines the setups
+│   ├── gamedata.py, profiles.py  #   finds the install and its DLCs, reads its script archives, defines the setups
+│   ├── msu_settings.py           #   reads the saved Mod Options (the settings file of MSU)
 │   ├── lab.py                    #   Lab(profile).roster(seed, origin), world_map(seed), perk groups, installed mods
 │   ├── hexmap.py                 #   the tile grid of the world map: stand-in for the engine's tile functions
 │   ├── navigator.py              #   the path finder of the world map: stand-in for the engine's navigator
