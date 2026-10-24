@@ -107,14 +107,16 @@ def legends(game_data=None, on_progress=None):
 def installed_summary(game_data=None):
     """What is installed, without loading it: {"data": the game's data folder, "game_version":
     text or None, "mods": [mod zip names], "legends": is Legends among them?, "reroll_mod":
-    [names of BB Reroll's own in-game mod zips there]}. None when no game is found."""
+    [names of BB Reroll's own in-game mod zips there], "dlc_complete": are all the DLC files
+    there (gamedata.all_dlc)?}. None when no game is found."""
     from . import gamedata
     data = Path(game_data) if game_data else game_data_dir()
     if data is None:
         return None
     zips = mod_zips(data)
     return {"data": data, "game_version": gamedata.game_version(data), "mods": [z.name for z in zips],
-            "legends": _has_legends(zips), "reroll_mod": [z.name for z in reroll_mod_zips(data)]}
+            "legends": _has_legends(zips), "reroll_mod": [z.name for z in reroll_mod_zips(data)],
+            "dlc_complete": gamedata.all_dlc(data)}
 
 
 # ---------------------------------------------------------------------- research profiles

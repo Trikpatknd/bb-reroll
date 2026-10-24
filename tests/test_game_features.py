@@ -43,6 +43,14 @@ def test_the_unmodded_game_has_no_mods(vanilla):
     assert _in_lab(vanilla, lambda lab: lab.info()["mods"]) == []
 
 
+@game_only
+def test_this_install_has_all_dlc():
+    from bbseed import gamedata
+    assert gamedata.installed_dlc() == set(gamedata.DLC_FILES)
+    assert gamedata.all_dlc() is True
+    assert FOUND["dlc_complete"] is True
+
+
 # ---------------------------------------------------------------- perk trees
 @legends_only
 def test_a_confirmed_roster_lists_each_recruits_perk_groups(legends):

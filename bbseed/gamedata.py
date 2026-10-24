@@ -26,6 +26,20 @@ GAME_DATA_GUESSES = (
     r"C:\Program Files\Steam\steamapps\common\Battle Brothers\data",
     r"G:\SteamLibrary\steamapps\common\Battle Brothers\data",
 )
+# The DLC data files: DLC name -> the data_*.dat that holds it. Each holds one script, which sets the flag
+# Const.DLC.<name> from hasDLC(<Steam app id>); the maps and rosters depend on those flags.
+DLC_FILES = {
+    # scripts/dlc/dlc_lindwurm.cnut; Lindwurm
+    "Lindwurm": "data_003.dat",
+    # scripts/dlc/dlc_unhold.cnut; Unhold
+    "Unhold": "data_004.dat",
+    # scripts/dlc/dlc_wildmen.cnut; Wildmen
+    "Wildmen": "data_006.dat",
+    # scripts/dlc/dlc_desert.cnut; Desert
+    "Desert": "data_008.dat",
+    # scripts/dlc/dlc_paladins.cnut; Paladins
+    "Paladins": "data_010.dat",
+}
 
 
 def as_data_dir(folder):
@@ -98,6 +112,21 @@ def game_version(game_data=None):
             if ms or ls:
                 return "%d.%d.%d.%d" % (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF)
     return None
+
+
+def installed_dlc(game_data=None):
+    """The DLC names of DLC_FILES whose data file is in the game's data folder (game_data: the game folder or
+    its data folder, see as_data_dir; None: the found install). Empty when no install is found."""
+    data = game_data_dir() if game_data is None else as_data_dir(game_data)
+    if data is None:
+        return set()
+    return {name for name, archive in DLC_FILES.items() if (data / archive).is_file()}
+
+
+def all_dlc(game_data=None):
+    """Does the game's data folder hold every DLC file of DLC_FILES? Vanilla maps depend on the DLC flags, so
+    they are verified only with all of them (see mapgen.verified_setup). False when no install is found."""
+    return installed_dlc(game_data) == set(DLC_FILES)
 
 
 def cache_dir():

@@ -1,5 +1,7 @@
 """Which mods a seed was found with: the mod zips in the game's data folder, named and
-versioned the way the mods register themselves with Modern Hooks."""
+versioned the way the mods register themselves with Modern Hooks. Also which DLC files the game
+has: Vanilla maps need all of them."""
+from bbseed import gamedata, mapgen, profiles
 from bbseed.lab import installed_mods
 
 # what ::Hooks.getMods() reported for Legends 19.4.22 + MSU 1.9.0 + Modern Hooks 0.6.0 (2026-10-15)
@@ -38,3 +40,47 @@ def test_a_zip_no_registration_matches_is_listed_by_its_file_name():
 def test_without_zips_nothing_is_listed():
     # sub-mods bundled inside a zip, DLCs and the base game register too, but they are not installed files
     assert installed_mods(REGISTERED, []) == []
+
+
+# ------------------------------------------------------------------ the DLC files
+def _data_folder(folder, names):
+    folder.mkdir(exist_ok=True)
+    for name in names:
+        (folder / name).write_bytes(b"")
+    return folder
+
+
+def test_all_dlc_needs_every_file(tmp_path):
+    data = _data_folder(tmp_path, ["data_001.dat"] + sorted(set(gamedata.DLC_FILES.values())))
+    assert gamedata.installed_dlc(data) == set(gamedata.DLC_FILES)
+    assert gamedata.all_dlc(data) is True
+    (data / gamedata.DLC_FILES["Wildmen"]).unlink()
+    assert gamedata.installed_dlc(data) == set(gamedata.DLC_FILES) - {"Wildmen"}
+    assert gamedata.all_dlc(data) is False
+
+
+def test_no_install_has_no_dlc(monkeypatch):
+    monkeypatch.setattr(gamedata, "game_data_dir", lambda: None)
+    assert gamedata.installed_dlc() == set()
+    assert gamedata.all_dlc() is False
+
+
+def test_the_summary_says_whether_every_dlc_is_there(tmp_path):
+    some = _data_folder(tmp_path / "some", ["data_001.dat", "data_003.dat"])
+    every = _data_folder(tmp_path / "every", ["data_001.dat"] + sorted(set(gamedata.DLC_FILES.values())))
+    assert profiles.installed_summary(some)["dlc_complete"] is False
+    assert profiles.installed_summary(every)["dlc_complete"] is True
+
+
+def test_verified_setup_vanilla_is_off_until_verified(monkeypatch):
+    assert mapgen.verified_setup("1.5.2.3", None, [], True) is False
+    monkeypatch.setattr(mapgen, "VANILLA_MAPS_VERIFIED", True)
+    assert mapgen.verified_setup("1.5.2.3", None, [], True) is True
+    assert mapgen.verified_setup("1.5.2.3", None, [], False) is False
+    assert mapgen.verified_setup("1.5.2.3", None, ["mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip"], True) is False
+    assert mapgen.verified_setup("1.5.3.0", None, [], True) is False
+
+
+def test_verified_setup_legends_is_as_before_and_ignores_the_dlc():
+    assert mapgen.verified_setup("1.5.2.3", "19.4.22", [], False) is True
+    assert mapgen.verified_setup("1.5.3.0", "19.4.22", [], True) is False
