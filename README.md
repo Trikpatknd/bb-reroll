@@ -19,13 +19,13 @@ Nothing is extracted or copied into the game, and no game or mod files are part 
 
 The search runs in parallel worker processes. Every match is rolled a second time on a freshly built game state before it is shown.
 
-The world map comes from the game's scripts in the same way. The game makes the map from the seed text, before it makes the brothers. BB Reroll runs the game's map scripts with stand-ins for the engine's map functions (the tile grid and the path finder), made from what the game does. This works with Legends only. Read **Map conditions** below.
+The world map comes from the game's scripts in the same way. The game makes the map from the seed text, before it makes the brothers. BB Reroll runs the game's map scripts with stand-ins for the engine's map functions: the tile grid and the path finder. These stand-ins copy what the game does. This works with Legends only. Read **Map conditions** below.
 
 ### What it was checked against
 
 - **Battle Brothers 1.5.2.3, unmodded** — rosters compared by hand in the real game.
 - **Battle Brothers 1.5.2.3 + Legends 19.4.22 + MSU 1.9.0 + Modern Hooks 0.6.0** — 96 real campaign starts (every searchable origin, two seeds each, plus searched and letter seeds) logged by the game and reproduced on every field: names, backgrounds, talents, traits, stats and gear.
-- **The world map, Battle Brothers 1.5.2.3 + Legends 19.4.22** — 40 maps made by the game itself, compared with the maps of this program. On all 40 maps, every town matches (kind, tile, size, port and name; the names of city states excepted), and so does the terrain before the roads are made. 96 older logged map generations match up to the end of the land and sea step. Roads and some names do not match yet (see Limits).
+- **The world map, Battle Brothers 1.5.2.3 + Legends 19.4.22** — 40 maps made by the game itself, compared with the maps of this program. On all 40 maps, every town matches in kind, tile, size, port and name. Only the names of city states differ. The terrain before the roads are made matches too. 96 older logged map generations match up to the end of the land and sea step. Roads and some names do not match yet (see Limits).
 
 Other versions are read the same way and will usually just work, but they are unverified until someone compares a seed in the game. Seeds are specific to the game version and mod versions: an update that changes how recruits are rolled changes what every seed gives.
 
@@ -88,13 +88,13 @@ Use them to search for seeds by their world map. They work with the **Legends** 
 
 **Map Options.** The map depends on the Map Options of the game. The Map view has the seven Map Options of the Legends Mod: Land Mass Ratio, Water, Snowline, Settlements, Factions, Decked Out Citadels and All trade buildings available. They start with the Legends defaults (50, 38, 85, 19, 3, No, No). **Write the same values as in your own Mod Options** (Legends Mod, page Map Options). With other values the game makes a different map, and the seed does not match. The program does not read your saved Mod Options. The Map Options do not change the brothers. A search without map conditions does not use them.
 
-**Speed.** One map takes about 40 seconds on one worker. With 8 workers this is about 0.15 to 0.2 maps per second. Set brother conditions too: then the search builds a map only for the seeds whose brothers match. With map conditions alone, it builds a map for every seed. The estimate *Approximately 1 in N seeds matches* shows after 30 maps. Conditions that no map can meet (for example, more southern ports than the map has city states) are named before the search starts.
+**Speed.** One map takes about 40 seconds on one worker. 8 workers make about 0.14 maps per second. Set brother conditions too: then the search builds a map only for the seeds whose brothers match. With map conditions alone, it builds a map for every seed. The estimate *Approximately 1 in N seeds matches* shows after 30 maps. With brother conditions, it also needs 100 tested seeds. Conditions that no map can meet (for example, more southern ports than the map has city states) are named before the search starts.
 
-**What to expect.** In a survey of 1,000 maps with the default Map Options, the median was 4 ports. 22.6 % of the maps had 5 or more ports, and 3.9 % had 6 or more. 39 % had at least one southern port. 22 % had at least one northern port (band 33 %). Every map had 6 strongholds.
+**What to expect.** In a survey of 997 maps with the default Map Options, the median was 4 ports. 22.6 % of the maps had 5 or more ports, and 3.9 % had 6 or more. 39 % had at least one southern port. 22 % had at least one northern port (band 33 %). Every map had 6 strongholds.
 
 **Results.** **Show map** on a result opens the map of the seed: terrain, towns and ports. North is at the top. A ring marks a port. A dashed line marks the north band. Point at a town to read its name and type. **Copy seed post** adds a Map line and the Map Options to the post. **Check a seed** with a map condition builds the map of that seed too.
 
-The map depends on the seed, the Map Options, the game version and the mod versions. It does not depend on the origin. The brothers do not depend on the map. (Deserters is the exception; it is not offered.)
+The map depends on the seed, the Map Options, the game version and the mod versions. It does not depend on the origin. The brothers do not depend on the map. Deserters is the exception. It is not offered.
 
 ### Star keys
 
@@ -140,7 +140,8 @@ Map conditions: `--ports N`, `--ports-south N`, `--ports-north N`, `--north-band
 - The game's **Map Options do not affect the starting brothers** (they are rolled from the seed after the map is made), only the map itself.
 - **Map conditions work with Legends only.** Vanilla is not offered yet. The maps are checked for game 1.5.2.3 with Legends 19.4.22. For other versions the Map view says that the results are not verified.
 - **The Map Options must match yours.** Type the values of your Mod Options into the Map view. The program does not read them from the game. With other values the seed gives another map.
-- **Roads are not exact.** The program does not copy the path finder of the game exactly. Its roads, region names, faction names and city-state names differ from the game. No condition uses them. The drawn map shows terrain, towns and ports, with no roads. A few terrain tiles near roads (1 to 24 of about 24,000) can differ from the game. The program does not find the start position of your company.
+- **Roads are not exact.** The program does not copy the path finder of the game exactly. Its roads, region names, faction names and city-state names differ from the game. No condition uses them. The drawn map shows terrain, towns and ports, with no roads. A few terrain tiles near roads (1 to 24 of about 24,000) can differ from the game.
+- **The start position is not known.** The program does not find where your company starts on the map.
 - **Maps are slow.** One map takes about 40 seconds on one worker, so a map search tests far fewer seeds than a search for brothers alone. Set brother conditions too.
 - **A few seeds stop the map step with an error** (3 of 1,000 in a survey). The program does not know if the game makes a map for these seeds. The search skips them.
 
