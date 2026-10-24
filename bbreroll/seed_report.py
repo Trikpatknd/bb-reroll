@@ -101,6 +101,9 @@ def build_seed_report(origin, description, seed, report_info, tool_version, rost
     if "mods" in report_info:       # a seed is only valid for the same game and mod versions
         lines.append(f"Game version: {report_info.get('game_version') or _UNKNOWN}")
         lines.append(f"Mods: {_mods_text(report_info['mods'])}")
+        if report_info.get("legends") is False and report_info.get("dlc_complete") is not None:
+            # the base game's map depends on the DLCs: the post says whether all of them are installed
+            lines.append("DLCs: all" if report_info["dlc_complete"] else "DLCs: not all installed")
     lines.append("")
     with_map = game_map is not None
     if with_map:

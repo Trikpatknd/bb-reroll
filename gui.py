@@ -916,7 +916,6 @@ class App(ctk.CTk):
                        "background. Other origins always give the same backgrounds.\n"
                        "Row Any brother: at least one brother must have this background. Use it with the stat "
                        "rolls: a high roll is high for the background of the brother.",
-        "Map": map_view.HELP,
     }
     _SET_ROW = "Set row"
     ANY_BACKGROUND = "Any background"
@@ -988,13 +987,17 @@ class App(ctk.CTk):
             self._style_cell(widget, PALETTE["roll"], PALETTE["roll_btn"],
                              self.tiers_vars[(slot, stat)].get() in ("mid", "high"))
 
+    def _grid_help_text(self, mode: str) -> str:
+        """The help under the grid. The Map view's help depends on the setup: Legends' names the Map Options."""
+        return map_view.help_text(self._setup_kind()) if mode == "Map" else self._GRID_HELP[mode]
+
     def _on_grid_mode(self, mode=None):
         mode = self.grid_mode_var.get()
-        if mode not in self._GRID_HELP:
+        if mode not in self._GRID_TITLES:
             mode = "Stars"
         stars = mode == "Stars"
         self.grid_title.configure(text=self._GRID_TITLES[mode])
-        self.grid_help.configure(text=self._GRID_HELP[mode])
+        self.grid_help.configure(text=self._grid_help_text(mode))
         for widget, show in ((self.stars_frame, stars), (self.origin_info_label, stars),
                              (self.stars_legend, stars), (self.tiers_frame, mode == "Stat rolls"),
                              (self.backgrounds_frame, mode == "Backgrounds"), (self.map_frame, mode == "Map")):
@@ -1289,6 +1292,8 @@ class App(ctk.CTk):
             lines.append(self._options_note)
         if usable and not self._map_verified():
             lines.append(map_view.NOT_VERIFIED)
+        if self.grid_mode_var.get() == "Map":      # the Map view's help names the setup (grid_help exists by now)
+            self.grid_help.configure(text=map_view.help_text(kind))
         self.map_note_var.set("\n".join(lines))
         self.map_note.grid() if lines else self.map_note.grid_remove()
 
@@ -1340,10 +1345,11 @@ class App(ctk.CTk):
         return True
 
     def _startup_saved_options(self):
-        """Start-up on Legends: the Map Options come from the saved Mod Options unless the player typed other values
+        """Start-up on any setup: the Map Options come from the saved Mod Options unless the player typed other values
         since the program last read them (map_view.fill_at_startup); otherwise the Map view says when they differ. A
-        self-test never reads the file (its spec sets the Map Options). Switching the setup later does not read."""
-        if os.environ.get("BB_REROLL_SELFTEST") or not self._legends():
+        self-test never reads the file (its spec sets the Map Options). On other setups the fields are hidden, the read
+        keeps them current for a later switch to Legends. Switching the setup later does not read."""
+        if os.environ.get("BB_REROLL_SELFTEST"):
             return
         try:        # a failed read must not stop the start: the exe has no console, nobody would see the error
             saved = map_view.saved_option_texts(msu_settings.read_map_options())
@@ -1808,7 +1814,7 @@ class App(ctk.CTk):
         self.watch_var.set(f"Loading the game scripts in {workers} worker{'' if workers == 1 else 's'}")
         self.status_var.set((f"Checking seed {seeds[0]}." if seeds else
                              f"Searching {origin} ({setup}): a maximum of {self._search_total:,} seeds.")
-                            + (f" {map_view.WAIT}" if map_criteria else ""))
+                            + (f" {map_view.wait_text(self._setup_kind())}" if map_criteria else ""))
         put = self._events.put
 
         def run():
@@ -1860,6 +1866,7 @@ class App(ctk.CTk):
             "game_version": info.get("game_version"),
             "mods": info.get("mods") or [],
             "legends": bool(legends),       # the base game has no Map Options: the post says so (seed_report)
+            "dlc_complete": info.get("dlc_complete"),       # the base game's map depends on the DLCs (seed_report)
         }
         if legends:
             self._map_versions = (info.get("game_version"), legends)
@@ -1907,7 +1914,7 @@ class App(ctk.CTk):
 
     def _wait_text(self, odds):
         """The note while the first maps are built (a map takes about 40 seconds); "" for other runs."""
-        return map_view.wait_note(odds) if self._run.get("map") else ""
+        return map_view.wait_note(odds, self._setup_kind()) if self._run.get("map") else ""
 
     def _odds_text(self, odds, rate):
         """'Approximately 1 in 3,400 seeds matches (...). At this speed, that is 1 match in ...' (or nothing).

@@ -320,7 +320,8 @@ def test_map_option_notes_a_setup_whose_maps_are_not_verified(monkeypatch, capsy
     """Final review M10: --map builds a map on any setup; the console says when nobody checked it."""
     import bbseed.search as search
     note = "Map results are not verified for this setup."
-    for info in (dict(VERIFIED_INFO, game_version="1.5.3.0"), dict(VERIFIED_INFO, legends_version=None, mods=[]),
+    for info in (dict(VERIFIED_INFO, game_version="1.5.3.0"),
+                 dict(VERIFIED_INFO, legends_version=None, mods=[], dlc_complete=False),
                  dict(VERIFIED_INFO, mods=VERIFIED_INFO["mods"] + [{"file": "mod_jimmys_tooltips-1.0.5.zip"}])):
         cli_map_lab(monkeypatch, info)
         search.main(["--map", "42"])

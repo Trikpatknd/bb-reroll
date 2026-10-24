@@ -183,8 +183,9 @@ def summary(lab, log=()):
 # here; bbreroll/map_conditions.py (labels, limits, impossible conditions, the seed post's line) re-exports it.
 #
 # Town types: every town has exactly one, so the five counts add up to the town count.
-#   city_state  a southern town (isSouthern(): in Legends 19.4.22 only the script city_state)
-#   military    a stronghold of any size (isMilitary() and not southern: Legends' legends_fort scripts)
+#   city_state  a southern town (isSouthern(): the script city_state in Legends 19.4.22 and in the base game)
+#   military    a stronghold of any size (isMilitary() and not southern: Legends' legends_fort scripts, the base game's
+#               *_fort scripts)
 #   size1..3    the other towns by getSize(): villages, towns, cities
 # The labels are the game's own words: "villages, cities and strongholds" (vanilla config/strings.nut, the
 # campaign introduction), "City State of" (CityStateTitles).

@@ -185,7 +185,7 @@ def problems(map_criteria, map_options=None, vanilla=False):
     makes one town type)."""
     c = map_criteria or {}
     if vanilla:
-        lim, settlements = limits(vanilla=True), None
+        lim = limits(vanilla=True)
     else:
         raw = _settlements_raw(map_options)
         settlements = _settlements_value(raw)

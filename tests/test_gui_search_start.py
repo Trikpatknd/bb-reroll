@@ -650,6 +650,26 @@ def test_start_up_remembers_saved_values_the_fields_already_have(map_app, monkey
     assert map_view.OPTIONS_DIFFER not in app.map_note_var.get()
 
 
+def test_the_start_up_read_also_runs_on_vanilla(map_app, monkeypatch):
+    # final review F1: the program reads the saved Mod Options at start-up on every setup, so a player who starts on
+    # the base game and switches to Legends sees the saved values (the note of a difference stays Legends-only)
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    monkeypatch.delenv("BB_REROLL_SELFTEST", raising=False)
+    monkeypatch.setattr(gui.msu_settings, "read_map_options",
+                        lambda path=None: {"Settlements": 24, "StackCitadels": True})
+    monkeypatch.setattr(app, "_saved", {})                  # no Map Options in the settings file yet
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    app._startup_saved_options()
+    app.setup_var.set("Legends")
+    app._on_setup_change()
+    assert app.map_option_vars["Settlements"].get() == "24"
+    assert app.map_option_vars["StackCitadels"].get() == map_view.YES
+    assert map_view.OPTIONS_DIFFER not in app.map_note_var.get()
+
+
 def test_a_self_test_never_reads_the_saved_options(map_app, monkeypatch):
     import gui
     app = map_app
@@ -687,7 +707,8 @@ def test_a_roster_only_post_is_what_it_was_before_the_map_view(map_app, calls):
     app._ev_ready((1, 1, ROSTER_INFO))
     assert app._report_info == {"version": "19.4.22", "build_name": "Bandits & Greenskins",
                                 "battle_sisters": "Enabled", "origin": app._run["origin"], "map_options": {},
-                                "game_version": "1.5.2.3", "mods": ROSTER_INFO["mods"], "legends": True}, \
+                                "game_version": "1.5.2.3", "mods": ROSTER_INFO["mods"], "legends": True,
+                                "dlc_complete": None}, \
         "no map condition: the Map Options are not part of the post"
     entry = result(app, "1111111111")
     expected = build_seed_report(origin=entry["origin"], description="", seed="1111111111",
@@ -702,12 +723,13 @@ def test_a_vanilla_map_post_has_no_map_options(map_app, calls):
     app._on_setup_change()
     app.map_vars["ports"].set("2")
     search_now(app, calls)
-    app._ev_ready((1, 1, VANILLA_INFO))
+    app._ev_ready((1, 1, dict(VANILLA_INFO, dlc_complete=True)))
     assert app._report_info["legends"] is False
     text = app._share_report(result(app, "2222222222", small_map()))
     assert "Map: Ports 2" in text
     assert "Map Options: none. The base game has no Map Options." in text
     assert "Land Mass Ratio" not in text and "Settlements:" not in text
+    assert "Mods: none\nDLCs: all\n" in text, "a base-game map depends on the DLCs: the post names them"
 
 
 def test_the_post_call_gets_the_map_and_the_band_of_the_run(map_app, calls, monkeypatch):
@@ -1240,3 +1262,65 @@ def test_a_checked_seed_whose_map_could_not_be_built_shows_its_roster_and_the_re
     app._ev_match({"seed": "1234567891", "roster": roster_of(), "stable": True, "failure": "Ports: 1, needs 4",
                    "map": small_map()})
     assert any("Checked: Ports: the map has 1. The minimum is 4." in t for t in labels_of(app.match_list))
+
+
+# ---- the final fix wave (final review of 4.2.0): the base game's texts, its checks and the options note
+def test_the_base_game_map_texts_name_the_dlcs_and_no_map_options(map_app, calls):
+    """Final review F3: the base game has no Map Options and no Land Mass Ratio. Its Map view help, its start line
+    and the progress line of its map search say so; the help follows a setup change while the Map mode is shown."""
+    from bbreroll import map_view
+    app = map_app
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    app.grid_mode_var.set("Map")
+    app._on_grid_mode()
+    assert app.grid_help.cget("text") == map_view.HELP_BASE
+    app.setup_var.set("Legends")
+    app._on_setup_change()
+    assert app.grid_help.cget("text") == map_view.HELP
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    assert app.grid_help.cget("text") == map_view.HELP_BASE
+    app.map_vars["ports"].set("3")
+    app._on_search()                        # the start line is set before the stand-in search runs
+    assert app.status_var.get().endswith(map_view.WAIT_BASE)
+    pump(app, lambda: not app._searching, 3.0)
+    assert len(calls) == 1
+    app._run = dict(RUN, setup="Vanilla", map={"ports": 3}, map_first=True)
+    app._search_total = 1000
+    app._ev_progress((6, 90.0, 0, {"chance": None, "never": [], "never_any": False, "never_map": False,
+                                   "maps": 6, "tested": 6}))
+    assert app.status_var.get() == ("Each map takes about 40 seconds. "
+                                    "The estimate shows after 30 maps. Maps built: 6.")
+    assert "Land Mass" not in app.grid_help.cget("text") and "default Map Options" not in app.status_var.get()
+
+
+def test_vanilla_impossible_conditions_use_the_base_game_maximum(map_app, calls, monkeypatch):
+    """Final review F4 (task 9): the base game checks its own maxima, and its message names the base game."""
+    app = map_app
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    app.map_vars["city_state"].set("4")
+    seen = asked(monkeypatch, answer=False)
+    assert search_now(app, calls) == []
+    (title, message), = seen
+    assert title == "Impossible conditions"
+    assert "a map of the base game has a maximum of 3" in message
+    assert "City states: a map of the base game has a maximum of 3. Your condition is 4." in message
+
+
+def test_the_saved_options_note_shows_only_on_legends(map_app):
+    """Final review F4 (task 9): the note about the saved Map Options belongs to the Map Options, which the base game
+    does not show; it is back on Legends."""
+    from bbreroll import map_view
+    app = map_app
+    app._options_note = map_view.OPTIONS_DIFFER
+    app._apply_map_state()
+    assert map_view.OPTIONS_DIFFER in app.map_note_var.get()
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    assert map_view.OPTIONS_DIFFER not in app.map_note_var.get()
+    app.setup_var.set("Legends")
+    app._on_setup_change()
+    assert map_view.OPTIONS_DIFFER in app.map_note_var.get()
+    app._options_note = None

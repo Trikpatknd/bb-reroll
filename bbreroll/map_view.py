@@ -57,13 +57,18 @@ YES, NO = "Yes", "No"
 
 # ------------------------------------------------------------------ texts (simplified writing rules)
 WAIT = "Each map takes about %d seconds with the default Map Options." % MAP_SECONDS
+WAIT_BASE = "Each map takes about %d seconds." % MAP_SECONDS      # the base game has no Map Options
 SLOW_OPTIONS = "A low Land Mass Ratio with a high Water value can make one map take many minutes."
 HELP = ("Set the minimum number of ports and towns. A port lets you travel by ship. North band: the top part of the "
         "map, in percent. Each map takes about %d seconds with the default Map Options. Set brother conditions too, "
         "if you can. %s\n"
         "The map depends on the Map Options of the game. The program reads them from your saved Mod Options "
-        "(Legends Mod, page Map Options). The Map Options do not change the brothers. The base game has no Map Options."
+        "(Legends Mod, page Map Options). The Map Options do not change the brothers."
         % (MAP_SECONDS, SLOW_OPTIONS))
+HELP_BASE = ("Set the minimum number of ports and towns. A port lets you travel by ship. North band: the top part of "
+             "the map, in percent. Each map takes about %d seconds. Set brother conditions too, if you can.\n"
+             "The base game has no Map Options. Its map depends on the DLCs, so map conditions need all DLCs. "
+             "The map does not change the brothers." % MAP_SECONDS)
 OPTIONS_TITLE = ("Map Options. The program reads them from your saved Mod Options. You can change them, "
                  "for example to the Mod Options of a friend.")
 READ_BUTTON = "Read my Mod Options"
@@ -82,6 +87,16 @@ MAP_FATAL_ADVICE_BASE = ("Map conditions are off. Start the program again to tur
                          "Roster searches still work.")
 # The setup kinds the GUI passes (not the menu names): Legends, the base game ("Vanilla"), Modded (mods, no Legends).
 SETUP_KINDS = ("Legends", "Vanilla", "Modded")
+
+
+def help_text(setup):
+    """The Map view's help: Legends' names the Map Options; the base game's names the DLCs its map depends on."""
+    return HELP if setup == "Legends" else HELP_BASE
+
+
+def wait_text(setup):
+    """How long a map takes, as the texts say it: with Legends' default Map Options, or the base game's text."""
+    return WAIT if setup == "Legends" else WAIT_BASE
 
 
 def default_conditions():
@@ -288,8 +303,8 @@ def legends_version_from_files(mod_files):
 def view_state(setup, off, dlc_complete):
     """(do map conditions count?, the line that says why not - or None), for a SETUP_KINDS setup. Legends: always
     (the DLCs do not matter). The base game ("Vanilla"): only with every DLC (dlc_complete). Modded and any other
-    setup: never. `off` is a session that met a fatal map event: until the player changes a Map Option (Legends) or
-    starts the program again (the base game has none), the setup or the game folder changes."""
+    setup: never. `off` means a fatal map event in this session. On Legends a changed Map Option ends it; on the base
+    game a restart of the program ends it. A change of the setup or the game folder ends it on both."""
     if setup == "Legends":
         return (False, TURNED_OFF) if off else (True, None)
     if setup == "Vanilla":
@@ -343,12 +358,13 @@ def rate_text(rate):
     return "%.1f" % rate if rate < 10 else "%.0f" % rate
 
 
-def wait_note(odds):
-    """The note while the first maps are built, "" once there are MIN_MAPS."""
+def wait_note(odds, setup="Legends"):
+    """The note while the first maps are built, "" once there are MIN_MAPS. setup: the Map view's setup kind (the
+    base game's text has no Map Options)."""
     maps = odds.get("maps", 0)
     if maps >= MIN_MAPS:
         return ""
-    return "%s The estimate shows after %d maps. Maps built: %d." % (WAIT, MIN_MAPS, maps)
+    return "%s The estimate shows after %d maps. Maps built: %d." % (wait_text(setup), MIN_MAPS, maps)
 
 
 # ------------------------------------------------------------------ the picture

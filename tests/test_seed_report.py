@@ -281,3 +281,30 @@ def test_a_legends_post_and_a_vanilla_roster_post_keep_their_text():
         build_seed_report(*args, info_with_map_options(), "4.2.0", roster=ROSTER, game_map=MAP_9_PORTS)
     vanilla = dict(info_with_map_options(), legends=False, map_options={})
     assert build_seed_report(*args, vanilla, "4.2.0", roster=ROSTER) == TODAY_ANY_MAP
+
+
+def _base_game_info(**changes):
+    return dict(info_with_map_options(), legends=False, map_options={}, mods=[], version="Vanilla 1.5.2.3",
+                build_name=None, **changes)
+
+
+def test_a_base_game_post_names_the_dlcs_right_after_the_mods():
+    """Final review F2: a base-game map depends on the DLCs, so the post says whether every DLC is installed."""
+    text = build_seed_report("Trading Caravan", "", "0000000009", _base_game_info(dlc_complete=True), "4.2.0",
+                             roster=ROSTER)
+    assert "Game version: 1.5.2.3\nMods: none\nDLCs: all\n\nMap Options: any." in text
+    text = build_seed_report("Trading Caravan", "", "0000000009", _base_game_info(dlc_complete=False), "4.2.0",
+                             roster=ROSTER)
+    assert "Mods: none\nDLCs: not all installed\n\nMap Options: any." in text
+    text = build_seed_report("Trading Caravan", "", "0000000009", _base_game_info(dlc_complete=True), "4.2.0",
+                             game_map=MAP_9_PORTS)
+    assert "Mods: none\nDLCs: all\n\nMap: Ports 9 (south 2, north 3)" in text
+
+
+def test_the_dlc_line_is_for_the_base_game_only():
+    """A Legends post, and a report_info without the key (a search from before it), keep their text."""
+    legends = build_seed_report("Trading Caravan", "", "0000000009",
+                                dict(info_with_map_options(), legends=True, dlc_complete=True), "4.2.0", roster=ROSTER)
+    assert "DLCs:" not in legends
+    assert "DLCs:" not in build_seed_report("Trading Caravan", "", "0000000009", _base_game_info(), "4.2.0",
+                                            roster=ROSTER)

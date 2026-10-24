@@ -405,8 +405,25 @@ def test_the_time_of_a_map_is_the_time_with_the_default_map_options():
     assert "many minutes" in V.SLOW_OPTIONS and "Land Mass Ratio" in V.SLOW_OPTIONS and "Water" in V.SLOW_OPTIONS
 
 
-def test_the_help_text_says_the_base_game_has_no_map_options():
-    assert V.HELP.endswith("The Map Options do not change the brothers. The base game has no Map Options.")
+def test_the_help_text_of_legends_has_no_base_game_sentence():
+    assert V.HELP.endswith("The Map Options do not change the brothers.")
+    assert "base game" not in V.HELP
+
+
+def test_the_base_game_texts_name_no_map_options_and_need_the_dlcs():
+    """Final review F3: the base game has no Map Options and no Land Mass Ratio; its map depends on the DLCs."""
+    assert V.HELP_BASE == ("Set the minimum number of ports and towns. A port lets you travel by ship. North band: "
+                           "the top part of the map, in percent. Each map takes about 40 seconds. Set brother "
+                           "conditions too, if you can.\n"
+                           "The base game has no Map Options. Its map depends on the DLCs, so map conditions need "
+                           "all DLCs. The map does not change the brothers.")
+    assert V.WAIT_BASE == "Each map takes about 40 seconds."
+    assert V.help_text("Legends") == V.HELP and V.help_text("Vanilla") == V.HELP_BASE
+    assert V.wait_text("Legends") == V.WAIT and V.wait_text("Vanilla") == V.WAIT_BASE
+    assert "Land Mass" not in V.HELP_BASE + V.WAIT_BASE and "default Map Options" not in V.HELP_BASE + V.WAIT_BASE
+    assert V.wait_note({"maps": 0}, "Vanilla") == ("Each map takes about 40 seconds. "
+                                                   "The estimate shows after 30 maps. Maps built: 0.")
+    assert V.wait_note({"maps": 0}) == V.wait_note({"maps": 0}, "Legends")
 
 
 def test_the_tooltips_say_minimum_and_have_no_noun_stack():
@@ -424,8 +441,8 @@ def test_the_tooltips_say_minimum_and_have_no_noun_stack():
 
 
 def test_the_texts_follow_the_simplified_writing_rules():
-    for text in (V.HELP, V.NOT_VERIFIED, V.NEEDS_SETUP, V.NEEDS_ALL_DLC, V.TURNED_OFF, V.TURNED_OFF_BASE,
-                 V.MAP_FATAL_ADVICE, V.MAP_FATAL_ADVICE_BASE, V.WAIT, V.OPTIONS_TITLE,
+    for text in (V.HELP, V.HELP_BASE, V.WAIT_BASE, V.NOT_VERIFIED, V.NEEDS_SETUP, V.NEEDS_ALL_DLC, V.TURNED_OFF,
+                 V.TURNED_OFF_BASE, V.MAP_FATAL_ADVICE, V.MAP_FATAL_ADVICE_BASE, V.WAIT, V.OPTIONS_TITLE,
                  V.READ_BUTTON, V.OPTIONS_DIFFER, V.NO_SAVED_OPTIONS,
                  V.SLOW_OPTIONS, V.brother_estimate({"chance_brothers": 0.001, "tested": 500, "maps": 3}, True, False)):
         assert "n't" not in text and "'s " not in text and "criteria" not in text.lower(), text
