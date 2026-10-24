@@ -66,3 +66,29 @@ def test_failure_reasons_read_as_sentences():
     assert C.explain_failure("bro4 no_good_trait") == "Brother 4 has none of the required traits."
     assert C.explain_failure("no bro5 in this origin's roster") == "This origin has no brother 5."
     assert C.explain_failure("something else") == "something else"
+
+
+def test_map_failures_read_as_sentences():
+    """Final review M9: a checked seed's map failure (mapgen.failure) reads like the brothers' failures, for every
+    form failure() can return: the three port counts and the five town types."""
+    from bbseed import mapgen
+    assert C.explain_failure("Ports: 1, needs 4") == "Ports: the map has 1. The minimum is 4."
+    empty = {"size": [140, 170], "towns": []}
+    forms = [mapgen.failure(empty, {key: 3}) for key in mapgen.PORT_KEYS]
+    forms += [mapgen.failure(empty, {"towns": {key: 3}}) for key in mapgen.TOWN_TYPE_KEYS]
+    assert len(forms) == 8 and all(forms) and len(set(forms)) == 8
+    labels = list(mapgen.PORT_LABELS.values()) + list(mapgen.TOWN_TYPE_LABELS.values())
+    assert [C.explain_failure(form) for form in forms] == [
+        "%s: the map has 0. The minimum is 3." % label for label in labels]
+    assert C.explain_failure("City states: 2, needs 3") == "City states: the map has 2. The minimum is 3."
+    # roster failures keep their own forms, and a text that is no failure form stays as it is
+    assert C.explain_failure("bro2 msk*1<2") == "Brother 2 has 1 MSK stars. The minimum is 2."
+    assert C.explain_failure("Note: 2 maps, needs more") == "Note: 2 maps, needs more"
+
+
+def test_a_map_that_could_not_be_built_reads_as_a_sentence():
+    """Final review M3: the failure text a checked seed gets when its map run failed (mapgen.MAP_NOT_BUILT + reason)."""
+    from bbseed.mapgen import MAP_NOT_BUILT
+    text = C.explain_failure(MAP_NOT_BUILT + "map of seed '1234567890': the index '0' does not exist")
+    assert text == "The map could not be built: map of seed '1234567890': the index '0' does not exist"
+    assert len(C.explain_failure(MAP_NOT_BUILT + "x" * 500)) == len("The map could not be built: ") + 200

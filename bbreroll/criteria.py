@@ -12,6 +12,8 @@ A numeric slot row replaces the "*" row for that brother (it is not merged with 
 """
 import re
 
+from bbseed.mapgen import MAP_NOT_BUILT
+
 STATS = ["hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf"]
 
 # Legends-aware trait categorization. IDs are the game's `trait.X` skill IDs without the
@@ -113,6 +115,13 @@ def explain_failure(reason: str, display=None, background_names=None) -> str:
     m = re.match(r"no bro(\d+) in this origin's roster$", reason)
     if m:
         return "This origin has no brother %s." % m.group(1)
+    # the map conditions (mapgen.failure): "Ports: 1, needs 4", "Southern ports: ...", "Northern ports: ...", and
+    # "City states / Strongholds / Villages / Towns / Cities: n, needs m"
+    m = re.match(r"([A-Z][A-Za-z ]*): (\d+), needs (\d+)$", reason)
+    if m:
+        return "%s: the map has %s. The minimum is %s." % (m.group(1), m.group(2), m.group(3))
+    if reason.startswith(MAP_NOT_BUILT):        # a checked seed whose map run failed; the reason is the engine's
+        return "The map could not be built: %s" % reason[len(MAP_NOT_BUILT):][:200]
     return reason
 
 

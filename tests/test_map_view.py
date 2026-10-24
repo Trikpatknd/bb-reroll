@@ -184,6 +184,29 @@ def test_only_the_game_and_legends_the_maps_were_checked_against_are_verified():
     assert not V.verified(None, "19.4.22") and not V.verified("1.5.2.3", None)
 
 
+VERIFIED_ZIPS = ["mod_legends-19.4.22.zip", "mod_legends-assets-19.4.3.zip",
+                 "mod_modern_hooks-685-0-6-0-1748620177.zip", "mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip"]
+
+
+def test_any_mod_beyond_legends_msu_and_modern_hooks_makes_the_maps_not_verified():
+    """Final review I1 (b): HARMLESS_STUBS reviews the engine stand-ins for Legends + MSU + Modern Hooks only; another
+    mod may hook the map generator. The mods come as file names (the installed game) or as the workers' info["mods"]."""
+    assert V.verified("1.5.2.3", "19.4.22", VERIFIED_ZIPS)
+    assert V.verified("1.5.2.3", "19.4.22", ["mod_legends-19.4.22.zip"]), "extra mods count, missing ones do not"
+    assert V.verified("1.5.2.3", "19.4.22", [])
+    assert V.verified("1.5.2.3", "19.4.22", None), "mods not asked: only the versions count"
+    assert not V.verified("1.5.2.3", "19.4.22", VERIFIED_ZIPS + ["mod_jimmys_tooltips-1.0.5.zip"])
+    assert not V.verified("1.5.2.3", "19.4.22", VERIFIED_ZIPS + ["mod_legends_load_order_fix.zip"])
+    assert not V.verified("1.5.2.3", "19.4.22", ["mod_legends-19.4.22.zip", "mod_msu_extras-1.0.zip"])
+    assert not V.verified("1.5.3.0", "19.4.22", VERIFIED_ZIPS), "the versions still count"
+    info_mods = [{"file": z, "id": i, "name": "x", "version": "1"} for z, i in zip(
+        VERIFIED_ZIPS, ("mod_legends", "mod_legends_assets", "mod_modern_hooks", "mod_msu"))]
+    assert V.verified("1.5.2.3", "19.4.22", info_mods)
+    assert not V.verified("1.5.2.3", "19.4.22", info_mods + [{"file": "mod_other.zip", "id": None, "name": "mod_other",
+                                                            "version": None}])
+    assert not V.verified("1.5.2.3", "19.4.22", [{"id": "mod_other"}])
+
+
 def test_the_legends_version_is_read_from_the_mod_file_name():
     mods = ["mod_legends-19.4.22.zip", "mod_legends-assets-19.4.3.zip", "mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip"]
     assert V.legends_version_from_files(mods) == "19.4.22"
@@ -211,14 +234,38 @@ def test_the_fields_stay_open_while_the_conditions_are_off_so_a_map_option_can_b
 # ------------------------------------------------------------------ texts
 def test_the_help_text_names_the_map_time_and_the_map_options():
     assert V.HELP.startswith("Set the minimum number of ports and towns. A port lets you travel by ship. North band: "
-                             "the top part of the map, in percent. Each map takes about 40 seconds: set brother "
-                             "conditions too, if you can.")
+                             "the top part of the map, in percent. Each map takes about 40 seconds with the default "
+                             "Map Options. Set brother conditions too, if you can. A low Land Mass Ratio with a high "
+                             "Water value can make one map take many minutes.")
+    assert V.SLOW_OPTIONS in V.HELP
     assert "Mod Options" in V.HELP and "Map Options" in V.HELP
-    assert V.NOT_VERIFIED == "Map results are not verified for this game version."
+    assert V.NOT_VERIFIED == "Map results are not verified for this setup."
+
+
+def test_the_time_of_a_map_is_the_time_with_the_default_map_options():
+    """Final review M1: 40 s is with Legends' defaults; a low Land Mass Ratio with a high Water value took 352 s for
+    one map. Text only: there is no attempt cap."""
+    assert V.WAIT == "Each map takes about 40 seconds with the default Map Options."
+    assert "many minutes" in V.SLOW_OPTIONS and "Land Mass Ratio" in V.SLOW_OPTIONS and "Water" in V.SLOW_OPTIONS
+
+
+def test_the_tooltips_say_minimum_and_have_no_noun_stack():
+    """Final review 163: "minimum number", not "least number"; "Southern ports" counts the ports that are city states."""
+    assert set(V.CONDITION_TIPS) == set(V.CONDITION_LABELS)
+    assert V.CONDITION_TIPS["ports_south"] == ("The minimum number of city states that have a port. "
+                                               "City states are in the south.")
+    assert V.CONDITION_TIPS["ports"].startswith("The minimum number of ports on the map.")
+    assert V.CONDITION_TIPS["ports_north"].startswith("The minimum number of ports in the north band.")
+    assert V.town_tip("Strongholds") == "The minimum number of strongholds on the map."
+    assert [V.town_tip(label) for label in V.TOWN_LABELS.values()][0] == "The minimum number of city states on the map."
+    for text in list(V.CONDITION_TIPS.values()) + [V.town_tip(label) for label in V.TOWN_LABELS.values()]:
+        assert "least" not in text and "n't" not in text and "'s " not in text, text
+        assert all(len(sentence.split()) <= 25 for sentence in text.split(". ")), text
 
 
 def test_the_texts_follow_the_simplified_writing_rules():
-    for text in (V.HELP, V.NOT_VERIFIED, V.NEEDS_LEGENDS, V.TURNED_OFF, V.MAP_FATAL_ADVICE, V.WAIT, V.OPTIONS_TITLE):
+    for text in (V.HELP, V.NOT_VERIFIED, V.NEEDS_LEGENDS, V.TURNED_OFF, V.MAP_FATAL_ADVICE, V.WAIT, V.OPTIONS_TITLE,
+                 V.SLOW_OPTIONS, V.brother_estimate({"chance_brothers": 0.001, "tested": 500, "maps": 3}, True, False)):
         assert "n't" not in text and "'s " not in text and "criteria" not in text.lower(), text
         assert all(len(sentence.split()) <= 25 for sentence in text.replace("\n", " ").split(". ")), text
 
@@ -238,11 +285,36 @@ def test_the_estimate_waits_for_maps_not_for_seeds_when_maps_are_all_there_is():
 
 
 def test_the_note_while_the_first_maps_are_built():
-    assert V.wait_note({"maps": 0}) == ("Each map takes about 40 seconds. The estimate shows after 30 maps. "
-                                        "Maps built: 0.")
+    assert V.wait_note({"maps": 0}) == ("Each map takes about 40 seconds with the default Map Options. "
+                                        "The estimate shows after 30 maps. Maps built: 0.")
     assert V.wait_note({"maps": 12}).endswith("Maps built: 12.")
     assert V.wait_note({"maps": V.MIN_MAPS}) == ""
-    assert V.WAIT.startswith("Each map takes about 40 seconds.")
+    assert V.WAIT.startswith("Each map takes about 40 seconds")
+
+
+def test_brother_and_map_conditions_show_the_brothers_rate_until_the_maps_estimate_is_ready():
+    """Final review M7: rare brother conditions (1 in 5,000) need hours for 30 maps; the brothers' rate shows
+    meanwhile, with the number of maps built. It needs the same 100 seeds as a search for brothers alone."""
+    odds = {"chance_brothers": 0.0002, "tested": 12000, "maps": 3, "chance": 0.00004}
+    assert V.brother_estimate(odds, map_run=True, map_first=False) == (
+        "Approximately 1 in 5,000 seeds meets the brother conditions (from 12,000 seeds). Maps built: 3. "
+        "The estimate with the maps shows after 30 maps.")
+    assert V.brother_estimate(dict(odds, maps=0), True, False).count("Maps built: 0.") == 1
+    assert V.brother_estimate(dict(odds, chance_brothers=0.5, tested=100), True, False).startswith(
+        "Approximately 1 in 2 seeds meets")
+    assert V.brother_estimate(dict(odds, tested=99), True, False) == "", "100 seeds first, as for the brothers alone"
+    assert V.brother_estimate(dict(odds, maps=V.MIN_MAPS), True, False) == "", "the full estimate speaks from here"
+    assert V.brother_estimate(odds, map_run=True, map_first=True) == "", "map conditions alone: no brothers"
+    assert V.brother_estimate(odds, map_run=False, map_first=False) == "", "no map conditions: the usual estimate"
+    assert V.brother_estimate(dict(odds, chance_brothers=0.0), True, False) == "", "never met: the notices speak"
+    assert V.brother_estimate(dict(odds, chance_brothers=None), True, False) == ""
+    assert V.brother_estimate({}, True, False) == ""
+
+
+def test_the_watch_line_shows_a_decimal_below_ten_seeds_a_second():
+    """Final review M2: a search with maps tests about 0.14 seeds a second, which "0/s" showed as stuck."""
+    assert [V.rate_text(r) for r in (0.0, 0.14, 0.96, 3.0, 9.94)] == ["0.0", "0.1", "1.0", "3.0", "9.9"]
+    assert [V.rate_text(r) for r in (10, 12.4, 12.6, 250.0)] == ["10", "12", "13", "250"]
 
 
 # ------------------------------------------------------------------ the picture

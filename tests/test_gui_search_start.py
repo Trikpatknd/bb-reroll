@@ -181,6 +181,7 @@ def map_app(app):
     def reset():
         app._map_off = False
         app._map_versions = (None, None)
+        app._map_mods = None
         if app.setup_var.get() != "Legends":        # (rebuilding the grids takes a second: only when needed)
             app.setup_var.set("Legends")
             app._on_setup_change()
@@ -798,7 +799,8 @@ def test_the_estimate_waits_for_the_first_maps_and_a_missing_chance_shows_nothin
     app._run = dict(RUN, map={"ports": 3}, map_first=True)
     odds = {"chance": None, "tested": 4, "maps": 4}
     assert app._odds_text(odds, 0.1) == ""
-    assert app._wait_text(odds) == "Each map takes about 40 seconds. The estimate shows after 30 maps. Maps built: 4."
+    assert app._wait_text(odds) == ("Each map takes about 40 seconds with the default Map Options. "
+                                    "The estimate shows after 30 maps. Maps built: 4.")
     assert app._odds_text({"chance": None, "tested": 30, "maps": 30}, 0.1) == "", "no chance, no estimate"
     assert app._wait_text({"chance": None, "tested": 30, "maps": 30}) == ""
     app._run = dict(RUN)
@@ -820,12 +822,20 @@ def test_the_progress_of_a_map_search_shows_the_wait_note_and_the_never_notice(m
     app._search_total = 1000
     app._ev_progress((6, 90.0, 0, {"chance": None, "never": [], "never_any": False, "never_map": False,
                                    "maps": 6, "tested": 6}))
-    assert app.status_var.get() == "Each map takes about 40 seconds. The estimate shows after 30 maps. Maps built: 6."
-    app._ev_progress((25, 300.0, 0, {"chance": 0.0, "never": [], "never_any": False, "never_map": True,
-                                     "maps": 25, "tested": 25}))
-    assert "No map met the map conditions in 25 maps" in app.notice_var.get()
-    app._ev_finished((25, 300.0, 0, False))
-    assert app.notice_var.get().startswith("No seed matched in 25 seeds. No map met the map conditions.")
+    assert app.status_var.get() == ("Each map takes about 40 seconds with the default Map Options. "
+                                    "The estimate shows after 30 maps. Maps built: 6.")
+    never = lambda maps: {"chance": 0.0, "never": [], "never_any": False, "never_map": True,       # noqa: E731
+                          "maps": maps, "tested": maps}
+    # Final review I2: valid conditions can be rare (6 or more ports: 4 % of the maps), so 20 maps without a hit
+    # say nothing; at 100 the notice says the maps are rare and that the search goes on
+    app._ev_progress((99, 3000.0, 0, never(99)))
+    assert app.notice_var.get() == ""
+    app._ev_progress((100, 3050.0, 0, never(100)))
+    assert app.notice_var.get() == ("No map met the map conditions in 100 maps. Maps like this are rare. "
+                                    "The search continues.")
+    assert "Possibly" not in app.notice_var.get() and "no seed matches" not in app.notice_var.get().lower()
+    app._ev_finished((100, 3050.0, 0, False))
+    assert app.notice_var.get().startswith("No seed matched in 100 seeds. No map met the map conditions.")
 
 
 def test_a_self_test_spec_sets_the_map_fields(map_app):
@@ -835,3 +845,131 @@ def test_a_self_test_spec_sets_the_map_fields(map_app):
     assert app.map_option_vars["Settlements"].get() == "24" and app.map_option_vars["StackCitadels"].get() == "Yes"
     app._set_map_fields(None, None)
     assert app.map_vars["ports"].get() == "0" and app.map_option_vars["Settlements"].get() == "19"
+
+
+# ---- the final fix wave (final review of map search stage 1)
+ZIPS = ["mod_legends-19.4.22.zip", "mod_legends-assets-19.4.3.zip", "mod_modern_hooks-685-0-6-0-1748620177.zip",
+        "mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip"]
+IDS = ("mod_legends", "mod_legends_assets", "mod_modern_hooks", "mod_msu")
+
+
+def worker_info(mods):
+    return {"legends_version": "19.4.22", "game_version": "1.5.2.3", "map_options": {}, "mods": mods}
+
+
+def worker_mods(*extra):
+    return [{"file": z, "id": i, "name": i, "version": "1"} for z, i in zip(ZIPS, IDS)] + [
+        {"file": f, "id": None, "name": f[:-4], "version": None} for f in extra]
+
+
+def test_a_mod_beyond_legends_msu_and_modern_hooks_shows_the_not_verified_note(map_app, monkeypatch):
+    """Final review I1 (b): another mod can hook the map generator, so its maps are not verified. The mods of the
+    installed game decide before a search; the mods the workers report win once a search has started."""
+    from bbreroll import map_view
+    from bbreroll import offline_origins as O
+    app = map_app
+    monkeypatch.setitem(O.FOUND, "mods", ZIPS)
+    app._apply_map_state()
+    assert app.map_note_var.get() == ""
+    monkeypatch.setitem(O.FOUND, "mods", ZIPS + ["mod_jimmys_tooltips-1.0.5.zip"])
+    app._apply_map_state()
+    assert app.map_note_var.get() == map_view.NOT_VERIFIED == "Map results are not verified for this setup."
+    assert app.map_note.grid_info()
+    # the workers loaded the verified set: the note goes; they loaded one more mod: it comes back
+    app._run = dict(RUN)
+    app._ev_ready((1, 1, worker_info(worker_mods())))
+    assert app.map_note_var.get() == ""
+    app._ev_ready((1, 1, worker_info(worker_mods("mod_other.zip"))))
+    assert app.map_note_var.get() == map_view.NOT_VERIFIED
+    # a game folder change forgets what the last search reported
+    monkeypatch.setitem(O.FOUND, "mods", ZIPS)
+    app._map_mods = None
+    app._apply_map_state()
+    assert app.map_note_var.get() == ""
+
+
+def test_the_watch_line_shows_a_decimal_below_ten_seeds_a_second(map_app):
+    """Final review M2: a search with maps tests about 0.14 seeds a second; "0/s" looked stuck."""
+    app = map_app
+    app._run = dict(RUN, map={"ports": 9}, map_first=True)
+    app._search_total = 1000
+    app._ev_progress((3, 21.0, 0, {}))
+    assert app.watch_var.get().startswith("Searching: 3 of 1,000 seeds, 0.1/s, ")
+    app._ev_progress((600, 20.0, 0, {}))
+    assert app.watch_var.get().startswith("Searching: 600 of 1,000 seeds, 30/s, ")
+    app._ev_progress((50, 10.0, 0, {}))
+    assert app.watch_var.get().startswith("Searching: 50 of 1,000 seeds, 5.0/s, ")
+
+
+def test_brother_and_map_conditions_show_the_brothers_rate_until_30_maps_are_built(map_app):
+    """Final review M7: rare brother conditions need hours for 30 maps; meanwhile the status line shows the brothers'
+    rate with the number of maps built. Before 100 seeds and from 30 maps the old texts speak."""
+    app = map_app
+    app._run = dict(RUN, map={"ports": 5}, map_first=False)
+    app._search_total = 100000
+    odds = {"chance": None, "chance_brothers": 0.0002, "never": [], "never_any": False, "never_map": False,
+            "tested": 500, "maps": 0}
+    app._ev_progress((500, 10.0, 0, odds))
+    assert app.status_var.get() == ("Approximately 1 in 5,000 seeds meets the brother conditions (from 500 seeds). "
+                                    "Maps built: 0. The estimate with the maps shows after 30 maps.")
+    app._ev_progress((900, 20.0, 0, dict(odds, chance=0.0001, maps=7, tested=900)))
+    assert "(from 900 seeds). Maps built: 7." in app.status_var.get()
+    app._ev_progress((50, 5.0, 0, dict(odds, tested=50)))
+    assert app.status_var.get().startswith("Each map takes about 40 seconds with the default Map Options.")
+    app._ev_progress((6000, 100.0, 0, dict(odds, chance=0.00004, tested=6000, maps=30)))
+    assert app.status_var.get().startswith("Approximately 1 in 25,000 seeds matches (from 6,000 seeds, 30 maps).")
+    # map conditions alone have no brothers' rate
+    app._run = dict(RUN, map={"ports": 5}, map_first=True)
+    app._ev_progress((500, 10.0, 0, odds))
+    assert app.status_var.get().startswith("Each map takes about 40 seconds")
+
+
+def labels_of(widget, kind=ctk.CTkLabel):
+    """The texts of all labels (kind=ctk.CTkButton: of all buttons) below a widget."""
+    out = []
+    for child in widget.winfo_children():
+        if isinstance(child, kind):
+            out.append(str(child.cget("text")))
+        out += labels_of(child, kind)
+    return out
+
+
+def test_the_map_window_legend_and_the_tooltips_use_the_words_of_the_map_view_fields(map_app):
+    """Final review M8 and 163. The white circle is a village, town or city (the field "Towns" is size 2 only) and
+    the forts are strongholds; tooltips say "minimum"."""
+    from bbreroll import map_view
+    from bbseed import mapdraw
+    app = map_app
+    app._run = dict(RUN, north_band=33)
+    app._show_map(result(app, "2222222222", small_map()))
+    pump(app, lambda: False, 0.2)
+    texts = labels_of(next(iter(app._map_windows.values())))
+    for label in mapdraw.KIND_LABELS.values():
+        assert label in texts
+    assert "Village, town or city" in texts and "Stronghold" in texts and "City state" in texts and "Town" not in texts
+    assert "fort" not in " ".join(texts).lower()
+    assert not hasattr(app, "_MAP_TIPS"), "the tooltips live in map_view (unit-tested)"
+    assert all("least" not in tip for tip in map_view.CONDITION_TIPS.values())
+
+
+def test_a_checked_seed_whose_map_could_not_be_built_shows_its_roster_and_the_reason(map_app):
+    """Final review M3: the search reports the roster of a checked seed with the failure "map could not be built"
+    and no map; the window shows that card, not "See the results" over nothing."""
+    from bbseed.mapgen import MAP_NOT_BUILT
+    app = map_app
+    app._run = dict(RUN, checking=True, map={"ports": 4})
+    reason = "map of seed '1234567890': the index '0' does not exist"
+    app._ev_match({"seed": "1234567890", "roster": roster_of(), "stable": True, "failure": MAP_NOT_BUILT + reason,
+                   "map": None})
+    app._ev_error(reason)
+    app._ev_finished((1, 1.0, 1, False))
+    assert len(app._matches) == 1 and app.status_var.get() == "The seed check is complete. See the results."
+    texts = labels_of(app.match_list)
+    assert any("Checked: The map could not be built: " + reason in t for t in texts)
+    assert any("Bro 0" in t for t in texts), "the roster is there"
+    assert "Copy roster" in labels_of(app.match_list, ctk.CTkButton) and "Show map" not in labels_of(
+        app.match_list, ctk.CTkButton)
+    # a map failure of the conditions reads as a sentence too
+    app._ev_match({"seed": "1234567891", "roster": roster_of(), "stable": True, "failure": "Ports: 1, needs 4",
+                   "map": small_map()})
+    assert any("Checked: Ports: the map has 1. The minimum is 4." in t for t in labels_of(app.match_list))

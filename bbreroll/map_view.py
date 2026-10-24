@@ -16,13 +16,13 @@ import re
 
 from bbreroll.map_conditions import MAP_OPTION_DEFAULTS, TOWN_TYPES
 from bbseed import mapdraw
-from bbseed.mapgen import DEFAULT_NORTH_BAND
+from bbseed.mapgen import DEFAULT_NORTH_BAND, NOT_VERIFIED, VERIFIED_GAME, VERIFIED_LEGENDS, verified_setup  # noqa: F401
 
-# What the maps were checked against (CLAUDE.md engine fact 16): the game and the Legends version of Checkpoint B.
-VERIFIED_GAME = "1.5.2.3"
-VERIFIED_LEGENDS = "19.4.22"
-
-MAP_SECONDS = 40            # one map on one worker (bb_seedlab MODLOG "MAP SURVEY"); about 40 % more with 8 workers
+# One map on one worker with Legends' default Map Options (bb_seedlab MODLOG "MAP SURVEY"); about 40 % more with 8
+# workers. A low Land Mass Ratio with a high Water value makes the generator reject far more land / sea attempts: one
+# seed's map took 149 attempts and 352 s at Land Mass Ratio 45 with Water 42 (final review M1). There is no attempt
+# cap; the texts say so.
+MAP_SECONDS = 40
 MIN_MAPS = 30               # maps built before the "about 1 in N" estimate shows
 MIN_TESTED = 100            # seeds tested before it shows (as for the brothers alone)
 
@@ -31,6 +31,17 @@ CONDITION_LABELS = {"ports": "Ports", "ports_south": "Southern ports", "ports_no
                     "north_band": "North band (%)"}
 TOWN_LABELS = dict(TOWN_TYPES)
 COUNT_KEYS = ("ports", "ports_south", "ports_north")
+
+# The tooltips of the fields. "ports_south" counts the ports that are city states (mapgen.counts).
+CONDITION_TIPS = {"ports": "The minimum number of ports on the map. A port lets you travel by ship.",
+                  "ports_south": "The minimum number of city states that have a port. City states are in the south.",
+                  "ports_north": "The minimum number of ports in the north band. City states do not count here.",
+                  "north_band": "The top part of the map, in percent. A northern port is a port in this part."}
+
+
+def town_tip(label):
+    """The tooltip of a town field: 'The minimum number of strongholds on the map.'"""
+    return "The minimum number of %s on the map." % label.lower()
 
 # The Map Options page of Legends (mod_legends/register/modsettings.nut:16-25): the game's labels and ranges.
 OPTION_LABELS = {"LandRatio": "Land Mass Ratio", "Water": "Water", "Snowline": "Snowline", "Settlements": "Settlements",
@@ -42,13 +53,14 @@ YES_NO_OPTIONS = ("StackCitadels", "AllTradeLocations")
 YES, NO = "Yes", "No"
 
 # ------------------------------------------------------------------ texts (simplified writing rules)
-WAIT = "Each map takes about %d seconds." % MAP_SECONDS
+WAIT = "Each map takes about %d seconds with the default Map Options." % MAP_SECONDS
+SLOW_OPTIONS = "A low Land Mass Ratio with a high Water value can make one map take many minutes."
 HELP = ("Set the minimum number of ports and towns. A port lets you travel by ship. North band: the top part of the "
-        "map, in percent. Each map takes about %d seconds: set brother conditions too, if you can.\n"
+        "map, in percent. Each map takes about %d seconds with the default Map Options. Set brother conditions too, "
+        "if you can. %s\n"
         "The map depends on the Map Options of the game. Write the same values as in the Mod Options of the game "
-        "(Legends Mod, page Map Options). The Map Options do not change the brothers." % MAP_SECONDS)
+        "(Legends Mod, page Map Options). The Map Options do not change the brothers." % (MAP_SECONDS, SLOW_OPTIONS))
 OPTIONS_TITLE = "Map Options. Use the same values as in the Mod Options of the game."
-NOT_VERIFIED = "Map results are not verified for this game version."
 NEEDS_LEGENDS = "Map conditions need the Legends setup for now."
 TURNED_OFF = ("Map conditions are off. They did not work with this game setup. "
               "Change a Map Option to turn them on again.")
@@ -183,9 +195,11 @@ def from_settings(data):
 
 
 # ------------------------------------------------------------------ the game version and the view's state
-def verified(game_version, legends_version):
-    """Were maps of this game and Legends version checked against the real game?"""
-    return game_version == VERIFIED_GAME and legends_version == VERIFIED_LEGENDS
+def verified(game_version, legends_version, mods=None):
+    """Were maps of this game, this Legends version and this mod set checked against the real game? mods: the mod
+    zips (file names, or the workers' info["mods"]): any mod beyond Legends, MSU and Modern Hooks makes the maps
+    "not verified" (a mod can hook the map generator). None: only the versions count."""
+    return verified_setup(game_version, legends_version, mods)
 
 
 def legends_version_from_files(mod_files):
@@ -224,6 +238,27 @@ def estimate_ready(odds, map_run, map_first):
     if not map_run:
         return tested >= MIN_TESTED
     return maps >= MIN_MAPS and (map_first or tested >= MIN_TESTED)
+
+
+def brother_estimate(odds, map_run, map_first):
+    """The estimate for a run with brother AND map conditions until MIN_MAPS maps are built: how often a seed's
+    brothers meet their conditions (the rate of the roster sift, which a roster-only search shows after 100 seeds),
+    with the number of maps built so far. "" in any other case: the full estimate (estimate_ready) or the wait note
+    speaks. Rare brother conditions need hours for 30 maps; this keeps their rate in view meanwhile."""
+    if not map_run or map_first:
+        return ""
+    chance, maps = odds.get("chance_brothers"), odds.get("maps", 0)
+    if not chance or maps >= MIN_MAPS or odds.get("tested", 0) < MIN_TESTED:
+        return ""
+    return ("Approximately 1 in %s seeds meets the brother conditions (from %s seeds). Maps built: %d. "
+            "The estimate with the maps shows after %d maps." % (format(round(1 / chance), ","),
+                                                                 format(odds["tested"], ","), maps, MIN_MAPS))
+
+
+def rate_text(rate):
+    """Seeds per second for the watch line: one decimal below 10 (a search that builds maps tests 0.1 seeds a second:
+    "0/s" looked stuck), whole numbers from 10."""
+    return "%.1f" % rate if rate < 10 else "%.0f" % rate
 
 
 def wait_note(odds):

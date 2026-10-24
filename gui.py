@@ -414,7 +414,7 @@ class _MapWindow(ctk.CTkToplevel):
         def text(label):
             ctk.CTkLabel(legend, text=label, font=(FONT, 11), text_color=PALETTE["muted"]).pack(side="left", padx=(2, 12))
 
-        for kind, label in (("town", "Town"), ("military", "Stronghold"), ("southern", "City state")):
+        for kind, label in mapdraw.KIND_LABELS.items():
             chip(lambda c, k=kind: c.create_oval(4, 3, 14, 13, fill=mapdraw.TOWN_FILL[k], outline="#111111"))
             text(label)
         # the ring is dark blue: it needs a light plate (on the map it lies on the coast)
@@ -478,6 +478,7 @@ class App(ctk.CTk):
         self._map_off = False                           # a fatal map event turned map conditions off (until a Map
         self._map_fatal_notice = None                   # Option, the setup or the game folder changes); its notice
         self._map_versions = (None, None)               # the game and Legends version the workers reported
+        self._map_mods = None                           # the mod zips the workers reported (None: not yet)
         self._map_windows:           dict = {}          # (setup, origin, seed) -> the open map window
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
         self.required_vars: dict[str, ctk.BooleanVar] = {}
@@ -1165,13 +1166,8 @@ class App(ctk.CTk):
         self._rebuild_backgrounds_view(n, facts)
 
     # ── the Map view (the logic is in bbreroll/map_view.py) ──
-    _MAP_TIPS = {"ports": "The least number of ports on the map. A port lets you travel by ship.",
-                 "ports_south": "The least number of ports of the city states in the south.",
-                 "ports_north": "The least number of ports in the north band. City states do not count here.",
-                 "north_band": "The top part of the map, in percent. A northern port is a port in this part."}
-
     def _build_map_view(self, parent):
-        """The least ports and towns a map must have, and the Map Options of the game: the map depends on them."""
+        """The minimum ports and towns a map must have, and the Map Options of the game: the map depends on them."""
         frame = self.map_frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
         frame.grid_remove()
@@ -1193,9 +1189,9 @@ class App(ctk.CTk):
 
         top, towns = line(1), line(2)
         for key, label in map_view.CONDITION_LABELS.items():
-            entry(top, label, self.map_vars, key, conditions[key], self._MAP_TIPS[key])
+            entry(top, label, self.map_vars, key, conditions[key], map_view.CONDITION_TIPS[key])
         for key, label in map_view.TOWN_LABELS.items():
-            entry(towns, label, self.map_vars, key, conditions[key], f"The least number of {label.lower()} on the map.")
+            entry(towns, label, self.map_vars, key, conditions[key], map_view.town_tip(label))
         _hint(frame, map_view.OPTIONS_TITLE).grid(row=3, column=0, sticky="w", padx=4, pady=(6, 0))
         box = line(4)
         for key, label in map_view.OPTION_LABELS.items():
@@ -1225,12 +1221,13 @@ class App(ctk.CTk):
         self._apply_map_state()
 
     def _map_verified(self) -> bool:
-        """Were maps of this game and Legends version checked against the real game? The versions the workers
-        reported win over what the mod file names say."""
+        """Were maps of this game, Legends version and mod set checked against the real game? The versions and
+        the mods the workers reported win over what the mod file names say."""
         found = O.FOUND or {}
         game = self._map_versions[0] or found.get("game_version")
         legends = self._map_versions[1] or map_view.legends_version_from_files(found.get("mods"))
-        return map_view.verified(game, legends)
+        mods = found.get("mods") if self._map_mods is None else self._map_mods
+        return map_view.verified(game, legends, mods)
 
     def _apply_map_state(self):
         """Open or close the fields and show the line that says why (not Legends, turned off, version)."""
@@ -1473,6 +1470,7 @@ class App(ctk.CTk):
         os.environ["BBSEED_GAME_DATA"] = chosen
         O.refresh()
         self._map_versions = (None, None)       # another game: the versions of the last search do not count
+        self._map_mods = None
         self._lift_map_lockout()                # and a map fatal of the other game does not count either
         self.setup_menu.configure(values=list(O.SETUPS))
         if self.setup_var.get() not in O.SETUPS:
@@ -1769,9 +1767,12 @@ class App(ctk.CTk):
         }
         if legends:
             self._map_versions = (info.get("game_version"), legends)
+            if info.get("mods") is not None:
+                self._map_mods = info["mods"]
             self._apply_map_state()
 
     def _ev_progress(self, payload):
+        from bbseed.search import MAP_NEVER_MAPS
         tested, secs, _found = payload[:3]
         odds = payload[3] if len(payload) > 3 else {}
         self._set_watch_state("running")
@@ -1779,7 +1780,8 @@ class App(ctk.CTk):
         eta = ""
         if rate > 0 and self._search_total > tested and not self._run["checking"]:
             eta = f", {self._fmt_duration((self._search_total - tested) / rate)} or less to go"
-        self.watch_var.set(f"Searching: {tested:,} of {self._search_total:,} seeds, {rate:.0f}/s{eta}")
+        self.watch_var.set(f"Searching: {tested:,} of {self._search_total:,} seeds, "
+                           f"{map_view.rate_text(rate)}/s{eta}")
         if self._run["checking"]:
             return
         hint = self._odds_text(odds, rate)
@@ -1800,10 +1802,11 @@ class App(ctk.CTk):
             self._run["warned_never"] = True
             self._show_notice(f"No brother had the background of row Any brother in {odds['tested']:,} seeds. "
                               f"Possibly no seed matches. Select a different background.", kind="info")
-        elif odds.get("never_map") and odds.get("maps", 0) >= 20 and not self._run.get("warned_never"):
+        elif odds.get("never_map") and odds.get("maps", 0) >= MAP_NEVER_MAPS and not self._run.get("warned_never"):
+            # valid conditions can be rare (6 ports: 4 % of the maps): this is no sign that no seed matches
             self._run["warned_never"] = True
-            self._show_notice(f"No map met the map conditions in {odds['maps']:,} maps. Possibly no seed matches. "
-                              f"Use easier map conditions.", kind="info")
+            self._show_notice(f"No map met the map conditions in {odds['maps']:,} maps. Maps like this are rare. "
+                              f"The search continues.", kind="info")
         self._run["never_map"] = bool(odds.get("never_map"))
 
     def _wait_text(self, odds):
@@ -1816,7 +1819,8 @@ class App(ctk.CTk):
         chance, tested, maps = odds.get("chance"), odds.get("tested", 0), odds.get("maps", 0)
         map_run = bool(self._run.get("map"))
         if not chance or not map_view.estimate_ready(odds, map_run, self._run.get("map_first", False)):
-            return ""
+            # brother and map conditions: until enough maps are built, the rate of the brothers alone
+            return map_view.brother_estimate(odds, map_run, self._run.get("map_first", False))
         one_in = 1 / chance
         basis = f"{tested:,} seeds, {maps:,} maps" if map_run else f"{tested:,} seeds"
         text = f"Approximately 1 in {one_in:,.0f} seeds matches (from {basis})."
