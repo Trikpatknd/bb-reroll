@@ -9,8 +9,10 @@ no condition. A port is the game's own settlement flag IsCoastal. Southern ports
 rows, see mapgen.in_north_band).
 
 limits() is the most the scripts can place, not what maps usually have. limits(vanilla=True) is Vanilla's: its settlement
-lists have fixed Amounts (VANILLA_LISTS) and no Map Option acts on them; the two Vanilla maps the lab tests have exactly
-those numbers of towns. The survey (bb_seedlab MODLOG "MAP SURVEY
+lists have fixed Amounts (VANILLA_LISTS), and these are maxima: a list gives up after 3000 tries, so a map can have
+fewer towns. No Map Option acts on them. CHECKPOINT V (bb_seedlab MODLOG, 2026-10-24) found 19-22 towns on each of 40
+Vanilla maps: villages fell short on 18 of them, strongholds (6) and city states (3) were always complete.
+The survey (bb_seedlab MODLOG "MAP SURVEY
 (2026-10-19)"): 1,000 Legends 19.4.22 maps at the default Map Options, seeds 5000000000..5000000999; 997 finished
 (3 runs raised in guaranteeAllBuildingsInSettlements). min / median / p90 / max:
   ports 0 / 4 / 5 / 7 (limit 23); southern ports 0 / 0 / 1 / 3 (limit 3)
@@ -169,22 +171,33 @@ def _civil_fits(want, settlements):
     return True
 
 
-def problems(map_criteria, map_options=None):
-    """Map conditions no seed can meet with these Map Options (None: Legends' defaults), as texts for the GUI's
-    pre-search check; [] when the search can run."""
+def _maximum(label, most, asked, vanilla):
+    """The text of a condition above what one map can have. Vanilla has no Map Options to name."""
+    if vanilla:
+        return "%s: a map of the base game has a maximum of %d. Your condition is %d." % (label, most, asked)
+    return "%s: a map has a maximum of %d with these Map Options. Your condition is %d." % (label, most, asked)
+
+
+def problems(map_criteria, map_options=None, vanilla=False):
+    """Map conditions no seed can meet, as texts for the GUI's pre-search check; [] when the search can run.
+    Legends: with these Map Options (None: Legends' defaults). vanilla=True: the base game's maxima
+    (limits(vanilla=True)); it has no Map Options, so none are read, and no joint check runs (each of its lists
+    makes one town type)."""
     c = map_criteria or {}
-    raw = _settlements_raw(map_options)
-    settlements = _settlements_value(raw)
-    if settlements is None:
-        return ["Settlements: set a value from %d to %d. Your value is %s." % (*SETTLEMENTS_RANGE, raw)]
-    lim = limits({"Settlements": settlements})
+    if vanilla:
+        lim, settlements = limits(vanilla=True), None
+    else:
+        raw = _settlements_raw(map_options)
+        settlements = _settlements_value(raw)
+        if settlements is None:
+            return ["Settlements: set a value from %d to %d. Your value is %s." % (*SETTLEMENTS_RANGE, raw)]
+        lim = limits({"Settlements": settlements})
     out = []
     want = {key: c.get(key) or 0 for key in PORT_KEYS}
     want_towns = {key: (c.get("towns") or {}).get(key) or 0 for key in TOWN_TYPE_KEYS}
     for key in PORT_KEYS:
         if want[key] > lim[key]:
-            out.append("%s: a map has a maximum of %d with these Map Options. Your condition is %d."
-                       % (PORT_LABELS[key], lim[key], want[key]))
+            out.append(_maximum(PORT_LABELS[key], lim[key], want[key], vanilla))
     if want["ports"] and want["ports_south"] and want["ports_north"] \
             and want["ports_south"] + want["ports_north"] > want["ports"]:
         out.append("Ports: southern and northern ports are also ports. Set ports to %d or more. Your condition is %d."
@@ -198,8 +211,9 @@ def problems(map_criteria, map_options=None):
     for key in TOWN_TYPE_KEYS:
         if want_towns[key] > lim["towns"][key]:
             over = True
-            out.append("%s: a map has a maximum of %d with these Map Options. Your condition is %d."
-                       % (TOWN_TYPES[key], lim["towns"][key], want_towns[key]))
+            out.append(_maximum(TOWN_TYPES[key], lim["towns"][key], want_towns[key], vanilla))
+    if vanilla:             # each Vanilla list makes one town type: the maxima hold together
+        return out
     civil = {size: want_towns["size%d" % size] for size in (1, 2, 3)}
     if not over and not _civil_fits(civil, settlements):
         out.append("Villages, Towns and Cities: a map cannot have all of these together with these Map Options.")

@@ -24,7 +24,7 @@ import sys
 import threading
 from pathlib import Path
 
-from . import mapgen, profiles
+from . import gamedata, mapgen, profiles
 from .engine import Engine
 from .sq import runtime as R
 from .sq.runtime import SqError, SqTable, call, tostring
@@ -290,10 +290,12 @@ class Lab:
     def info(self):
         """What a seed found here is valid for: the game setup the lab loaded. "map_options": the values of
         MAP_OPTION_KEYS this lab uses ({key: int or bool}); a setting the game does not have is left out, so a game
-        without Legends or without MSU gives {}."""
+        without Legends or without MSU gives {}. "dlc_complete": whether the installed game (the data folder the lab
+        reads by default, gamedata.game_data_dir) has every DLC file, as Vanilla maps need."""
         root = self.eng.root.d
         out = {"profile": self.profile, "game_version": self.eng.game_version, "legends_version": None,
-               "legends_build": None, "battle_sisters": None, "mods": self.mods(), "map_options": {}}
+               "legends_build": None, "battle_sisters": None, "mods": self.mods(), "map_options": {},
+               "dlc_complete": gamedata.all_dlc()}
         legends = root.get("Legends")
         if type(legends) is SqTable:
             out["legends_version"] = legends.get("Version")

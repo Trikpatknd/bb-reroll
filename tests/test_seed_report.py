@@ -260,3 +260,24 @@ def test_the_lab_and_the_post_name_the_same_map_options():
     from bbseed.lab import MAP_OPTION_KEYS
     assert tuple(key for key, _label in _MAP_OPTION_LABELS) == MAP_OPTION_KEYS
     assert tuple(map_conditions.MAP_OPTION_DEFAULTS) == MAP_OPTION_KEYS
+
+
+def test_a_vanilla_map_post_says_the_base_game_has_no_map_options():
+    """The base game has no Map Options (report_info legends False): one line after the Map line, no block."""
+    info = dict(info_with_map_options(), legends=False, map_options={}, version="Vanilla 1.5.2.3", build_name=None)
+    text = build_seed_report("Trading Caravan", "", "0000000009", info, "4.2.0", roster=ROSTER, game_map=MAP_9_PORTS)
+    assert "\nMap: Ports 9 (south 2, north 3) · 3 city states\n" \
+           "Map Options: none. The base game has no Map Options.\n\nFound with BB Reroll v4.2.0" in text
+    assert "Map Options:\n" not in text and "Land Mass Ratio" not in text and _ANY_MAP not in text
+    band = build_seed_report("Trading Caravan", "", "0000000009", info, "4.2.0", game_map=MAP_9_PORTS, north_band=50)
+    assert "· north band: the top 50 % of the map\nMap Options: none. The base game has no Map Options.\n" in band
+
+
+def test_a_legends_post_and_a_vanilla_roster_post_keep_their_text():
+    """legends True reads the same as the old key-less info; without a map a Vanilla post says "any" as before."""
+    args = ("Trading Caravan", "A port map", "0000000009")
+    legends = dict(info_with_map_options(), legends=True)
+    assert build_seed_report(*args, legends, "4.2.0", roster=ROSTER, game_map=MAP_9_PORTS) == \
+        build_seed_report(*args, info_with_map_options(), "4.2.0", roster=ROSTER, game_map=MAP_9_PORTS)
+    vanilla = dict(info_with_map_options(), legends=False, map_options={})
+    assert build_seed_report(*args, vanilla, "4.2.0", roster=ROSTER) == TODAY_ANY_MAP

@@ -127,6 +127,21 @@ def test_the_search_gets_exactly_the_seven_map_options():
     assert mod_settings["mod_legends:Settlements"] == 24 and mod_settings["mod_legends:StackCitadels"] is True
 
 
+def test_vanilla_sends_no_map_options():
+    """The base game has no Map Options: none are read, checked or sent to the search (Legends unchanged)."""
+    values = V.default_option_values()
+    assert V.mod_settings(values, "Vanilla") == {}
+    assert V.mod_settings(values, "Legends") == V.mod_settings(values) == {"mod_legends:" + k: v
+                                                                       for k, v in values.items()}
+    criteria, options, errors = V.build(texts(ports=3), option_texts(Settlements="abc", StackCitadels="maybe"),
+                                        vanilla=True)
+    assert criteria == {"ports": 3, "ports_south": 0, "ports_north": 0, "north_band": 33, "towns": {}}
+    assert options == {} and errors == []
+    criteria, options, errors = V.build(texts(ports="x"), option_texts(Settlements="abc"), vanilla=True)
+    assert (criteria, options) == (None, None) and errors == ["Ports must be a whole number of 0 or more."]
+    assert V.build(V.default_conditions(), option_texts(Settlements="abc"), vanilla=True) == (None, None, [])
+
+
 def test_the_settlements_option_changes_what_is_impossible():
     # Strongholds: at most 6 on a map with Settlements 19, at most 9 with 27 (map_conditions.limits)
     criteria, options19, _e = V.build(texts(military=8), V.default_options())
@@ -293,7 +308,17 @@ def test_only_the_game_and_legends_the_maps_were_checked_against_are_verified():
     assert V.verified("1.5.2.3", "19.4.22")
     assert not V.verified("1.5.2.3", "19.5.0")
     assert not V.verified("1.5.3.0", "19.4.22")
-    assert not V.verified(None, "19.4.22") and not V.verified("1.5.2.3", None)
+    assert not V.verified(None, "19.4.22") and not V.verified("1.5.2.3", None, None, False)
+
+
+def test_the_base_game_maps_need_every_dlc_and_no_mod():
+    """Vanilla maps (no Legends) are verified on game 1.5.2.3 with all DLCs and no mod (CHECKPOINT V)."""
+    assert V.verified("1.5.2.3", None)
+    assert V.verified("1.5.2.3", None, []) and V.verified("1.5.2.3", None, None, True)
+    assert not V.verified("1.5.2.3", None, None, False), "Vanilla needs every DLC"
+    assert not V.verified("1.5.2.3", None, [], False)
+    assert not V.verified("1.5.2.3", None, VERIFIED_ZIPS), "the Legends zips make it a Legends setup"
+    assert not V.verified("1.5.3.0", None) and not V.verified(None, None)
 
 
 VERIFIED_ZIPS = ["mod_legends-19.4.22.zip", "mod_legends-assets-19.4.3.zip",
@@ -329,18 +354,37 @@ def test_the_legends_version_is_read_from_the_mod_file_name():
 
 
 def test_the_view_state_says_why_the_fields_are_closed():
-    assert V.view_state(legends=True, off=False) == (True, None)
-    usable, line = V.view_state(legends=False, off=False)
-    assert not usable and line == "Map conditions need the Legends setup for now."
-    usable, line = V.view_state(legends=True, off=True)
+    assert V.view_state("Legends", False, True) == (True, None)
+    usable, line = V.view_state("Legends", True, True)
     assert not usable and line == ("Map conditions are off. They did not work with this game setup. "
                                    "Change a Map Option to turn them on again.")
-    assert V.view_state(legends=False, off=True)[0] is False
+    assert V.view_state("Legends", True, False)[0] is False
+    assert V.view_state("Legends", False, False) == (True, None), "Legends does not look at the DLCs"
+    assert V.view_state("Modded", False, True) == (False, V.NEEDS_SETUP)
+    assert V.view_state("Modded", True, True) == (False, V.NEEDS_SETUP), "whatever the DLCs and the switch"
+
+
+def test_view_state_vanilla_needs_all_dlc():
+    """Review Focus 4: Vanilla maps need every DLC; without them the view is closed and says why."""
+    assert V.view_state("Vanilla", False, False) == (False, V.NEEDS_ALL_DLC)
+    assert V.view_state("Vanilla", True, False) == (False, V.NEEDS_ALL_DLC), "the DLCs come first"
+    assert V.view_state("Vanilla", False, True) == (True, None)
+    assert V.view_state("Vanilla", True, True) == (False, V.TURNED_OFF_BASE)
+    assert V.view_state("Something else", False, True) == (False, V.NEEDS_SETUP)
+    assert V.SETUP_KINDS == ("Legends", "Vanilla", "Modded")
+    assert V.NEEDS_SETUP == "Map conditions need Legends, or the base game with all DLCs and no mods."
+    assert V.NEEDS_ALL_DLC == "Map conditions for the base game need all DLCs. Some DLCs are not installed."
+    assert V.TURNED_OFF_BASE == ("Map conditions are off. They did not work with this game setup. "
+                                 "Start the program again to turn them on.")
+    assert V.MAP_FATAL_ADVICE_BASE == ("Map conditions are off. Start the program again to turn them on. "
+                                       "Roster searches still work.")
 
 
 def test_the_fields_stay_open_while_the_conditions_are_off_so_a_map_option_can_be_changed():
-    assert V.fields_open(legends=True)
-    assert not V.fields_open(legends=False)
+    assert V.fields_open("Legends") and V.fields_open("Legends", dlc_complete=False)
+    assert V.fields_open("Vanilla") and V.fields_open("Vanilla", dlc_complete=True)
+    assert not V.fields_open("Vanilla", dlc_complete=False)
+    assert not V.fields_open("Modded")
 
 
 # ------------------------------------------------------------------ texts
@@ -361,6 +405,10 @@ def test_the_time_of_a_map_is_the_time_with_the_default_map_options():
     assert "many minutes" in V.SLOW_OPTIONS and "Land Mass Ratio" in V.SLOW_OPTIONS and "Water" in V.SLOW_OPTIONS
 
 
+def test_the_help_text_says_the_base_game_has_no_map_options():
+    assert V.HELP.endswith("The Map Options do not change the brothers. The base game has no Map Options.")
+
+
 def test_the_tooltips_say_minimum_and_have_no_noun_stack():
     """Final review 163: "minimum number", not "least number"; "Southern ports" counts the ports that are city states."""
     assert set(V.CONDITION_TIPS) == set(V.CONDITION_LABELS)
@@ -376,7 +424,8 @@ def test_the_tooltips_say_minimum_and_have_no_noun_stack():
 
 
 def test_the_texts_follow_the_simplified_writing_rules():
-    for text in (V.HELP, V.NOT_VERIFIED, V.NEEDS_LEGENDS, V.TURNED_OFF, V.MAP_FATAL_ADVICE, V.WAIT, V.OPTIONS_TITLE,
+    for text in (V.HELP, V.NOT_VERIFIED, V.NEEDS_SETUP, V.NEEDS_ALL_DLC, V.TURNED_OFF, V.TURNED_OFF_BASE,
+                 V.MAP_FATAL_ADVICE, V.MAP_FATAL_ADVICE_BASE, V.WAIT, V.OPTIONS_TITLE,
                  V.READ_BUTTON, V.OPTIONS_DIFFER, V.NO_SAVED_OPTIONS,
                  V.SLOW_OPTIONS, V.brother_estimate({"chance_brothers": 0.001, "tested": 500, "maps": 3}, True, False)):
         assert "n't" not in text and "'s " not in text and "criteria" not in text.lower(), text

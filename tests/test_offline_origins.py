@@ -25,7 +25,8 @@ def test_setups_follow_what_is_installed(monkeypatch):
         return dict(O.SETUPS), O.DEFAULT_SETUP
 
     try:
-        base = {"data": Path("X:/Battle Brothers/data"), "game_version": "1.5.2.3", "reroll_mod": []}
+        base = {"data": Path("X:/Battle Brothers/data"), "game_version": "1.5.2.3", "reroll_mod": [],
+                "dlc_complete": True}
         assert setups(None) == ({}, None)
         assert "cannot find Battle Brothers" in O.found_text() and O.reroll_mod_warning() is None
         assert O.found_short() == "Game not found"

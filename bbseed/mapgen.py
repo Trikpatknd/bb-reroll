@@ -342,9 +342,10 @@ VERIFIED_GAME = "1.5.2.3"
 VERIFIED_LEGENDS = "19.4.22"
 VERIFIED_MOD_IDS = ("mod_legends", "mod_legends_assets", "mod_msu", "mod_modern_hooks")
 NOT_VERIFIED = "Map results are not verified for this setup."
-# Vanilla maps (no Legends, no mod, every DLC installed: gamedata.all_dlc) are not checked against the game yet;
-# the in-game runs that check them set this to True (map-search stage 2, Task 9). Until then they are "not verified".
-VANILLA_MAPS_VERIFIED = False
+# Vanilla maps (no Legends, no mod, every DLC installed: gamedata.all_dlc) were checked against the game: 40 in-game
+# Trader maps on game 1.5.2.3 with all DLCs and no mod had the same towns, pre-road terrain and rosters as the lab's
+# (bb_seedlab MODLOG "CHECKPOINT V", 2026-10-24; map-search stage 2, Task 9).
+VANILLA_MAPS_VERIFIED = True
 
 
 def _plain(text):
@@ -374,7 +375,7 @@ def other_mods(mods):
 
 def verified_setup(game_version, legends_version, mods=None, dlc_complete=True):
     """Were maps of this game, this Legends version and this mod set checked against the real game? mods None: not
-    asked (only the versions count).
+    asked: for Legends only the versions count; for Vanilla None counts as no mod.
 
     legends_version None is the Vanilla setup: its maps are verified only once VANILLA_MAPS_VERIFIED is set, on the
     verified game version, with no mod at all (the verified Legends mods do not count here: MSU alone is not Vanilla)

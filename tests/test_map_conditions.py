@@ -208,6 +208,31 @@ def test_no_problem_without_conditions():
     assert M.problems({"ports": 0, "towns": {"size1": 0}}) == []
 
 
+def test_vanilla_problems_use_vanilla_limits():
+    """Vanilla's maxima (VANILLA_LISTS): 22 towns in all, 3 city states, 6 strongholds, 7 / 3 / 3 villages / towns /
+    cities. The Map Options are not read there, and no joint check runs (each list makes one town type)."""
+    assert M.problems({"ports": 22}, vanilla=True) == []
+    assert M.problems({"ports": 23}, vanilla=True) == [
+        "Ports: a map of the base game has a maximum of 22. Your condition is 23."]
+    assert M.problems({"towns": {"size1": 7}}, vanilla=True) == []
+    assert M.problems({"towns": {"size1": 8}}, vanilla=True) == [
+        "Villages: a map of the base game has a maximum of 7. Your condition is 8."]
+    assert M.problems({"towns": {"military": 6}}, vanilla=True) == []
+    assert M.problems({"towns": {"military": 7}}, vanilla=True) == [
+        "Strongholds: a map of the base game has a maximum of 6. Your condition is 7."]
+    assert M.problems({"towns": {"city_state": 3}}, vanilla=True) == []
+    assert M.problems({"towns": {"city_state": 4}}, vanilla=True) == [
+        "City states: a map of the base game has a maximum of 3. Your condition is 4."]
+    assert M.problems({"towns": {"size1": 7, "size2": 3, "size3": 3}}, vanilla=True) == []
+    assert M.problems({"ports": 3}, {"Settlements": 99}, vanilla=True) == [], "Vanilla has no Settlements"
+    assert M.problems({"ports": 2, "ports_south": 2, "ports_north": 1}, vanilla=True) == [
+        "Ports: southern and northern ports are also ports. Set ports to 3 or more. Your condition is 2."]
+    assert M.problems({"ports_north": 1}, vanilla=True) == []
+    assert M.problems({"ports_north": 1, "north_band": 0}, vanilla=True) == [
+        "North band: set a value from 1 to 99 for northern ports. Your value is 0."]
+    assert M.problems(None, vanilla=True) == [] and M.problems({}, vanilla=True) == []
+
+
 def test_villages_towns_and_cities_share_the_same_placements():
     """At Settlements 19 the village lists make 2 villages, 2 towns and 3 cities first, then 7 more of a random
     size: 9 villages or 10 cities can happen, but not both."""

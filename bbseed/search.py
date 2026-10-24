@@ -739,10 +739,12 @@ def map_report(seed, m, origin=None, profile=None, seconds=None):
 
 def _setup_note(info):
     """The console note for a run with maps on a setup whose maps nobody checked against the game (Lab.info() or a
-    worker's "ready" info: game 1.5.2.3, Legends 19.4.22 and no mod beyond the ones it needs, see
-    mapgen.verified_setup); None when the setup is the verified one. ASCII only."""
+    worker's "ready" info: game 1.5.2.3, Legends 19.4.22 and no mod beyond the ones it needs, or the base game with
+    every DLC and no mod, see mapgen.verified_setup); None when the setup is the verified one. An info without
+    "dlc_complete" counts as not verified for the base game. ASCII only."""
     from .mapgen import NOT_VERIFIED, verified_setup
-    if verified_setup(info.get("game_version"), info.get("legends_version"), info.get("mods") or []):
+    if verified_setup(info.get("game_version"), info.get("legends_version"), info.get("mods") or [],
+                      info.get("dlc_complete", False)):
         return None
     return NOT_VERIFIED
 

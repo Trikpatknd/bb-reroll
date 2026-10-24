@@ -682,6 +682,20 @@ def test_the_console_notes_an_unverified_setup_once_for_a_search_with_map_condit
         assert NOTE in run_cli_events(monkeypatch, capsys, ready, ["--origin", "trader_scenario", "--ports", "4"])
 
 
+def test_setup_note_for_vanilla_needs_every_dlc_and_fails_closed():
+    """The note is fail-closed: an info without "dlc_complete" is not verified for Vanilla (Lab.info() gives it)."""
+    assert S._setup_note({"game_version": "1.5.2.3", "legends_version": None, "mods": []}) == NOTE
+    assert S._setup_note({"game_version": "1.5.2.3", "legends_version": None, "mods": [],
+                          "dlc_complete": False}) == NOTE
+    assert S._setup_note({"game_version": "1.5.2.3", "legends_version": None, "mods": [],
+                          "dlc_complete": True}) is None
+    assert S._setup_note({"game_version": "1.5.2.3", "legends_version": None, "mods": ["mod_msu.zip"],
+                          "dlc_complete": True}) == NOTE
+    assert S._setup_note({"game_version": "1.5.2.3", "legends_version": "19.4.22", "mods": []}) is None
+    assert S._setup_note({"game_version": "1.5.2.3", "legends_version": "19.4.22", "mods": [],
+                          "dlc_complete": True}) is None
+
+
 def test_the_console_hint_for_a_map_search_that_found_no_map_waits_for_100_maps(monkeypatch, capsys):
     """Final review I2: 6 or more ports are 3.9 % of the maps, so 0 hits in 20 maps is normal (45 %) and 0 in 100
     is not (2 %). The hint says the maps are rare; it does not say that no seed matches."""

@@ -10,7 +10,8 @@ the map is made — they are the same whatever the Map Options are, so the post
 says so unless the caller knows the options and passes them.
 
 A search with map conditions passes the map of the seed (game_map, a map summary): the post then
-adds a 'Map:' line and always lists the Map Options, because the map depends on them.
+adds a 'Map:' line and always lists the Map Options, because the map depends on them. report_info "legends" False
+(the base game) has no Map Options: the post says so in one line instead.
 """
 
 from bbreroll.criteria import STATS
@@ -31,6 +32,7 @@ _MAP_OPTION_LABELS = [
 _BOOLEAN_KEYS = {"StackCitadels", "AllTradeLocations"}
 _UNKNOWN = "(unknown)"
 _ANY_MAP = "Map Options: any. They change the map, not the starting brothers."
+_NO_MAP_OPTIONS = "Map Options: none. The base game has no Map Options."     # report_info "legends" False
 
 
 def _yes_no(raw) -> str:
@@ -103,7 +105,9 @@ def build_seed_report(origin, description, seed, report_info, tool_version, rost
     with_map = game_map is not None
     if with_map:
         lines.append(_map_text(game_map, north_band))
-    if map_options or with_map:
+    if with_map and report_info.get("legends") is False:     # the base game: no Map Options to list
+        lines.append(_NO_MAP_OPTIONS)
+    elif map_options or with_map:
         lines.append("Map Options:")
         for key, label in _MAP_OPTION_LABELS:
             if key in map_options and not (with_map and map_options[key] is None):

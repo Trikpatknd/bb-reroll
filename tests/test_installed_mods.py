@@ -73,12 +73,18 @@ def test_the_summary_says_whether_every_dlc_is_there(tmp_path):
 
 
 def test_verified_setup_vanilla_is_off_until_verified(monkeypatch):
+    monkeypatch.setattr(mapgen, "VANILLA_MAPS_VERIFIED", False)
     assert mapgen.verified_setup("1.5.2.3", None, [], True) is False
     monkeypatch.setattr(mapgen, "VANILLA_MAPS_VERIFIED", True)
     assert mapgen.verified_setup("1.5.2.3", None, [], True) is True
     assert mapgen.verified_setup("1.5.2.3", None, [], False) is False
     assert mapgen.verified_setup("1.5.2.3", None, ["mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip"], True) is False
     assert mapgen.verified_setup("1.5.3.0", None, [], True) is False
+
+
+def test_vanilla_maps_are_verified_in_the_module():
+    """Gate A3 (bb_seedlab MODLOG "CHECKPOINT V", 2026-10-24): 40 Vanilla maps and rosters matched the game."""
+    assert mapgen.VANILLA_MAPS_VERIFIED is True
 
 
 def test_verified_setup_legends_is_as_before_and_ignores_the_dlc():

@@ -12,6 +12,8 @@ Fields (all text, as the player typed them):
 The conditions go to the search as criteria["map"]; the options go to it as mod_settings["mod_legends:<Key>"]
 (mod_settings()) and into map_conditions.problems(). They matter only when a map condition is set: they never change
 the brothers, so a search without map conditions sends none.
+The base game (setup "Vanilla", every DLC, no mod) has the conditions only: it has no Map Options, so
+build(vanilla=True) reads none and mod_settings(options, "Vanilla") sends none.
 """
 import re
 
@@ -60,18 +62,26 @@ HELP = ("Set the minimum number of ports and towns. A port lets you travel by sh
         "map, in percent. Each map takes about %d seconds with the default Map Options. Set brother conditions too, "
         "if you can. %s\n"
         "The map depends on the Map Options of the game. The program reads them from your saved Mod Options "
-        "(Legends Mod, page Map Options). The Map Options do not change the brothers." % (MAP_SECONDS, SLOW_OPTIONS))
+        "(Legends Mod, page Map Options). The Map Options do not change the brothers. The base game has no Map Options."
+        % (MAP_SECONDS, SLOW_OPTIONS))
 OPTIONS_TITLE = ("Map Options. The program reads them from your saved Mod Options. You can change them, "
                  "for example to the Mod Options of a friend.")
 READ_BUTTON = "Read my Mod Options"
 OPTIONS_DIFFER = ("These Map Options are not the same as your saved Mod Options. Click Read my Mod Options to use the "
                   "saved values.")
 NO_SAVED_OPTIONS = "The program cannot read your saved Mod Options. It uses the values in the fields."
-NEEDS_LEGENDS = "Map conditions need the Legends setup for now."
+NEEDS_SETUP = "Map conditions need Legends, or the base game with all DLCs and no mods."
+NEEDS_ALL_DLC = "Map conditions for the base game need all DLCs. Some DLCs are not installed."
 TURNED_OFF = ("Map conditions are off. They did not work with this game setup. "
               "Change a Map Option to turn them on again.")
+TURNED_OFF_BASE = ("Map conditions are off. They did not work with this game setup. "
+                   "Start the program again to turn them on.")
 MAP_FATAL_ADVICE = ("Map conditions are off. Change a Map Option in the Map view to turn them on again. "
                     "Roster searches still work.")
+MAP_FATAL_ADVICE_BASE = ("Map conditions are off. Start the program again to turn them on. "
+                         "Roster searches still work.")
+# The setup kinds the GUI passes (not the menu names): Legends, the base game ("Vanilla"), Modded (mods, no Legends).
+SETUP_KINDS = ("Legends", "Vanilla", "Modded")
 
 
 def default_conditions():
@@ -94,7 +104,27 @@ def _whole(text):
     return int(text) if re.fullmatch(r"[0-9]+", text) else None
 
 
-def build(conditions, options):
+def _parsed_options(options):
+    """(the seven Map Options as numbers and booleans, errors) from their texts, against the game's ranges."""
+    parsed, errors = {}, []
+    for key, label in OPTION_LABELS.items():
+        text = str((options or {}).get(key, "")).strip()
+        if key in YES_NO_OPTIONS:
+            if text in (YES, NO):
+                parsed[key] = text == YES
+            else:
+                errors.append("%s must be %s or %s." % (label, YES, NO))
+            continue
+        low, high = OPTION_RANGES[key]
+        n = _whole(text)
+        if n is not None and low <= n <= high:
+            parsed[key] = n
+        else:
+            errors.append("%s must be a whole number from %d to %d." % (label, low, high))
+    return parsed, errors
+
+
+def build(conditions, options, vanilla=False):
     """(map criteria, Map Options, errors) from the fields.
 
     No map condition set (and no error): (None, None, []) - the search then has no map and sends no Map Options.
@@ -102,6 +132,8 @@ def build(conditions, options):
     a number from 1 to 99 (blank = the default), "towns" with the town types above 0. The options are the seven
     values as numbers and booleans for map_conditions.problems() and mod_settings(); they are checked against the
     game's ranges only now, because without a map condition they are not used.
+    vanilla=True (the base game, which has no Map Options): the options are not read or checked, and the second value
+    is {}; the errors are the conditions' only.
     Errors (texts for the player, in the order of the fields): then criteria and options are None."""
     counts, bad = {}, {}
     for key in list(COUNT_KEYS) + list(TOWN_LABELS):
@@ -120,21 +152,7 @@ def build(conditions, options):
     if not band_ok:
         errors.append("%s must be a whole number from 1 to 99." % CONDITION_LABELS["north_band"])
     errors += [bad[key] for key in TOWN_LABELS if key in bad]
-    parsed, option_errors = {}, []
-    for key, label in OPTION_LABELS.items():
-        text = str((options or {}).get(key, "")).strip()
-        if key in YES_NO_OPTIONS:
-            if text in (YES, NO):
-                parsed[key] = text == YES
-            else:
-                option_errors.append("%s must be %s or %s." % (label, YES, NO))
-            continue
-        low, high = OPTION_RANGES[key]
-        n = _whole(text)
-        if n is not None and low <= n <= high:
-            parsed[key] = n
-        else:
-            option_errors.append("%s must be a whole number from %d to %d." % (label, low, high))
+    parsed, option_errors = ({}, []) if vanilla else _parsed_options(options)
     errors += option_errors
     if errors:
         return None, None, errors
@@ -166,8 +184,11 @@ def fields_from_spec(map_criteria, options):
     return conditions, texts
 
 
-def mod_settings(options):
-    """The Map Options as the search takes them: exactly the seven keys, "mod_legends:<Key>"."""
+def mod_settings(options, setup="Legends"):
+    """The Map Options as the search takes them: exactly the seven keys, "mod_legends:<Key>". The base game
+    (setup "Vanilla") has no Map Options: {} for it, and for any setup but Legends."""
+    if setup != "Legends":
+        return {}
     return {"mod_legends:" + key: value for key, value in options.items()}
 
 
@@ -246,11 +267,12 @@ def fill_at_startup(settings, current, saved):
 
 
 # ------------------------------------------------------------------ the game version and the view's state
-def verified(game_version, legends_version, mods=None):
+def verified(game_version, legends_version, mods=None, dlc_complete=True):
     """Were maps of this game, this Legends version and this mod set checked against the real game? mods: the mod
     zips (file names, or the workers' info["mods"]): any mod beyond Legends, MSU and Modern Hooks makes the maps
-    "not verified" (a mod can hook the map generator). None: only the versions count."""
-    return verified_setup(game_version, legends_version, mods)
+    "not verified" (a mod can hook the map generator). None: only the versions count. Vanilla (legends_version None)
+    needs dlc_complete and no mod at all."""
+    return verified_setup(game_version, legends_version, mods, dlc_complete)
 
 
 def legends_version_from_files(mod_files):
@@ -263,21 +285,30 @@ def legends_version_from_files(mod_files):
     return None
 
 
-def view_state(legends, off):
-    """(do map conditions count?, the line that says why not - or None). The maps are made for Legends only; `off`
-    is a session that met a fatal map event, until the player changes a Map Option, the setup or the game folder."""
-    if not legends:
-        return False, NEEDS_LEGENDS
-    if off:
-        return False, TURNED_OFF
-    return True, None
+def view_state(setup, off, dlc_complete):
+    """(do map conditions count?, the line that says why not - or None), for a SETUP_KINDS setup. Legends: always
+    (the DLCs do not matter). The base game ("Vanilla"): only with every DLC (dlc_complete). Modded and any other
+    setup: never. `off` is a session that met a fatal map event: until the player changes a Map Option (Legends) or
+    starts the program again (the base game has none), the setup or the game folder changes."""
+    if setup == "Legends":
+        return (False, TURNED_OFF) if off else (True, None)
+    if setup == "Vanilla":
+        if not dlc_complete:
+            return False, NEEDS_ALL_DLC
+        return (False, TURNED_OFF_BASE) if off else (True, None)
+    return False, NEEDS_SETUP
 
 
-def fields_open(legends):
+def fields_open(setup, dlc_complete=True):
     """May the player type in the fields? On Legends always, also while map conditions are off: the player must be
     able to change a Map Option, which turns them on again (the extreme Land Mass Ratio and Water values can make
-    a map that the game never finishes). Vanilla and Modded have no map to set."""
-    return bool(legends)
+    a map that the game never finishes). On the base game the fields are the conditions only (it has no Map
+    Options), open with every DLC. Modded has no map to set."""
+    if setup == "Legends":
+        return True
+    if setup == "Vanilla":
+        return bool(dlc_complete)
+    return False
 
 
 # ------------------------------------------------------------------ the odds estimate while maps are built
