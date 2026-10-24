@@ -580,6 +580,40 @@ def test_the_map_window_has_north_at_the_top_and_the_band_line_where_mapdraw_put
     assert len(rings) == 2 and {canvas.itemcget(i, "outline") for i in rings} == {mapdraw.PORT_RING}
 
 
+def test_the_map_window_opens_on_top_of_the_main_window(map_app):
+    # 2026-10-24: Show map opened the window behind the main window. CTkToplevel hides and shows itself again to
+    # colour its title bar, and gives the focus back to the main window.
+    app = map_app
+    app._run = dict(RUN, north_band=33)
+    app.deiconify()
+    app.geometry("980x940+40+40")
+    try:
+        entry = result(app, "2222222222", small_map())
+        pump(app, lambda: False, 1.7)       # a match keeps the main window topmost for 1.5 s (_surface_window)
+        app.focus_force()
+        pump(app, lambda: False, 0.2)
+        app._show_map(entry)
+        window = next(iter(app._map_windows.values()))
+        pump(app, lambda: False, 1.0)
+        assert app.tk.eval(f"wm stackorder {window} isabove .") == "1"
+        app.lift()                                          # a second click brings it forward again
+        pump(app, lambda: False, 0.3)
+        app._show_map(entry)
+        pump(app, lambda: False, 0.5)
+        assert app.tk.eval(f"wm stackorder {window} isabove .") == "1"
+        # Show map at once after a new match (the main window is still topmost)
+        app._show_map(result(app, "3333333333", small_map()))
+        other = app._map_windows[(app._matches[0]["setup"], app._matches[0]["origin"], "3333333333")]
+        pump(app, lambda: False, 1.0)
+        assert app.tk.eval(f"wm stackorder {other} isabove .") == "1"
+    finally:
+        for window in list(app._map_windows.values()):
+            window.destroy()
+        app._clear_matches()
+        app.withdraw()
+        pump(app, lambda: False, 0.2)
+
+
 def test_a_second_click_brings_the_window_forward_and_closing_leaves_nothing(map_app):
     app = map_app
     app._run = dict(RUN, north_band=33)

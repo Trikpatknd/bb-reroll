@@ -369,6 +369,17 @@ class _MapWindow(ctk.CTkToplevel):
         self.update_idletasks()
         top = max(0, min(app.winfo_rooty() + 20, (screen_height or self.winfo_screenheight()) - self.winfo_reqheight() - 60))
         self.geometry(f"+{max(0, app.winfo_rootx() + 40)}+{top}")
+        # CTkToplevel hides and shows itself again in its first 200 ms (title bar colour, icon) and gives the focus
+        # back to the main window, which then covers the map: bring it forward after that.
+        self.after(250, self.bring_forward)
+
+    def bring_forward(self):
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
 
     def _forget(self, event):
         if event.widget is self and self._app._map_windows.get(self._key) is self:
@@ -2100,6 +2111,10 @@ class App(ctk.CTk):
         forward; a closed window leaves nothing behind (App._map_windows forgets it)."""
         if not entry.get("map"):
             return
+        try:        # a new match keeps the main window topmost for 1.5 s (_surface_window): it would cover the map
+            self.attributes("-topmost", False)
+        except Exception:
+            pass
         key = (entry["setup"], entry["origin"], entry["seed"])
         window = self._map_windows.get(key)
         try:
@@ -2107,9 +2122,7 @@ class App(ctk.CTk):
                 # The map depends on the Map Options and the picture on the north band, so the same seed found
                 # again can have another map: the window of the old one is not brought forward but replaced.
                 if window.summary is entry["map"] and window.band == entry.get("north_band"):
-                    window.deiconify()
-                    window.lift()
-                    window.focus_force()
+                    window.bring_forward()
                     return
                 window.destroy()
         except Exception:
