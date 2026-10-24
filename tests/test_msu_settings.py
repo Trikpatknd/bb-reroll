@@ -1,5 +1,6 @@
 """bbseed/msu_settings.py: MSU's saved Mod Options, read from files written here in MSU's format (no game needed).
 The check against the Map Options the game itself logged is bb_seedlab's tests/test_msu_settings_log.py."""
+import ctypes
 import struct
 from pathlib import Path
 
@@ -19,6 +20,8 @@ SEVEN = {"LandRatio": 55, "Water": 38, "Snowline": 85, "Settlements": 24, "Facti
 
 def encode(value):
     """One value in MSU's tagged format. The bool test comes first: True is an int in Python."""
+    if value is None:
+        return b"\x02"                                          # Null: the tag and nothing else
     if isinstance(value, bool):
         return b"\x03" + (b"\x01" if value else b"\x00")
     if isinstance(value, int):
@@ -108,3 +111,101 @@ def test_settings_path_uses_the_documents_folder():
 
 def test_default_settings_path_is_the_save_file():
     assert M.settings_path().parts[-3:] == ("Battle Brothers", "savegames", "MSU#mod_msu#ModSettings.sav")
+
+
+def test_null_values_elsewhere_do_not_lose_the_options(tmp_path):
+    tree = {"mod_other": {"Anything": None}, "mod_legends": {"Settlements": 24}}
+    assert M.parse(file_bytes(tree)) == tree
+    assert M.read_map_options(write(tmp_path, file_bytes(tree))) == {"Settlements": 24}
+
+
+def test_a_null_map_option_is_left_out(tmp_path):
+    tree = {"mod_legends": {"Settlements": 24, "Water": None}}
+    assert M.read_map_options(write(tmp_path, file_bytes(tree))) == {"Settlements": 24}
+
+
+@pytest.mark.parametrize("tag", [0, 1, 14, 99])     # None, Unknown, SerializationData, a tag MSU does not have
+def test_unknown_tags_stay_unreadable(tmp_path, tag):
+    good = file_bytes({"mod_legends": {"Settlements": 24}})
+    assert good.count(b"\x05\x18") == 1                 # Settlements 24 (U8)
+    data = good.replace(b"\x05\x18", bytes([tag, 0x18]))
+    with pytest.raises(M.SettingsFormatError):
+        M.parse(data)
+    assert M.read_map_options(write(tmp_path, data)) is None
+
+
+def test_a_latin1_string_elsewhere_keeps_the_options(tmp_path):
+    tree = {"mod_other": {"Note": "Xq1"}, "mod_legends": {"Settlements": 24}}
+    data = file_bytes(tree).replace(b"Xq1", b"Ca\xe9")          # the same length in Latin-1, not valid UTF-8
+    assert data != file_bytes(tree)
+    assert M.parse(data)["mod_other"]["Note"] == "Ca\ufffd"
+    assert M.read_map_options(write(tmp_path, data)) == {"Settlements": 24}
+
+
+class _FakeShell32:
+    """Stands in for ctypes.windll.shell32: SHGetKnownFolderPath answers `hr` and, when that is 0, `folder`."""
+
+    def __init__(self, folder=None, hr=0, error=None):
+        self.folder, self.hr, self.error = folder, hr, error
+        self.keep = []                                  # the wide string must outlive the call
+
+    def SHGetKnownFolderPath(self, guid, flags, token, out):
+        if self.error is not None:
+            raise self.error
+        if self.hr == 0:
+            buf = ctypes.create_unicode_buffer(self.folder)
+            self.keep.append(buf)
+            out.contents.value = ctypes.addressof(buf)
+        return self.hr
+
+
+class _FakeOle32:
+    def CoTaskMemFree(self, ptr):
+        pass
+
+
+class _FakeWindll:
+    def __init__(self, shell32):
+        self.shell32 = shell32
+        self.ole32 = _FakeOle32()
+
+
+def fake_windows(monkeypatch, **answer):
+    monkeypatch.setattr(ctypes, "windll", _FakeWindll(_FakeShell32(**answer)), raising=False)
+
+
+def test_documents_dir_is_the_folder_windows_gives(monkeypatch):
+    fake_windows(monkeypatch, folder="D:\\OneDrive\\Docs")
+    assert M.documents_dir() == Path("D:\\OneDrive\\Docs")
+
+
+def test_documents_dir_falls_back_when_windows_refuses(monkeypatch):
+    fake_windows(monkeypatch, hr=-2147024894)           # E_FAIL
+    assert M.documents_dir() == Path.home() / "Documents"
+
+
+def test_documents_dir_falls_back_without_windll(monkeypatch):
+    monkeypatch.delattr(ctypes, "windll", raising=False)
+    assert M.documents_dir() == Path.home() / "Documents"
+
+
+def test_documents_dir_falls_back_when_the_call_raises(monkeypatch):
+    fake_windows(monkeypatch, error=ctypes.ArgumentError("bad argument"))
+    assert M.documents_dir() == Path.home() / "Documents"
+
+
+def test_a_windows_answer_needs_no_home_folder(monkeypatch):
+    def no_home(cls):
+        raise RuntimeError("no home folder")
+    fake_windows(monkeypatch, folder="D:\\OneDrive\\Docs")
+    monkeypatch.setattr(Path, "home", classmethod(no_home))
+    assert M.documents_dir() == Path("D:\\OneDrive\\Docs")
+
+
+def test_read_map_options_never_raises(tmp_path, monkeypatch):
+    def broken_documents(documents=None):
+        raise RuntimeError("no home folder")
+    monkeypatch.setattr(M, "documents_dir", broken_documents)
+    assert M.read_map_options() is None
+    assert M.read_map_options(tmp_path) is None         # a folder, not a file
+    assert M.read_map_options(write(tmp_path, file_bytes({"mod_legends": {"Settlements": 24}}))) == {"Settlements": 24}

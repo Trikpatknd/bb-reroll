@@ -16,8 +16,9 @@ SAVE_FILE = "MSU#mod_msu#ModSettings.sav"
 SAVE_NAME = b"MSU#mod_msu#ModSettings"          # the name MSU writes into the header
 HEADER_START = b"\xbb\x00\x02"                  # the first three bytes of the serialization header
 
-# The serialization's tags (MSU's msu/utils/serialization.nut). Numbers: U8 U16 U32 I8 I16 I32 F32.
-TAG_BOOL, TAG_STRING, TAG_TABLE, TAG_ARRAY = 3, 4, 12, 13
+# MSU's DataType tags (msu/utils/serialization.nut). Read: Null (no payload), Bool, String, Table, Array and the
+# numbers U8 U16 U32 I8 I16 I32 F32. Not read: None 0, Unknown 1, SerializationData 14, and any other tag.
+TAG_NULL, TAG_BOOL, TAG_STRING, TAG_TABLE, TAG_ARRAY = 2, 3, 4, 12, 13
 NUMBER_TAGS = {5: "<B", 6: "<H", 7: "<I", 8: "<b", 9: "<h", 10: "<i", 11: "<f"}
 MAX_DEPTH = 16                                  # the file nests three levels; deeper input is refused
 
@@ -55,17 +56,15 @@ class _Reader:
             raise SettingsFormatError("nested deeper than %d levels" % MAX_DEPTH)
         at = self.pos
         tag = self.take(1)[0]
+        if tag == TAG_NULL:
+            return None
         if tag == TAG_BOOL:
             flag = self.take(1)[0]
             if flag > 1:
                 raise SettingsFormatError("a bool with the value %d at byte %d" % (flag, at + 1))
             return bool(flag)
-        if tag == TAG_STRING:
-            raw = self.take(self.unpack("<H"))
-            try:
-                return raw.decode("utf-8")
-            except UnicodeDecodeError as err:
-                raise SettingsFormatError("a string at byte %d is not UTF-8" % at) from err
+        if tag == TAG_STRING:                               # another mod's text may not be UTF-8: keep the rest
+            return self.take(self.unpack("<H")).decode("utf-8", errors="replace")
         if tag in NUMBER_TAGS:
             return self.unpack(NUMBER_TAGS[tag])
         if tag == TAG_TABLE:
@@ -81,12 +80,12 @@ class _Reader:
             return table
         if tag == TAG_ARRAY:
             return [self.value(depth + 1) for _ in range(self.count(depth))]
-        raise SettingsFormatError("the tag %d at byte %d is not one MSU writes" % (tag, at))
+        raise SettingsFormatError("the tag %d at byte %d is unknown" % (tag, at))
 
 
 def parse(data):
-    """{mod id: {setting id: value}} from the bytes of MSU's file. Bools are bool, whole numbers int, floats float,
-    strings str. Raises SettingsFormatError on anything it cannot read."""
+    """{mod id: {setting id: value}} from the bytes of MSU's file. Null is None, bools are bool, whole numbers int,
+    floats float, strings str. Raises SettingsFormatError on anything it cannot read."""
     reader = _Reader(data)
     if reader.take(3) != HEADER_START:
         raise SettingsFormatError("no MSU header")
@@ -107,13 +106,13 @@ def parse(data):
 
 def read_map_options(path=None):
     """The Map Options the player saved, as {key: value} for the keys the file holds: numbers as int (a whole float
-    too), booleans as bool. Missing keys are left out. None when the file is missing or unreadable or holds no
-    mod_legends settings. The default path is the player's own save file."""
-    if path is None:
-        path = settings_path()
+    too), booleans as bool. Missing keys and nulls are left out. None when the file is missing or unreadable or holds
+    no mod_legends settings. The default path is the player's own save file. Never raises: the GUI starts with it."""
     try:
+        if path is None:
+            path = settings_path()
         mods = parse(Path(path).read_bytes())
-    except (OSError, SettingsFormatError):
+    except Exception:                                       # any failure means: no saved options
         return None
     settings = mods.get(MOD_ID)
     if settings is None:
@@ -141,19 +140,26 @@ class _GUID(ctypes.Structure):
 
 
 def documents_dir():
-    """Windows' Documents folder (FOLDERID_Documents, so a moved folder is found). The home folder's Documents when
-    Windows cannot say."""
-    fallback = Path.home() / "Documents"
+    """Windows' Documents folder (FOLDERID_Documents, so a redirected folder is found). The home folder's Documents
+    when Windows does not answer; the home folder is looked up only then."""
     try:
-        folder = _GUID(0xFDD39AD0, 0x238F, 0x46AF,
-                       (ctypes.c_uint8 * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7))
-        out = ctypes.c_void_p()
-        hr = ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.byref(out))
-        if hr != 0 or not out.value:
-            return fallback
-        try:
-            return Path(ctypes.wstring_at(out.value))
-        finally:
-            ctypes.windll.ole32.CoTaskMemFree(out)
-    except (AttributeError, OSError):
-        return fallback
+        folder = _shell_documents()
+    except Exception:                                       # no Windows API here, or the call failed
+        folder = ""
+    if folder:
+        return Path(folder)
+    return Path.home() / "Documents"
+
+
+def _shell_documents():
+    """SHGetKnownFolderPath(FOLDERID_Documents) as text, "" when the call fails or gives no path."""
+    folder = _GUID(0xFDD39AD0, 0x238F, 0x46AF,
+                   (ctypes.c_uint8 * 8)(0xAD, 0xB4, 0x6C, 0x85, 0x48, 0x03, 0x69, 0xC7))
+    out = ctypes.c_void_p()
+    hr = ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(folder), 0, None, ctypes.pointer(out))
+    if hr != 0 or not out.value:
+        return ""
+    try:
+        return ctypes.wstring_at(out.value)
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(out)
