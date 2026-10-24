@@ -314,16 +314,25 @@ class Odds:
         self.tested, self.passed, self.team, self.map = 0, [], None, None
         return out
 
-    def chance(self):
-        """Estimated chance that a seed matches, or None before anything was tested (with map conditions: before
-        a map was built — a figure without the map factor would be too high)."""
-        if not self.tested or (self.map_wanted and self.map is None):
+    def brothers_chance(self):
+        """The brothers' part of chance(): the estimated chance that a seed's roster meets its conditions (no map
+        factor), or None before a seed was tested. A search with brother and map conditions shows it until enough
+        maps are built for the full estimate."""
+        if not self.tested:
             return None
         p = 1.0
         for n in self.passed:
             p *= n / self.tested
         if self.team is not None:
             p *= self.team / self.tested
+        return p
+
+    def chance(self):
+        """Estimated chance that a seed matches, or None before anything was tested (with map conditions: before
+        a map was built — a figure without the map factor would be too high)."""
+        if not self.tested or (self.map_wanted and self.map is None):
+            return None
+        p = self.brothers_chance()
         if self.map is not None:
             p *= self.map[1] / self.map[0]
         return p
@@ -355,6 +364,11 @@ def seed_text(n, digits=10):
 # game setup (the GUI turns its Map view off for the session when a fatal event starts with it).
 MAP_FATAL = "Map conditions do not work with this game setup: "
 
+# Maps built, none of them meeting the map conditions, before the player is told (GUI notice, console hint). Valid
+# conditions can be rare: 6 or more ports are 3.9 % of the maps, so 0 of 20 happens in 45 % of such searches and 0 of
+# 100 in 2 %. The text says the conditions are rare and the search goes on; it does not say that no seed matches.
+MAP_NEVER_MAPS = 100
+
 # Legends' black-market counter (::Const.World.Buildings.Blackmarket, never reset by the game) as it is in the first
 # campaign after the game starts. Every map of a search is built so (ruling AD): the sift map and the confirming map
 # of a match are then built alike, whatever other maps the worker built in between. Towns and ports do not depend
@@ -372,6 +386,21 @@ def _towns_key(summary):
 
 class _MapsDoNotWork(Exception):
     """The worker could not build a map twice, and never built one: the game setup cannot do map conditions."""
+
+
+def checked_world_map(lab, seed, origin, **kwargs):
+    """lab.world_map(seed, origin, **kwargs) for a search, a check or `--map`: a map run that used an engine
+    stand-in that mapgen.HARMLESS_STUBS does not explain (a mod that reaches an engine function the lab does not
+    model) is a LabError, because the map may be wrong without any other sign. The search then skips that seed, or
+    ends with MAP_FATAL when the first two maps both fail (README: such a mod stops the search with a load error)."""
+    from .lab import LabError
+    from .mapgen import unexplained_stubs
+    out = lab.world_map(seed, origin, **kwargs)
+    unexplained = unexplained_stubs(out["stub_uses"])
+    if unexplained:
+        raise LabError("map of seed %r uses engine functions that BB Reroll does not model: %s" % (
+            seed, ", ".join("%s.%s" % key for key in sorted(unexplained))))
+    return out
 
 
 def _make_lab(profile, mod_settings):
@@ -398,12 +427,12 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     read) is a MAP_FATAL event at once. Any other unexpected exception is a "fatal" event too ("<type>: <text>
     (seed ...)"): a worker never dies without telling search(), which would otherwise wait for it forever."""
     from .lab import LabError, big_stack, without_perks
-    from .mapgen import failure as map_failure
+    from .mapgen import MAP_NOT_BUILT, failure as map_failure
 
     want_map = criteria.get("map")
     map_first = want_map is not None and not roster_conditions(criteria)
     checking = seeds is not None
-    state = {"tested": 0, "last": 0.0, "maps_work": False, "first_map_error": None, "seed": None}
+    state = {"tested": 0, "last": 0.0, "maps_work": False, "first_map_error": None, "map_error": None, "seed": None}
 
     def numbered():
         n = start + index
@@ -437,16 +466,18 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 raise _MapsDoNotWork() from e
 
         def world_map(seed):
-            return map_code(lambda: lab.world_map(seed, origin, blackmarket=SEARCH_BLACKMARKET)["map"])
+            return map_code(lambda: checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET)["map"])
 
         def map_fails(summary):
             return map_code(map_failure, summary, want_map)
 
         def build_map(seed):
-            """The seed's map summary for the sift; None when its run failed (reported). Raises _MapsDoNotWork."""
+            """The seed's map summary for the sift; None when its run failed (reported; the reason is in
+            state["map_error"]). Raises _MapsDoNotWork."""
             try:
                 summary = world_map(seed)
             except LabError as e:
+                state["map_error"] = str(e)
                 if state["maps_work"]:
                     out.put(("error", index, str(e)))
                 elif state["first_map_error"] is None:
@@ -462,32 +493,35 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             return summary
 
         def sift(seed):
-            """(roster, map summary or None) of a seed to confirm, or None."""
+            """(roster, map summary or None, why there is no map or None) of a seed to confirm, or None. A checked
+            seed whose map run failed still has its roster: the map is None and the reason is the third part."""
             if map_first:
                 summary = build_map(seed)
                 if summary is None:
-                    return None
+                    if not checking:
+                        return None
+                    return lab.roster(seed, origin, fresh=True), None, state["map_error"]
                 ok = map_fails(summary) is None
                 odds.add([], map=ok)
                 if not (ok or checking):
                     return None
                 # the sift roll (kept for the stable flag); after a map run the lab builds a new world state anyway
-                return lab.roster(seed, origin, fresh=checking), summary
+                return lab.roster(seed, origin, fresh=checking), summary, None
             # sift on the reused world state (fast); an explicit seed is rolled on a fresh one
             roster = lab.roster(seed, origin, fresh=checking)
             ok = first_failure(roster, criteria) is None
             if want_map is None or not (ok or checking):
                 odds.add_roster(roster, criteria)
-                return (roster, None) if ok or checking else None
+                return (roster, None, None) if ok or checking else None
             summary = build_map(seed)
             if summary is None:
                 odds.add_roster(roster, criteria)
-                return None
+                return (roster, None, state["map_error"]) if checking else None
             map_ok = map_fails(summary) is None
             odds.add_roster(roster, criteria, map=map_ok)
-            return (roster, summary) if (ok and map_ok) or checking else None
+            return (roster, summary, None) if (ok and map_ok) or checking else None
 
-        def confirm(seed, roster, summary):
+        def confirm(seed, roster, summary, map_error=None):
             # the authoritative roll: a newly built world state, as in a new campaign (with the recruits' perk
             # trees, which the sifting roll leaves out); and the map built once more
             confirmed = lab.roster_with_perks(seed, origin)
@@ -498,6 +532,8 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             failure = first_failure(confirmed, criteria)
             if failure is None and confirmed_map is not None:
                 failure = map_fails(confirmed_map)
+            if failure is None and map_error is not None:       # a checked seed: the roster is shown without a map
+                failure = MAP_NOT_BUILT + map_error
             if checking or failure is None:
                 stable = without_perks(confirmed) == without_perks(roster) and (
                     summary is None or _towns_key(confirmed_map) == _towns_key(summary))
@@ -549,11 +585,13 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
     only the first time a game version is used: its scripts are read once and cached),
     "ready" (workers loaded, workers total, setup info),
     "progress" (seeds tested, seconds, matches, odds: {"chance": estimated chance a seed matches,
+    "chance_brothers": the brothers' part of it (no map factor; None before a seed was tested),
     "never": [roster slots that have not met their criteria once], "never_any": the "any brother" backgrounds
     have not been met once, "never_map": maps were built and none met the map conditions, "maps": maps built,
     "tested"}),
     "match" (dict: seed, roster, stable, failure, map: the map summary (mapgen.summary) when there are map
-    conditions, else None),
+    conditions, else None; a checked seed whose map run failed has map None and, when its roster meets the rest,
+    the failure mapgen.MAP_NOT_BUILT + the reason),
     "error" / "fatal" (text), "finished" (seeds tested, seconds, matches, stopped early?).
     A fatal event that starts with MAP_FATAL (the lab cannot build maps of this game setup) ends the search: it is
     sent once, however many workers find it.
@@ -604,7 +642,8 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
                 tested += payload[0]
                 odds.merge(*payload[1])
                 emit("progress", (tested, time.time() - (t0 or time.time()), len(matches),
-                                  {"chance": odds.chance(), "never": odds.never(), "never_any": odds.team_never(),
+                                  {"chance": odds.chance(), "chance_brothers": odds.brothers_chance(),
+                                   "never": odds.never(), "never_any": odds.team_never(),
                                    "never_map": odds.map_never(), "maps": odds.maps(), "tested": odds.tested}))
             elif kind == "match":
                 matches.append(payload)
@@ -669,6 +708,7 @@ def _ascii(text):
 def map_report(seed, m, origin=None, profile=None, seconds=None):
     """A map summary (mapgen.summary) as text lines for the console: the towns (name, kind = the settlement's script,
     size, port, southern, military) and the port counts. ASCII only."""
+    from .mapdraw import town_name
     towns = m["towns"]
     ports = [t for t in towns if t["port"]]
     southern = [t for t in towns if t["southern"]]
@@ -682,12 +722,12 @@ def map_report(seed, m, origin=None, profile=None, seconds=None):
     if seconds is not None:
         head.append("%.0f s" % seconds)
     lines = ["map of %s" % ", ".join(head), "   %d x %d tiles, %d towns" % (m["size"][0], m["size"][1], len(towns)), ""]
-    width = max([len(t["name"]) for t in towns] + [4])
+    width = max([len(town_name(t)) for t in towns] + [4])
     kind = max([len(t["script"]) for t in towns] + [4])
     lines.append("   %-*s  %-*s  size  port  southern  military" % (width, "name", kind, "kind"))
     for t in towns:
         lines.append("   %-*s  %-*s  %-4d  %-4s  %-8s  %s" % (
-            width, _ascii(t["name"]), kind, _ascii(t["script"]), t["size"], "yes" if t["port"] else "no",
+            width, _ascii(town_name(t)), kind, _ascii(t["script"]), t["size"], "yes" if t["port"] else "no",
             "yes" if t["southern"] else "no", "yes" if t["military"] else "no"))
     lines.append("")
     lines.append("ports: %d (southern %d, other %d)" % (len(ports), sum(1 for t in ports if t["southern"]),
@@ -697,13 +737,26 @@ def map_report(seed, m, origin=None, profile=None, seconds=None):
     return lines
 
 
+def _setup_note(info):
+    """The console note for a run with maps on a setup whose maps nobody checked against the game (Lab.info() or a
+    worker's "ready" info: game 1.5.2.3, Legends 19.4.22 and no mod beyond the ones it needs, see
+    mapgen.verified_setup); None when the setup is the verified one. ASCII only."""
+    from .mapgen import NOT_VERIFIED, verified_setup
+    if verified_setup(info.get("game_version"), info.get("legends_version"), info.get("mods") or []):
+        return None
+    return NOT_VERIFIED
+
+
 def _print_map(profile, origin, seed, svg_path=None, mod_settings=None):
     from . import mapdraw
     from .lab import Lab, big_stack
 
     def run():
         lab = Lab(profile, mod_settings)
-        return lab, lab.world_map(seed, origin)
+        note = _setup_note(lab.info())
+        if note:
+            print(note, flush=True)
+        return lab, checked_world_map(lab, seed, origin)
     lab, out = big_stack(run)
     for line in map_report(seed, out["map"], origin, lab.profile, out["seconds"]):
         print(line)
@@ -807,6 +860,8 @@ def main(argv=None):
     from .lab import describe
     from .mapgen import counts
 
+    noted = []
+
     def on_event(kind, payload):
         if kind == "preparing":
             name, done, total = payload
@@ -814,6 +869,11 @@ def main(argv=None):
                 print("reading the game's scripts (first time only): %s %d of %d" % (name, done, total), flush=True)
         elif kind == "ready":
             print("worker %d of %d has loaded the game scripts" % payload[:2], flush=True)
+            if criteria["map"] is not None and not noted:       # once: every worker reports the same setup
+                noted.append(True)
+                note = _setup_note(payload[2])
+                if note:
+                    print(note, flush=True)
         elif kind == "progress":
             tested, secs, found, odds = payload
             hint = ""
@@ -823,8 +883,8 @@ def main(argv=None):
                 hint = ", brother %s never met the criteria" % ", ".join(str(n) for n in odds["never"])
             elif odds.get("never_any") and odds["tested"] >= 200:
                 hint = ", no brother had a wanted background yet"
-            elif odds.get("never_map") and odds.get("maps", 0) >= 20:
-                hint = ", no map met the map conditions yet (%d maps)" % odds["maps"]
+            elif odds.get("never_map") and odds.get("maps", 0) >= MAP_NEVER_MAPS:
+                hint = ", no map met the map conditions in %d maps (such maps are rare)" % odds["maps"]
             print("   %d seeds tested, %.1f per second, %d found%s" % (
                 tested, tested / secs if secs > 0 else 0, found, hint), flush=True)
         elif kind == "match":

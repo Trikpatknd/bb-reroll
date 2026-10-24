@@ -50,6 +50,11 @@ TERRAIN_COLOURS = {
 
 TOWN_RADIUS = {1: 3.0, 2: 4.0, 3: 5.0}      # pixels at scale 1, by the settlement's size
 TOWN_FILL = {"southern": "#8e44ad", "military": "#c0392b", "town": "#ffffff"}
+# What the three circle colours mean, in the words of the Map view's fields: its "Towns" is size 2 only, so the white
+# circle is a village, town or city; "Stronghold" is the field's word for the forts. The GUI's legend and the SVG's key
+# both use these.
+KIND_LABELS = {"town": "Village, town or city", "military": "Stronghold", "southern": "City state"}
+NAME_NOT_VERIFIED = "(name not verified)"
 PORT_RING = "#0b2a4a"
 BAND_COLOUR = "#e11d48"
 _BACKGROUND = "#f4f1ea"
@@ -105,11 +110,18 @@ def picture_size(summary, scale=1):
     return w * CELL_W * scale, (h * CELL_H + CELL_H // 2) * scale
 
 
+def town_name(town):
+    """The name of a town as the picture and the console report show it. The names of the city states are not
+    checked against the game (CLAUDE.md engine fact 16: they come after the lab's own road tiles), so they say so."""
+    return town["name"] + " " + NAME_NOT_VERIFIED if town["southern"] else town["name"]
+
+
 def town_label(town):
-    """"Name (size 2, small_farming_village, port, southern)" - the text of a town's tooltip."""
+    """"Name (size 2, small_farming_village, port, southern)" - the text of a town's tooltip. A city state's name
+    is followed by "(name not verified)"."""
     parts = ["size %d" % town["size"], town["script"]]
     parts += [word for word in ("port", "southern", "military") if town[word]]
-    return "%s (%s)" % (town["name"], ", ".join(parts))
+    return "%s (%s)" % (town_name(town), ", ".join(parts))
 
 
 def town_marks(summary, scale=1):
@@ -170,7 +182,8 @@ def svg(summary, north_band=None, scale=1):
         if port:
             out.append('<circle class="port" cx="%s" cy="%s" r="%s" fill="none"/>' % (_num(cx), _num(cy), _num(r + 2.5 * scale)))
     out.append("</g>")
-    key = "circle = town (white), fort (red), southern city state (purple); ring = port"
+    key = "circle = %s (white), %s (red), %s (purple); ring = port" % (
+        KIND_LABELS["town"].lower(), KIND_LABELS["military"].lower(), KIND_LABELS["southern"].lower())
     if north_band is not None:
         key += "; dashed line = north band (%d%% from the top)" % north_band
     out.append('<text x="%s" y="%s" font-family="sans-serif" font-size="%s" fill="#222222">%s</text>'

@@ -268,6 +268,10 @@ def failure(summary, map_criteria):
     return None
 
 
+# The failure text of a checked seed whose map run failed, followed by the reason (the roster is still shown).
+MAP_NOT_BUILT = "map could not be built: "
+
+
 # The campaign start itself; the lab puts its campaign settings on the world state first (lab._SETTINGS).
 START = "::World.State.startNewCampaign();"
 
@@ -325,6 +329,49 @@ HARMLESS_STUBS = {
 def unexplained_stubs(stub_uses):
     """The stand-ins a map run used that HARMLESS_STUBS does not explain."""
     return {k: n for k, n in stub_uses.items() if k not in HARMLESS_STUBS}
+
+
+# What the maps were checked against (CLAUDE.md engine fact 16, Checkpoint B): game 1.5.2.3 with Legends 19.4.22 and
+# the mods it needs. HARMLESS_STUBS is the review of the stand-ins for exactly this set; another mod may hook the
+# generator or the settlements and reach a native that nobody reviewed (a map run then raises, see
+# search.checked_world_map), so with any other mod the maps are "not verified". Legends' own assets zip belongs to
+# Legends. The ids are those the mods register with Modern Hooks (and the start of their zip names).
+VERIFIED_GAME = "1.5.2.3"
+VERIFIED_LEGENDS = "19.4.22"
+VERIFIED_MOD_IDS = ("mod_legends", "mod_legends_assets", "mod_msu", "mod_modern_hooks")
+NOT_VERIFIED = "Map results are not verified for this setup."
+
+
+def _plain(text):
+    return "".join(c if c.isalnum() else "_" for c in str(text).lower())
+
+
+def _verified_mod(name):
+    """Is this mod (a zip file name or a registered id) one of VERIFIED_MOD_IDS? The name is the id, or the id and
+    then a version or a number: mod_legends-19.4.22.zip is, mod_legends_load_order_fix.zip is not."""
+    plain = _plain(name[:-4] if str(name).lower().endswith(".zip") else name)
+    for mod in VERIFIED_MOD_IDS:
+        if plain == mod or (plain.startswith(mod + "_") and plain[len(mod) + 1:][:1].isdigit()):
+            return True
+    return False
+
+
+def other_mods(mods):
+    """The mods of this setup that are not in the verified set, as the names given. mods: zip file names
+    (profiles.installed_summary()["mods"]) or Lab.info()["mods"] ({"file", "id", "name", "version"} per mod zip)."""
+    out = []
+    for mod in mods or ():
+        name = mod if isinstance(mod, str) else (mod.get("file") or mod.get("id") or mod.get("name") or "")
+        if not _verified_mod(name):
+            out.append(name)
+    return out
+
+
+def verified_setup(game_version, legends_version, mods=None):
+    """Were maps of this game, this Legends version and this mod set checked against the real game? mods None: not
+    asked (only the versions count)."""
+    return (game_version == VERIFIED_GAME and legends_version == VERIFIED_LEGENDS
+            and (mods is None or not other_mods(mods)))
 
 
 class MapRun:

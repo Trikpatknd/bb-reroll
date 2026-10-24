@@ -189,10 +189,12 @@ class FakeLab:
     roster_calls = 0
     world_map_calls = 0
 
-    def __init__(self, map_errors=(), second_map=None, map_crash=None, roster_crash=None, first_map=None):
+    def __init__(self, map_errors=(), second_map=None, map_crash=None, roster_crash=None, first_map=None, stubs=None):
         """map_crash / roster_crash: an exception (not a LabError) world_map / roster raises for every seed.
-        first_map(summary): what the first build of a seed's map gives instead."""
+        first_map(summary): what the first build of a seed's map gives instead.
+        stubs: the engine stand-ins a map run reports using: {seed: {(kind, name): uses}}, or a function of the seed."""
         FakeLab.roster_calls = FakeLab.world_map_calls = 0
+        self.stubs = stubs or {}
         self.map_errors = map_errors
         self.second_map = second_map
         self.first_map = first_map
@@ -230,7 +232,8 @@ class FakeLab:
             summary = self.first_map(summary)
         if self.builds[seed] == 2 and self.second_map is not None:
             summary = self.second_map(summary)
-        return {"map": summary, "seconds": 0.0, "log": []}
+        stubs = self.stubs(seed) if callable(self.stubs) else self.stubs.get(seed, {})
+        return {"map": summary, "seconds": 0.0, "log": [], "stub_uses": stubs}
 
 
 class ListQueue:
@@ -342,8 +345,92 @@ def test_the_held_error_of_the_only_map_run_is_sent_at_the_end(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(map_errors={"0000000005"}), criteria={"map": {"ports": 1}},
                         seeds=["0000000005"])
     kinds = [kind for kind, _i, _p in events]
-    assert kinds == ["ready", "error", "progress", "done"]
-    assert "0000000005" in events[1][2]
+    # (the checked seed's roster is reported too, with the failure "map could not be built": final review M3)
+    assert kinds == ["ready", "progress", "match", "error", "progress", "done"]
+    assert "0000000005" in events[3][2]
+
+
+UNREVIEWED = {("World", "spawnEntity"): 2, ("entity", "getFoo"): 1}       # not in mapgen.HARMLESS_STUBS
+HARMLESS = {("sprite", "varyColor"): 3, ("root", "updateAchievement"): 1}
+
+
+def test_a_map_that_used_engine_functions_nobody_reviewed_is_an_error_for_that_seed(monkeypatch):
+    """Final review I1: every unmodelled native returns a counted do-nothing stand-in; mapgen.HARMLESS_STUBS lists the
+    reviewed ones. A map run that used any other one may be wrong without a sign, so it is a LabError like any map
+    failure: the seed is skipped and reported, the worker goes on. The harmless ones change nothing."""
+    bad = "0000000019"
+    events = run_worker(monkeypatch, FakeLab(stubs={bad: UNREVIEWED, "0000000009": HARMLESS}),
+                        criteria={"map": {"ports": 9}}, limit=30)
+    errors = [p for kind, _i, p in events if kind == "error"]
+    assert errors == ["map of seed %r uses engine functions that BB Reroll does not model: "
+                      "World.spawnEntity, entity.getFoo" % bad]
+    assert [m["seed"] for m in matches_of(events)] == ["0000000009", "0000000029"]       # 19 is skipped, 9 is not
+    assert events[-1][0] == "done" and not [e for e in events if e[0] == "fatal"]
+
+
+def test_maps_that_always_use_engine_functions_nobody_reviewed_end_the_search_with_a_map_fatal(monkeypatch):
+    events = run_worker(monkeypatch, FakeLab(stubs=lambda seed: UNREVIEWED), criteria={"map": {"ports": 1}}, limit=30)
+    kinds = [kind for kind, _i, _p in events]
+    assert kinds.count("fatal") == 1 and "done" not in kinds and "error" not in kinds
+    fatal = [p for kind, _i, p in events if kind == "fatal"][0]
+    assert fatal.startswith(S.MAP_FATAL) and "World.spawnEntity" in fatal and "0000000000" in fatal
+    assert FakeLab.world_map_calls == 2
+
+
+def test_the_confirming_map_is_checked_too(monkeypatch):
+    """A match is confirmed with a second map; when that one used unreviewed functions the seed is skipped."""
+    class SecondUnreviewed(FakeLab):
+        def world_map(self, seed, *args, **kwargs):
+            out = FakeLab.world_map(self, seed, *args, **kwargs)
+            if self.builds[seed] == 2:
+                out["stub_uses"] = UNREVIEWED
+            return out
+    events = run_worker(monkeypatch, SecondUnreviewed(), criteria={"map": {"ports": 9}}, limit=10)
+    assert matches_of(events) == []
+    errors = [p for kind, _i, p in events if kind == "error"]
+    assert len(errors) == 1 and "0000000009" in errors[0] and "World.spawnEntity" in errors[0]
+
+
+def test_a_checked_seed_whose_map_could_not_be_built_still_gets_its_roster(monkeypatch):
+    """Final review M3: "Check a seed" with a map condition whose map run fails (3 in 1,000 seeds, or a map that used
+    unreviewed functions) reports the roster, with the failure "map could not be built: <reason>" and no map. The
+    reason is also an error event (the GUI shows it as a notice)."""
+    from bbseed.mapgen import MAP_NOT_BUILT
+    assert MAP_NOT_BUILT == "map could not be built: "
+    # map conditions only: the map is built first
+    events = run_worker(monkeypatch, FakeLab(map_errors={"0000000003"}), criteria={"map": {"ports": 9}},
+                        seeds=["0000000003"])
+    [m] = matches_of(events)
+    assert m["seed"] == "0000000003" and m["map"] is None and len(m["roster"]) == ROSTER_SIZE
+    assert m["failure"] == MAP_NOT_BUILT + "map of seed '0000000003': the index '0' does not exist"
+    assert [p for kind, _i, p in events if kind == "error"] == [m["failure"][len(MAP_NOT_BUILT):]]
+    assert events[-1][0] == "done" and not [e for e in events if e[0] == "fatal"]
+    # a good seed after it is reported as it was (and the held error of the first is sent when it works)
+    events = run_worker(monkeypatch, FakeLab(map_errors={"0000000003"}), criteria={"map": {"ports": 9}},
+                        seeds=["0000000003", "0000000009"])
+    got = {m["seed"]: m for m in matches_of(events)}
+    assert set(got) == {"0000000003", "0000000009"}
+    assert got["0000000003"]["map"] is None and got["0000000003"]["failure"].startswith(MAP_NOT_BUILT)
+    assert got["0000000009"]["map"] and got["0000000009"]["failure"] is None
+    # unreviewed engine functions are the same case
+    events = run_worker(monkeypatch, FakeLab(stubs={"0000000005": UNREVIEWED}), criteria={"map": {"ports": 9}},
+                        seeds=["0000000005"])
+    [m] = matches_of(events)
+    assert m["map"] is None and "World.spawnEntity, entity.getFoo" in m["failure"] and m["failure"].startswith(MAP_NOT_BUILT)
+    # with brother conditions too: a roster that meets them gets the map failure; one that fails keeps its own failure
+    both = {"stars_by_slot": {"1": "hp1"}, "map": {"ports": 9}}
+    events = run_worker(monkeypatch, FakeLab(map_errors={"0000000001"}), criteria=both, seeds=["0000000001"])
+    [m] = matches_of(events)
+    assert m["map"] is None and m["failure"].startswith(MAP_NOT_BUILT) and m["roster"]
+    events = run_worker(monkeypatch, FakeLab(map_errors={"0000000002"}), criteria=both, seeds=["0000000002"])
+    [m] = matches_of(events)
+    assert m["map"] is None and m["failure"] == "bro1 hp*0<1" and m["roster"]
+
+
+def test_a_search_that_is_not_checking_does_not_report_a_seed_without_a_map(monkeypatch):
+    for criteria in ({"map": {"ports": 9}}, {"stars_by_slot": {"1": "hp1"}, "map": {"ports": 9}}):
+        events = run_worker(monkeypatch, FakeLab(map_errors={"0000000009"}), criteria=criteria, limit=10)
+        assert "0000000009" not in [m["seed"] for m in matches_of(events)]
 
 
 def test_a_map_code_exception_that_is_no_lab_error_is_a_map_fatal(monkeypatch):
@@ -454,6 +541,27 @@ def test_odds_count_the_map_as_one_more_factor_with_its_own_count():
     assert plain.chance() == 0.5 and plain.map is None and not plain.map_never()
 
 
+def test_odds_brothers_chance_is_the_rosters_part_of_the_estimate_without_the_map_factor():
+    """Final review M7: with brother and map conditions the full estimate waits for 30 maps; the brothers' rate is
+    known after the first seeds, so the progress event carries it too (map factor: Odds.chance)."""
+    c = normalize({"stars_by_slot": {"1": "hp1"}, "map": {"ports": 1}})
+    odds = Odds(map_wanted=True)
+    assert odds.brothers_chance() is None
+    for hp in (0, 0, 0, 1):
+        odds.add_roster([bro(hp=hp)], c)
+    assert odds.chance() is None                                  # no map built yet
+    assert odds.brothers_chance() == pytest.approx(0.25)
+    odds.add_roster([bro(hp=1)], c, map=False)
+    odds.add_roster([bro(hp=1)], c, map=True)
+    assert odds.brothers_chance() == pytest.approx(3 / 6)
+    assert odds.chance() == pytest.approx(0.5 * 0.5)              # = brothers_chance() * the maps' rate 1 of 2
+    # the whole-roster (background "any") condition is part of the brothers' rate
+    odds = Odds()
+    odds.add([], team=True)
+    odds.add([], team=False)
+    assert odds.brothers_chance() == pytest.approx(0.5) and odds.chance() == pytest.approx(0.5)
+
+
 class ThreadContext:
     """multiprocessing's spawn context for search(), with its workers as threads of this process (so the replaced
     _make_lab reaches them)."""
@@ -490,7 +598,7 @@ def test_search_reports_the_map_of_a_match(monkeypatch):
     assert all(m["map"]["towns"] and m["roster"] for m in found)
     progress = [p for k, p in events if k == "progress"]
     odds = progress[-1][3]
-    assert set(odds) >= {"chance", "never", "never_any", "never_map", "maps", "tested"}
+    assert set(odds) >= {"chance", "chance_brothers", "never", "never_any", "never_map", "maps", "tested"}
     assert odds["maps"] >= 10 and odds["never_map"] is False
     assert events[-1][0] == "finished"
 
@@ -535,3 +643,54 @@ def test_cli_map_flags(monkeypatch, capsys):
         with pytest.raises(SystemExit):
             S.main(["--origin", "trader_scenario"] + bad)
     assert "--towns" in capsys.readouterr().err
+
+
+def run_cli_events(monkeypatch, capsys, events, argv):
+    """S.main(argv) with a search() that plays these events to the console's on_event; the console output."""
+    def fake_search(profile, origin, criteria, **kw):
+        for kind, payload in events:
+            kw["on_event"](kind, payload)
+        return []
+    monkeypatch.setattr(S, "search", fake_search)
+    S.main(argv)
+    return capsys.readouterr().out
+
+
+VERIFIED_INFO = {"game_version": "1.5.2.3", "legends_version": "19.4.22",
+                 "mods": [{"file": "mod_legends-19.4.22.zip", "id": "mod_legends"},
+                          {"file": "mod_legends-assets-19.4.3.zip", "id": "mod_legends_assets"},
+                          {"file": "mod_modern_hooks-685-0-6-0-1748620177.zip", "id": "mod_modern_hooks"},
+                          {"file": "mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip", "id": "mod_msu"}]}
+NOTE = "Map results are not verified for this setup."
+
+
+def test_the_console_notes_an_unverified_setup_once_for_a_search_with_map_conditions(monkeypatch, capsys):
+    """Final review M10: map conditions on a game / Legends version / mod set that nobody checked build maps with
+    no sign; the console says so (once: every worker reports the same setup). ASCII only."""
+    unverified = dict(VERIFIED_INFO, mods=VERIFIED_INFO["mods"] + [{"file": "mod_other-1.0.zip", "id": "mod_other"}])
+    ready = [("ready", (1, 2, unverified)), ("ready", (2, 2, unverified))]
+    out = run_cli_events(monkeypatch, capsys, ready, ["--origin", "trader_scenario", "--ports", "4"])
+    assert out.count(NOTE) == 1 and out.index("worker 1 of 2") < out.index(NOTE) < out.index("worker 2 of 2")
+    assert NOTE.isascii()
+    # a verified setup: no note; no map condition: no note; another version of the game or Legends: the note
+    ready = [("ready", (1, 1, VERIFIED_INFO))]
+    assert NOTE not in run_cli_events(monkeypatch, capsys, ready, ["--origin", "trader_scenario", "--ports", "4"])
+    ready = [("ready", (1, 1, unverified))]
+    assert NOTE not in run_cli_events(monkeypatch, capsys, ready, ["--origin", "trader_scenario", "--stars", "1", "hp1"])
+    for changed in ({"game_version": "1.5.3.0"}, {"legends_version": "19.5.0"}, {"legends_version": None}):
+        ready = [("ready", (1, 1, dict(VERIFIED_INFO, **changed)))]
+        assert NOTE in run_cli_events(monkeypatch, capsys, ready, ["--origin", "trader_scenario", "--ports", "4"])
+
+
+def test_the_console_hint_for_a_map_search_that_found_no_map_waits_for_100_maps(monkeypatch, capsys):
+    """Final review I2: 6 or more ports are 3.9 % of the maps, so 0 hits in 20 maps is normal (45 %) and 0 in 100
+    is not (2 %). The hint says the maps are rare; it does not say that no seed matches."""
+    assert S.MAP_NEVER_MAPS == 100
+    odds = lambda maps: {"chance": 0.0, "never": [], "never_map": True, "maps": maps, "tested": maps}   # noqa: E731
+    out = run_cli_events(monkeypatch, capsys, [("progress", (99, 60.0, 0, odds(99))),
+                                               ("progress", (100, 61.0, 0, odds(100)))],
+                         ["--origin", "trader_scenario", "--ports", "7"])
+    lines = [line for line in out.splitlines() if "seeds tested" in line]
+    assert len(lines) == 2 and "map" not in lines[0]
+    assert lines[1].endswith(", no map met the map conditions in 100 maps (such maps are rare)")
+    assert "no seed matches" not in out.lower() and "possibly" not in out.lower()

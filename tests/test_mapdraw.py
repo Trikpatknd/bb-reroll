@@ -191,6 +191,29 @@ def test_text_in_the_svg_is_escaped():
     assert 'A & B <"x">' in [e.find(SVG_NS + "title").text for e in _circles(root, "town")][0]
 
 
+def test_a_city_states_name_is_marked_unverified_in_the_tooltip_and_the_svg():
+    """Final review M4 / Ruling AO: the names of the city states come after the lab's own road tiles and are not
+    checked against the game; the picture says so. Every other name is verified and has no mark."""
+    s = tiny_summary("LLLL" "LLLL" "LLLL", [town(1, 1, name="City State of Tiber", southern=True, script="city_state",
+                                                size=3, port=True), town(2, 2, name="Hafen")])
+    labels = {label.split(" (")[0]: label for *_rest, label in mapdraw.town_marks(s)}
+    assert labels["City State of Tiber"] == "City State of Tiber (name not verified) (size 3, city_state, port, southern)"
+    assert labels["Hafen"] == "Hafen (size 2, small_farming_village)"
+    titles = [e.find(SVG_NS + "title").text for e in _circles(_parse(svg(s)), "town")]
+    assert titles == list(labels.values())
+    assert mapdraw.town_name(town(0, 0, name="Burg", southern=True)) == "Burg (name not verified)"
+    assert mapdraw.town_name(town(0, 0, name="Burg", military=True)) == "Burg"
+
+
+def test_the_svg_key_and_the_gui_legend_use_the_words_of_the_map_view_fields():
+    """Final review M8: the white circle is a village, town or city (the field "Towns" is size 2 only) and the forts
+    are "Strongholds" in the field. The GUI's legend reads mapdraw.KIND_LABELS, so both say the same."""
+    assert mapdraw.KIND_LABELS == {"town": "Village, town or city", "military": "Stronghold", "southern": "City state"}
+    text = svg(tiny_summary("LLLL" "LLLL" "LLLL", []))
+    assert "circle = village, town or city (white), stronghold (red), city state (purple); ring = port" in text
+    assert "fort" not in text
+
+
 def test_the_svg_of_an_empty_map_has_only_cells():
     text = svg(tiny_summary("OOLL" "OLLL" "LLLL", []))
     assert text.count('class="town"') == text.count('class="port"') == 0 and text.count("<rect") == 12
@@ -221,8 +244,11 @@ def test_map_report_lists_towns_and_counts_ports_in_ascii():
     assert "4 x 3 tiles, 3 towns" in text
     row = [l for l in lines if "Hafen" in l][0].split()
     assert row == ["Hafen", "small_fishing_village", "1", "yes", "no", "no"]
-    assert [l for l in lines if "Burg" in l][0].split() == ["Burg", "small_farming_village", "2", "yes", "yes", "yes"]
-    assert "Z?rich" in text
+    # the city states' names are not verified (Ruling S, README Limits): the report says so, in ASCII
+    assert [l for l in lines if "Burg" in l][0].split() == ["Burg", "(name", "not", "verified)", "small_farming_village",
+                                                            "2", "yes", "yes", "yes"]
+    assert "Z?rich (name not verified)" in text
+    assert text.count("(name not verified)") == 2 and "Hafen (name" not in text
     assert "ports: 2 (southern 1, other 1)" in lines
     assert "towns: 2 southern, 1 military, size 1/2/3: 1/1/1" in lines
 
@@ -238,9 +264,12 @@ def test_map_option_runs_a_map_and_writes_the_picture(monkeypatch, tmp_path, cap
         def __init__(self, profile=None, mod_settings=None):
             calls.append(("lab", profile, mod_settings))
 
+        def info(self):
+            return {"game_version": "1.5.2.3", "legends_version": "19.4.22", "mods": []}
+
         def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None):
             calls.append(("map", seed, origin))
-            return {"map": _sample(), "seconds": 1.0, "log": []}
+            return {"map": _sample(), "seconds": 1.0, "log": [], "stub_uses": {}}
 
     monkeypatch.setattr(bbseed.lab, "Lab", FakeLab)
     monkeypatch.setattr(bbseed.lab, "big_stack", lambda fn: fn())
@@ -251,9 +280,73 @@ def test_map_option_runs_a_map_and_writes_the_picture(monkeypatch, tmp_path, cap
     assert path.read_text(encoding="utf-8") == svg(_sample())
     out = capsys.readouterr().out
     assert "ports: 2" in out and "picture written to %s" % path in out
+    assert "not verified" not in out.replace("(name not verified)", ""), "game 1.5.2.3 + Legends 19.4.22: no note"
     calls.clear()
     search.main(["--map", "42", "--origin", "legends_noble_scenario"])
     assert calls == [("lab", None, {}), ("map", "42", "legends_noble_scenario")]
+
+
+def cli_map_lab(monkeypatch, info, stub_uses=None):
+    """--map SEED on a stand-in lab with this info and these stub uses; returns what the lab saw."""
+    import bbseed.lab
+    seen = []
+
+    class StandIn:
+        profile = "legends"
+
+        def __init__(self, profile=None, mod_settings=None):
+            pass
+
+        def info(self):
+            return info
+
+        def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None):
+            seen.append(seed)
+            return {"map": _sample(), "seconds": 1.0, "log": [], "stub_uses": stub_uses or {}}
+
+    monkeypatch.setattr(bbseed.lab, "Lab", StandIn)
+    monkeypatch.setattr(bbseed.lab, "big_stack", lambda fn: fn())
+    return seen
+
+
+VERIFIED_INFO = {"game_version": "1.5.2.3", "legends_version": "19.4.22",
+                 "mods": [{"file": "mod_legends-19.4.22.zip", "id": "mod_legends", "name": "Legends Mod",
+                           "version": "19.4.22"},
+                          {"file": "mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip", "id": "mod_msu",
+                           "name": "MSU", "version": "1.9.0"}]}
+
+
+def test_map_option_notes_a_setup_whose_maps_are_not_verified(monkeypatch, capsys):
+    """Final review M10: --map builds a map on any setup; the console says when nobody checked it."""
+    import bbseed.search as search
+    note = "Map results are not verified for this setup."
+    for info in (dict(VERIFIED_INFO, game_version="1.5.3.0"), dict(VERIFIED_INFO, legends_version=None, mods=[]),
+                 dict(VERIFIED_INFO, mods=VERIFIED_INFO["mods"] + [{"file": "mod_jimmys_tooltips-1.0.5.zip"}])):
+        cli_map_lab(monkeypatch, info)
+        search.main(["--map", "42"])
+        out = capsys.readouterr().out
+        assert out.startswith(note + "\n") and out.count(note) == 1
+    assert note.isascii()
+    cli_map_lab(monkeypatch, VERIFIED_INFO)
+    search.main(["--map", "42"])
+    assert note not in capsys.readouterr().out
+
+
+def test_map_option_refuses_a_map_that_used_engine_functions_nobody_reviewed(monkeypatch, capsys):
+    """Final review I1: a counted stand-in that HARMLESS_STUBS does not explain may mean a wrong map: no map is
+    printed, the error names the seed and the functions."""
+    import bbseed.search as search
+    from bbseed.lab import LabError
+    harmless = {("sprite", "varyColor"): 3}
+    seen = cli_map_lab(monkeypatch, VERIFIED_INFO,
+                       {**harmless, ("World", "spawnEntity"): 2, ("entity", "getFoo"): 1})
+    with pytest.raises(LabError, match=r"map of seed '42' uses engine functions that BB Reroll does not model: "
+                                       r"World\.spawnEntity, entity\.getFoo$"):
+        search.main(["--map", "42"])
+    assert seen == ["42"] and "ports:" not in capsys.readouterr().out
+    cli_map_lab(monkeypatch, VERIFIED_INFO, harmless)
+    search.main(["--map", "42"])
+    assert "ports: 2" in capsys.readouterr().out
 
 
 def test_svg_option_needs_map(capsys):
