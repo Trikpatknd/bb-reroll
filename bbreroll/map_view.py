@@ -229,13 +229,20 @@ def saved_option_texts(read):
 
 
 def fill_at_startup(settings, current, saved):
-    """May start-up fill the fields with the saved Mod Options? Only when they were read (saved is not None) and the
-    settings file has no Map Options yet or still holds the values the program last read: fields the player changed
-    keep their values. Never raises: settings may be any dict from JSON, damaged or not."""
+    """May start-up fill the fields with the saved Mod Options? Only when they were read (saved is not None) and either
+    the settings file has no Map Options yet, or it still holds the values the program last read ("map_options_read"),
+    or it has no valid "map_options_read" (missing, or not a dict) and the fields hold Legends' defaults: the player
+    never typed a Map Option. Fields the player changed keep their values. Never raises: settings may be any dict from
+    JSON, damaged or not."""
     data = settings if isinstance(settings, dict) else {}
     if saved is None:
         return False
-    return "map_options" not in data or current == data.get("map_options_read")
+    if "map_options" not in data:
+        return True
+    marker = data.get("map_options_read")
+    if isinstance(marker, dict):
+        return current == marker
+    return current == default_options()
 
 
 # ------------------------------------------------------------------ the game version and the view's state

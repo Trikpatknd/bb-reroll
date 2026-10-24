@@ -239,6 +239,33 @@ def test_fill_at_startup_without_file():
     assert V.fill_at_startup({"map_options": V.default_options()}, V.default_options(), None) is False
 
 
+def test_fill_at_startup_defaults_without_a_valid_marker_fill():
+    """Map Options that the player never typed (the fields hold the defaults) fill from the saved Mod Options, also
+    when the settings file has no valid marker of the last read: a missing marker, or one that is not a dict."""
+    saved = V.saved_option_texts({"Settlements": 24})
+    defaults = V.default_options()
+    assert V.fill_at_startup({"map_options": defaults}, defaults, saved) is True
+    assert V.fill_at_startup({"map_options": defaults, "map_options_read": None}, defaults, saved) is True
+    assert V.fill_at_startup({"map_options": defaults, "map_options_read": "24"}, defaults, saved) is True
+    assert V.fill_at_startup({"map_options": defaults, "map_options_read": [defaults]}, defaults, saved) is True
+
+
+def test_fill_at_startup_typed_values_without_a_marker_keep_them():
+    """Typed values (not the defaults) with no valid marker stay: the player typed them."""
+    typed = option_texts(Settlements="26")
+    settings = {"map_options": typed}
+    assert V.fill_at_startup(settings, typed, V.saved_option_texts({"Settlements": 24})) is False
+    assert V.fill_at_startup({"map_options": typed, "map_options_read": None}, typed,
+                             V.saved_option_texts({"Settlements": 24})) is False
+
+
+def test_fill_at_startup_defaults_with_a_marker_that_differs_do_not_fill():
+    """A valid marker decides: the fields equal to the defaults but not to the last read values are not filled."""
+    read = option_texts(Settlements="24")
+    settings = {"map_options": V.default_options(), "map_options_read": read}
+    assert V.fill_at_startup(settings, V.default_options(), V.saved_option_texts({"Settlements": 24})) is False
+
+
 def test_fill_at_startup_never_raises_on_damaged_settings():
     current = V.default_options()
     for settings in (None, [], "x", {"map_options": None, "map_options_read": [1]}, {"map_options_read": None}):

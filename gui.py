@@ -1319,7 +1319,10 @@ class App(ctk.CTk):
         self-test never reads the file (its spec sets the Map Options). Switching the setup later does not read."""
         if os.environ.get("BB_REROLL_SELFTEST") or not self._legends():
             return
-        saved = map_view.saved_option_texts(msu_settings.read_map_options())
+        try:        # a failed read must not stop the start: the exe has no console, nobody would see the error
+            saved = map_view.saved_option_texts(msu_settings.read_map_options())
+        except Exception:
+            saved = None
         current = {key: var.get() for key, var in self.map_option_vars.items()}
         if map_view.fill_at_startup(self._saved, current, saved):
             self._fill_options(saved)
@@ -1327,6 +1330,8 @@ class App(ctk.CTk):
             self._options_note = map_view.NO_SAVED_OPTIONS
         elif saved != current:
             self._options_note = map_view.OPTIONS_DIFFER
+        else:                       # the fields hold the saved values: the next start sees them as untouched
+            self._options_read = saved
         self._apply_map_state()
 
     # ── game setup / origin ──

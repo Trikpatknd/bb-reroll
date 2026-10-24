@@ -452,6 +452,9 @@ def test_read_my_mod_options_fills_the_fields(map_app, monkeypatch):
     from bbreroll import map_view
     app = map_app
     app.map_option_vars["Water"].set("40")                  # typed: the read sets it back to the saved value
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: None)
+    assert app._read_saved_options() is False
+    assert map_view.NO_SAVED_OPTIONS in app.map_note_var.get(), "a read that finds no file says so"
     monkeypatch.setattr(gui.msu_settings, "read_map_options",
                         lambda path=None: {"Settlements": 24, "StackCitadels": True})
     assert app._read_saved_options() is True
@@ -462,7 +465,8 @@ def test_read_my_mod_options_fills_the_fields(map_app, monkeypatch):
         "the Map Options the file does not hold have Legends' defaults"
     assert texts["Water"] == defaults["Water"] == "38"
     assert app._options_read == texts
-    assert map_view.NO_SAVED_OPTIONS not in app.map_note_var.get()
+    assert map_view.NO_SAVED_OPTIONS not in app.map_note_var.get(), "a read that works takes the note away"
+    assert app._options_note is None
 
 
 def test_read_my_mod_options_without_file(map_app, monkeypatch):
@@ -494,6 +498,7 @@ def test_start_up_fills_untouched_map_options(map_app, monkeypatch):
     import gui
     from bbreroll import map_view
     app = map_app
+    monkeypatch.delenv("BB_REROLL_SELFTEST", raising=False)
     monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: {"Settlements": 24})
     monkeypatch.setattr(app, "_saved", {})                  # no Map Options in the settings file yet
     app._startup_saved_options()
@@ -507,6 +512,7 @@ def test_start_up_keeps_typed_map_options(map_app, monkeypatch):
     import gui
     from bbreroll import map_view
     app = map_app
+    monkeypatch.delenv("BB_REROLL_SELFTEST", raising=False)
     monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: {"Settlements": 24})
     read_before = map_view.default_options()
     monkeypatch.setattr(app, "_saved", {"map_options": dict(read_before, Settlements="21"),
@@ -521,12 +527,47 @@ def test_start_up_without_a_readable_file_keeps_the_fields(map_app, monkeypatch)
     import gui
     from bbreroll import map_view
     app = map_app
+    monkeypatch.delenv("BB_REROLL_SELFTEST", raising=False)
     app.map_option_vars["Water"].set("40")
     monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: None)
     monkeypatch.setattr(app, "_saved", {})
     app._startup_saved_options()                            # no exception
     assert app.map_option_vars["Water"].get() == "40"
     assert map_view.NO_SAVED_OPTIONS in app.map_note_var.get()
+
+
+def test_start_up_when_the_read_raises_keeps_the_fields(map_app, monkeypatch):
+    # Review Focus 2: the exe has no console; a failed read must not stop the start
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    monkeypatch.delenv("BB_REROLL_SELFTEST", raising=False)
+    app.map_option_vars["Water"].set("40")
+
+    def unreadable(path=None):
+        raise OSError("the save file is locked")
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", unreadable)
+    monkeypatch.setattr(app, "_saved", {})
+    app._startup_saved_options()                            # no exception
+    assert app.map_option_vars["Water"].get() == "40"
+    assert map_view.NO_SAVED_OPTIONS in app.map_note_var.get()
+
+
+def test_start_up_remembers_saved_values_the_fields_already_have(map_app, monkeypatch):
+    # the fields hold the saved values, but the settings file's marker is older: the marker is updated, so the next
+    # start sees the fields as untouched and fills them again (the saved file wins while nothing was typed)
+    import gui
+    from bbreroll import map_view
+    app = map_app
+    monkeypatch.delenv("BB_REROLL_SELFTEST", raising=False)
+    monkeypatch.setattr(gui.msu_settings, "read_map_options", lambda path=None: {"Settlements": 24})
+    app.map_option_vars["Settlements"].set("24")
+    monkeypatch.setattr(app, "_saved", {"map_options": dict(map_view.default_options(), Settlements="24"),
+                                        "map_options_read": map_view.default_options()})
+    app._startup_saved_options()
+    assert app._options_read == map_view.saved_option_texts({"Settlements": 24})
+    assert app.map_option_vars["Settlements"].get() == "24"
+    assert map_view.OPTIONS_DIFFER not in app.map_note_var.get()
 
 
 def test_a_self_test_never_reads_the_saved_options(map_app, monkeypatch):
