@@ -86,8 +86,9 @@ def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
 
 
 # ---------------------------------------------------------------- whole maps (stop_at="reseed"), map-search Task 5
-# At most 7 whole maps in this file (ruling N, amended in map-search Task 9; the repo suite builds 9: these 7 plus the
-# 2 in test_offline_map.py): the town test's 3 (shared through FULL_MAPS, one world_map(seed) per seed per test
+# At most 7 Legends whole maps in this file (ruling N, amended in map-search Task 9; the Vanilla section at the end has
+# 2 more, stage 2 Task 5; the repo suite builds 11: these 9 plus the 2 in test_offline_map.py): the town test's 3
+# (shared through FULL_MAPS, one world_map(seed) per seed per test
 # session), the roster test's 2, which it always builds itself between the rosters (its seeds are its own, so no
 # other test can have built them first, whatever the order the tests run in), and the search test's 2 (the sift map
 # and the confirming map of one checked seed, in the search's own worker process).
@@ -329,3 +330,95 @@ def test_events_from_log_reads_the_generators_attempt_lines():
     assert events_from_log(log) == [["land", 6681, 17119], ["land", 17740, 6060], ["desert", 2220],
                                     ["land", 17000, 6800], ["desert", 2500], ["accepted"]]
     assert events_from_log([]) == []
+
+
+# ---------------------------------------------------------------- Vanilla maps (map-search stage 2, Task 5)
+# The base game alone (no mod; the lab answers hasDLC True for every DLC). Its two whole maps are built once for the
+# module (vanilla_maps): the 2 counted in the budget above.
+VANILLA_SEEDS = ("1234567890", "5567142647")
+_VANILLA_LISTS = """
+local out = [];
+foreach (list in ::Const.World.Settlements.Master)
+{
+    local scripts = [];
+    foreach (t in list.List) scripts.push(t.Script);
+    out.push({ amount = list.Amount, scripts = scripts });
+}
+return out;
+"""
+
+
+@pytest.fixture(scope="module")
+def vanilla_lab():
+    if not HAVE_GAME:
+        pytest.skip("Battle Brothers 1.5.2.3 is not installed")
+    from bbseed.lab import Lab, big_stack
+    return InBigStack(big_stack(lambda: Lab("vanilla")))
+
+
+@pytest.fixture(scope="module")
+def vanilla_maps(vanilla_lab):
+    """The whole maps of VANILLA_SEEDS (Trader, the origin the map tests use), built once for the tests that read them."""
+    return {seed: vanilla_lab.world_map(seed, "trader_scenario") for seed in VANILLA_SEEDS}
+
+
+def vanilla_town_type(script):
+    """The town type that map_conditions.VANILLA_LISTS gives a Vanilla settlement script, from its file name: a city
+    state, a stronghold (a *_fort script), or a village, town or city by the small_, medium_ or large_ prefix."""
+    name = script.rsplit("/", 1)[-1]
+    if name == "city_state":
+        return "city_state"
+    if name.endswith("_fort"):
+        return "military"
+    return {"small": "size1", "medium": "size2", "large": "size3"}[name.split("_", 1)[0]]
+
+
+def test_vanilla_lists_match_the_game(vanilla_lab):
+    """VANILLA_LISTS is the base game's Const.World.Settlements.Master: the same Amounts in the same order, and every
+    script of a list makes that list's town type."""
+    from bbreroll import map_conditions as M
+    from bbseed.lab import big_stack
+    eng = vanilla_lab.lab.eng
+    lists = big_stack(lambda: eng.vm.compile(_VANILLA_LISTS, "test_vanilla_lists").invoke(eng.root, ()))
+    assert [int(l.get("amount")) for l in lists] == [amount for _key, amount in M.VANILLA_LISTS]
+    for (key, _amount), l in zip(M.VANILLA_LISTS, lists):
+        assert {vanilla_town_type(script) for script in l.get("scripts")} == {key}, key
+
+
+def test_vanilla_map_has_no_unexplained_stubs(vanilla_maps):
+    from bbseed.mapgen import unexplained_stubs
+    for seed, out in vanilla_maps.items():
+        assert out["log"].count("World accepted.") == 1 and out["log"][-1] == "Placing abandoned fortresses...", seed
+        assert not unexplained_stubs(out["stub_uses"]), seed
+
+
+def test_vanilla_summary_flags(vanilla_maps):
+    """Every town of a Vanilla map has bool flags: southern is the city state, military the stronghold (a *_fort
+    script), and the map has 3 city states (the desert DLC's)."""
+    for seed, out in vanilla_maps.items():
+        towns = out["map"]["towns"]
+        assert towns, seed
+        for t in towns:
+            assert all(isinstance(t[k], bool) for k in ("southern", "military", "port")), t
+            assert t["southern"] == (t["script"] == "city_state"), t
+            assert t["military"] == t["script"].endswith("_fort"), t
+        assert sum(t["southern"] for t in towns) == 3, seed
+
+
+def test_vanilla_attempts_are_the_builds_of_land_and_sea(vanilla_maps):
+    """summary()["attempts"] is one more than the worlds the generator rejected. Vanilla logs no ratio line, so the
+    Legends line parser (events_from_log) finds no attempt in its log."""
+    for seed, out in vanilla_maps.items():
+        assert out["map"]["attempts"] == out["log"].count("World rejected. Creating new one...") + 1, seed
+
+
+def test_vanilla_maps_stay_within_the_limits(vanilla_maps):
+    """No Vanilla map has more of anything than limits(vanilla=True) allows."""
+    from bbreroll import map_conditions as M
+    from bbseed.mapgen import TOWN_TYPE_KEYS, counts
+    lim = M.limits(vanilla=True)
+    for seed, out in vanilla_maps.items():
+        for band in (1, 33, 99):
+            c = counts(out["map"], band)
+            assert all(c[k] <= lim[k] for k in M.PORT_KEYS), (seed, band, c)
+            assert all(c["towns"][k] <= lim["towns"][k] for k in TOWN_TYPE_KEYS), (seed, band, c)

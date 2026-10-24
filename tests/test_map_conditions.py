@@ -164,6 +164,18 @@ def test_limits_rejects_bad_map_options():
             M.limits(bad)
 
 
+def test_vanilla_limits():
+    """Vanilla's limits are its settlement lists' Amounts (VANILLA_LISTS, checked against the base game by
+    test_mapgen_game.test_vanilla_lists_match_the_game): 7 villages, 3 towns, 3 cities, 6 strongholds and 3 city
+    states, so 22 towns, every one of them a possible port, and the 3 city states the southern ones. No Map Option
+    changes them."""
+    want = {"ports": 22, "ports_south": 3, "ports_north": 19,
+            "towns": {"city_state": 3, "military": 6, "size1": 7, "size2": 3, "size3": 3}}
+    assert M.limits(vanilla=True) == M.limits(None, vanilla=True) == want
+    assert M.limits({"Settlements": 27}, vanilla=True) == want
+    assert M.limits(vanilla=False) == M.limits(None)          # Legends' limits are the default
+
+
 def test_problems():
     assert M.problems({"ports": 2, "ports_south": 2, "ports_north": 1})      # north + south > total
     assert M.problems({"ports_north": 1, "north_band": 0}) and M.problems({"ports_north": 1, "north_band": 100})

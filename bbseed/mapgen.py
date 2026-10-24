@@ -54,9 +54,11 @@ ACCEPTED = "World accepted."
 PROBE_RANGE = (1, 2147483646)
 
 # The generator's attempt lines (Legends' isWorldAcceptable / isDesertAcceptable). The ratio's text is left out:
-# only the counts are compared with the game.
+# only the counts are compared with the game. Vanilla's isWorldAcceptable logs no ratio, so its attempts are counted
+# by LAND_AND_SEA (one line per buildLandAndSea call in both games; see summary()).
 _LAND_RE = re.compile(r"^Land Ocean ratio\S* >= \S+ :: Land :(\d+) Ocean:(\d+)$")
 _DESERT_RE = re.compile(r"^Desert tiles (\d+) >= \S+$")
+LAND_AND_SEA = "Building land and sea..."
 
 
 def events_from_log(lines):
@@ -140,8 +142,8 @@ def summary(lab, log=()):
                    size (getSize(): 1, 2 or 3), x and y (its tile's square coordinates), southern (isSouthern()),
                    military (isMilitary()), port (the settlement's own m.IsCoastal after the run: the game's rule,
                    never worked out again here), faction (the name of its owner faction, or None)
-      "attempts": how many times the generator built the land and sea before it accepted a world (`log`: the run's
-                 lines; from events_from_log)
+      "attempts": how many times the generator built the land and sea before it accepted a world: the LAND_AND_SEA
+                 lines of `log` (the run's lines; one per attempt in Legends and in Vanilla)
 
     Compared with the game (map-search Task 7, 40 in-game maps, bb_seedlab MODLOG "CHECKPOINT B"): every town's
     script, x, y, size, name (city states aside), port, southern and military, in this order, are the game's in 40 of
@@ -173,7 +175,7 @@ def summary(lab, log=()):
             town[k] = bool(town[k])
         towns.append(town)
     return {"size": [hm.size_x, hm.size_y], "layout": hm.layout, "terrain": terrain_string(hm), "towns": towns,
-            "attempts": sum(1 for e in events_from_log(log) if e[0] == "land")}
+            "attempts": sum(1 for line in log if line == LAND_AND_SEA)}
 
 
 # ------------------------------------------------------------------------------------------- map conditions

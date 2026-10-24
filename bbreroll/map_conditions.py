@@ -8,7 +8,9 @@ no condition. A port is the game's own settlement flag IsCoastal. Southern ports
 (the city states); northern ports are the other ports in the north band (the top `north_band` percent of the map's
 rows, see mapgen.in_north_band).
 
-limits() is the most the scripts can place, not what maps usually have. The survey (bb_seedlab MODLOG "MAP SURVEY
+limits() is the most the scripts can place, not what maps usually have. limits(vanilla=True) is Vanilla's: its settlement
+lists have fixed Amounts (VANILLA_LISTS) and no Map Option acts on them; the two Vanilla maps the lab tests have exactly
+those numbers of towns. The survey (bb_seedlab MODLOG "MAP SURVEY
 (2026-10-19)"): 1,000 Legends 19.4.22 maps at the default Map Options, seeds 5000000000..5000000999; 997 finished
 (3 runs raised in guaranteeAllBuildingsInSettlements). min / median / p90 / max:
   ports 0 / 4 / 5 / 7 (limit 23); southern ports 0 / 0 / 1 / 3 (limit 3)
@@ -43,6 +45,21 @@ LEGENDS_LISTS = (
     ("civil", 0.50, ((1, 5, 1), (2, 3, 1), (3, 2, 2))),            # Legends_villages
     ("military", 0.30, ((1, 5, 1), (2, 3, 1), (3, 2, 2))),         # Legends_fortifications
     ("city_state", 0.0, ((3, 10, 3),)),                            # Legends_citystates
+)
+
+# Vanilla 1.5.2.3's Const.World.Settlements.Master (scripts/config/world_settlements.nut:799-836), in order: (town type
+# key, Amount). Each list makes its Amount of towns of its type; there is no Ratio, no Sizes and no Map Option. The
+# last row is pushed by the desert DLC (scripts/dlc/dlc_desert.nut:90), so Vanilla maps need every DLC (the program
+# allows them only then, gamedata.all_dlc). The lists: Villages_small_coast, Villages_medium_coast, Villages_large_coast,
+# Villages_small, Villages_medium, Villages_large, Fortifications_small, Fortifications_medium, Fortifications_large
+# (the strongholds: *_fort scripts), CityStates. buildSettlements gives up on a list after 3000 tries in a row
+# (worldmap_generator.nut:1775) and the map goes on with fewer towns, so an Amount is the most its list makes.
+# A game test checks this table against the game's (tests/test_mapgen_game.py test_vanilla_lists_match_the_game).
+VANILLA_LISTS = (
+    ("size1", 1), ("size2", 1), ("size3", 1),                       # the coastal villages
+    ("size1", 6), ("size2", 2), ("size3", 2),                       # the other villages
+    ("military", 2), ("military", 2), ("military", 2),              # the strongholds, small / medium / large
+    ("city_state", 3),                                              # the city states (desert DLC)
 )
 
 
@@ -99,16 +116,25 @@ def _placements(settlements):
     return out
 
 
-def limits(map_options=None):
+def limits(map_options=None, vanilla=False):
     """The most of each condition one map can have with these Map Options (None: Legends' defaults), in the shape of
     counts(): {"ports", "ports_south", "ports_north", "towns": {key: n}}. Only Settlements changes it: the other
     options act on the terrain or after the towns, never on the number of placement calls.
+    vanilla=True: Vanilla's limits, from VANILLA_LISTS (see above). Vanilla has no Map Option for its towns, so
+    map_options is not read then.
 
     Per town type: the MinAmount calls of its lists plus all of their random calls (see _placements). Ports: every
     list holds a type that can stand at the sea (the coastal fishing village and coast fort, the city state is
     IsFlexible), and the port flag comes from the tile's neighbours and the open sea (settlement.updateProperties),
     so the scripts give no tighter bound than the town count: ports <= all towns, southern ports <= city states,
-    northern ports <= the towns that are not southern."""
+    northern ports <= the towns that are not southern. Vanilla's bound is the same: every town may be a port."""
+    if vanilla:
+        towns = dict.fromkeys(TOWN_TYPE_KEYS, 0)
+        for key, amount in VANILLA_LISTS:
+            towns[key] += amount
+        total = sum(amount for _key, amount in VANILLA_LISTS)
+        return {"ports": total, "ports_south": towns["city_state"], "ports_north": total - towns["city_state"],
+                "towns": towns}
     towns = dict.fromkeys(TOWN_TYPE_KEYS, 0)
     total = 0             # not the sum of the size limits: a random call makes one town of ONE size
     for kind, mins, extra, pickable in _placements(_settlements(map_options)):
