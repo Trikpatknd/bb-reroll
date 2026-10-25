@@ -73,9 +73,10 @@ too). Left out, each rule load-bearing: neighbour order reversed 1295 / 1026 exa
 UNVERIFIED by any route log (buildAdditionalRoads' routes are not logged; the lab's gate 2 tests them indirectly
 through the finished roads, the stop RoadDirections grid): buildAdditionalRoads' route tiles use this same search with
 RoadMult 0.25 (a road step on cost-10 land is trunc(100 * 0.25) = 25) and its 18-entry table. MEASURED 2026-10-25
-through the finished grids: Vanilla 40 of 40 maps' stop RoadDirections equal the game's; Legends 16 of 40 (the others
-differ by additional-road tiles after the attached locations were placed with other draws or by something not
-traced yet, see the lab's report), so it holds at least where the attached locations agree.
+through the finished grids: the stop RoadDirections equal the game's on 40 of 40 Vanilla maps and 40 of 40 Legends maps
+(the lab built each Legends map with the game batch's black-market session counter: 0 for the first campaign of a game
+session, 2 for every later one; with the counter at 0 for every job only 16 of 40 matched, because refineSettlements
+then places other attached locations).
 Not modelled (NavError when the tiles are asked for; no map script asks): RoadOnly and StopAtRoad (0x4ea88d: the first
 generated road tile ends the search), a maximum (0x4ea92a), HeatCost, and a cost table entry that is not a whole number
 (the exe's table holds ints; how its setter takes 2.5 is not read). A blocked type here is the cost table rule above
@@ -86,7 +87,7 @@ reads the goal tile's cost (it accepts a goal when an expanded node is next to i
 enterable. `isEmpty()` stays the component rule (it is exact for the questions the generator asks, MEASURED, Checkpoint
 B), and a path the component rule calls empty has no tiles. buildAdditionalRoads does ask for the tiles of goals of a
 blocked type (attached locations on mountains, cost 0): the exe would route to them; trying that in the lab changed no
-Legends grid (16 of 40 equal with and without), so it is not modelled.
+Legends grid (16 of 40 equal with and without, before the counter was set; all 40 match without it), so it is not modelled.
 `Navigator.route_override` is a hook for the lab's road fitting (bb_seedlab `tools/road_fit.py`): it may supply route
 tiles from outside; unset, nothing changes.
 """
