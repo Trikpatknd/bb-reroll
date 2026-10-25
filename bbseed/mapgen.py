@@ -147,10 +147,10 @@ def summary(lab, log=()):
 
     Compared with the game (map-search Task 7, 40 in-game maps, bb_seedlab MODLOG "CHECKPOINT B"): every town's
     script, x, y, size, name (city states aside), port, southern and military, in this order, are the game's in 40 of
-    40 maps, and so is the terrain as it is right before buildRoads. UNVERIFIED (stage 2): `faction`, the NAMES of the
-    city states, and the terrain tiles changed after buildRoads (1 to 24 per map differed: hills along the roads):
-    they depend on the roads' tiles, which are not exact until the lab has the game's own path finder. No condition
-    uses them."""
+    40 maps, and so is the terrain as it is right before buildRoads. The terrain tiles changed after buildRoads are the game's
+    too since stage 2 B1 (40 of 40 maps on both setups; Legends with the in-game batch's black-market counter).
+    UNVERIFIED (stage 2 B2): `faction` and the NAMES of the city states (equal on Legends 4 of 40, Vanilla 2 of 40).
+    No condition uses them."""
     run = lab._maps
     hm = None if run is None else run.hexmap
     if hm is None:

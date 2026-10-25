@@ -439,3 +439,46 @@ def test_route_tiles_to_a_goal_of_a_blocked_type_are_the_exes_search():
     m.touch()
     path = nav.findPath(None, m.tile(0, 0), m.tile(4, 0), settings(nav, ActionPointCosts=costs(plains=10)), 0)
     assert path.isEmpty(None) and path.getSize(None) == 0
+
+
+class _HeapItem:
+    """An open-list stand-in: the heap compares f alone; the name shows the order."""
+
+    def __init__(self, name, f):
+        self.name, self.f = name, f
+
+
+def test_heap_tie_order_pushes():
+    """Five pushes with equal f (_heap_push 0x4cc580: a value climbs only past a STRICTLY larger parent, so the vector
+    stays A B C D E), then five pops (_heap_pop: last value out, the hole sinks from the root via _heap_sift 0x4cc4f0,
+    which takes the RIGHT child unless right.f > left.f, then the value climbs). Worked by hand:
+      pop 1: [A B C D E] val E, bottom 4, max_non_leaf 1: idx 0 -> 2 (C, tie -> right), hole 2; 2 != 1; E climbs: no
+             -> [C B E D], out A
+      pop 2: val D, bottom 3, max_non_leaf 1: idx 0 -> 2 (E), hole 2 -> [E B D], out C
+      pop 3: val D, bottom 2, max_non_leaf 0: no loop; idx 0 == 0 and bottom even: hole <- a[1] = B, hole 1; D there
+             -> [B D], out E
+      pop 4: val D, bottom 1: D to the root -> [D], out B;   pop 5: out D.
+    A FIFO tie rule would give A B C D E; a LIFO one E D C B A."""
+    from bbseed.navigator import _heap_pop, _heap_push
+
+    a = []
+    for k in [_HeapItem(name, 0) for name in "ABCDE"]:
+        a.append(k)
+        _heap_push(a, len(a) - 1, 0, k)
+    assert [k.name for k in a] == list("ABCDE")
+    assert "".join(_heap_pop(a).name for _ in range(5)) == "ACEBD"
+
+
+def test_heap_tie_order_make_heap():
+    """make_heap (_heap_make 0x4cc310) on [X1 Y0 Z0 W0] (letter = name, digit = f), worked by hand:
+      hole 1: val Y, bottom 4, max_non_leaf 1: no loop; idx 1 == 1, bottom even: hole <- a[3] = W, hole 3; Y climbs from 3
+              to top 1: parent a[1] = W, 0 > 0 no -> [X W Z Y]
+      hole 0: val X: idx 0 -> 2 (Z vs W tie -> right Z), hole 2; X climbs: a[0] = Z, 0 > 1 no -> [Z W X Y]
+    pops: val Y, bottom 3: idx 0 -> 2 (X1 > W0 -> left W), hole 1; Y stays -> [W Y X], out Z;
+          val X, bottom 2: hole <- a[1] = Y, X at 1 -> [Y X], out W;  then Y, X."""
+    from bbseed.navigator import _heap_make, _heap_pop
+
+    a = [_HeapItem(name, f) for name, f in [("X", 1), ("Y", 0), ("Z", 0), ("W", 0)]]
+    _heap_make(a)
+    assert [k.name for k in a] == list("ZWXY")
+    assert "".join(_heap_pop(a).name for _ in range(4)) == "ZWYX"
