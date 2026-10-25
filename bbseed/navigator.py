@@ -34,8 +34,9 @@ its `ActionPointCosts[tile.Type]` is a finite number > 0, and with `RoadOnly` it
   and the 18-entry table of buildAdditionalRoads lacks the 19th type (Oasis, on every map). A type past the end of a
   table is NOT blocked: the settings object starts with every one of its 32 entries at 2 (the exe's createSettings,
   0x4ea2b0) and assigning an array writes only its own entries, so such a type costs 2 (MEASURED: buildAdditionalRoads'
-  roads cross Oasis tiles in the game; with Oasis blocked no stop grid of the 80 maps matched, with cost 2 the
-  Vanilla grids match 40 of 40). Whether a tile of a type Legends adds (past the 19 entries) can be entered
+  roads cross Oasis tiles in the game; with Oasis blocked no stop grid of the 80 maps matched, with cost 2 the stop
+  grids match 40 of 40 on Vanilla and 40 of 40 on Legends, the latter with the game batch's black-market counter, see
+  below). Whether a tile of a type Legends adds (past the 19 entries) can be entered
   follows from the same default (cost 2, by the exe's code alone), but none of the 40 maps of Checkpoint B has one
   (bb_seedlab MODLOG) and neither has any of 3 more maps checked when this rule was added; a question asked on a
   map that does have one still raises NavError (not modelled) instead of guessing.
@@ -70,24 +71,31 @@ route by route): buildRoads' settings (StopAtRoad false, RoadOnly false, HeatCos
 empty / non-empty answer in 2354 of 2354 and 1890 of 1890 calls (the component rule of `isEmpty()` agrees on all of them
 too). Left out, each rule load-bearing: neighbour order reversed 1295 / 1026 exact, h weight 10 1334 / 1067, h 0 1198 /
 955.
-UNVERIFIED by any route log (buildAdditionalRoads' routes are not logged; the lab's gate 2 tests them indirectly
-through the finished roads, the stop RoadDirections grid): buildAdditionalRoads' route tiles use this same search with
-RoadMult 0.25 (a road step on cost-10 land is trunc(100 * 0.25) = 25) and its 18-entry table. MEASURED 2026-10-25
-through the finished grids: the stop RoadDirections equal the game's on 40 of 40 Vanilla maps and 40 of 40 Legends maps
-(the lab built each Legends map with the game batch's black-market session counter: 0 for the first campaign of a game
-session, 2 for every later one; with the counter at 0 for every job only 16 of 40 matched, because refineSettlements
-then places other attached locations).
-Not modelled (NavError when the tiles are asked for; no map script asks): RoadOnly and StopAtRoad (0x4ea88d: the first
-generated road tile ends the search), a maximum (0x4ea92a), HeatCost, and a cost table entry that is not a whole number
-(the exe's table holds ints; how its setter takes 2.5 is not read). A blocked type here is the cost table rule above
-(0, negative, inf, not a number, past the table), the exe blocks only a zero: a negative entry is not in any script table.
-The exe and `isEmpty()` differ in places no logged buildRoads goal reached (none had cost 0 or Type 0): the exe never
-reads the goal tile's cost (it accepts a goal when an expanded node is next to it, even a blocked one) and answers
-"empty" up front for a goal of Type 0 with maximum 0, while the component rule blocks every goal whose entry is not
-enterable. `isEmpty()` stays the component rule (it is exact for the questions the generator asks, MEASURED, Checkpoint
-B), and a path the component rule calls empty has no tiles. buildAdditionalRoads does ask for the tiles of goals of a
-blocked type (attached locations on mountains, cost 0): the exe would route to them; trying that in the lab changed no
-Legends grid (16 of 40 equal with and without, before the counter was set; all 40 match without it), so it is not modelled.
+buildAdditionalRoads' route tiles (RoadMult 0.25: a road step on cost-10 land is trunc(100 * 0.25) = 25; its own
+18-entry table) are this same search, read from the exe's code. The game's log has buildRoads' routes only, so they are
+tested through the finished roads, the stop RoadDirections grid: MEASURED 2026-10-25, equal to the game's on 40 of 40
+Vanilla maps and 40 of 40 Legends maps (3585 and 2541 route-tile requests; the lab built each Legends map with the game
+batch's black-market session counter: 0 for the first campaign of a game session, 2 for every later one; with the
+counter at 0 for every job only 16 of 40 matched, because refineSettlements then places other attached locations).
+Not modelled: a maximum (0x4ea92a) and HeatCost raise NavError on every findPath call; RoadOnly and StopAtRoad (0x4ea88d:
+the first generated road tile ends the search) route tiles and a cost table entry that is not a whole number (the exe's
+table holds ints; how its setter takes 2.5 is not read) raise NavError when the tiles are asked for (isEmpty() is still
+answered; no map script asks for those tiles). A blocked type here is the cost table rule above (0, negative, inf, not a
+number); the exe blocks only a zero: a negative entry is not in any script table.
+A goal of a blocked type (cost 0). The exe never reads the goal tile's cost: it accepts the goal when an expanded tile is
+next to it, even a blocked one (0x4ea87e), and answers "empty" up front for a goal of terrain type 0 with maximum 0
+(0x4ea50c). The component rule blocks every goal whose table entry is not enterable, so for such a goal `isEmpty()` and
+the tiles can differ, and each follows its own rule: `isEmpty()` stays the component rule (it agrees with the game on
+every logged call, 2354 of 2354 and 1890 of 1890, and the checks that rely on it, ports and attached locations, come out
+as in the game: MEASURED, Checkpoint B); the tiles (getSize / getCurrent / pop) are the exe's search even when
+`isEmpty()` is true: they end on the goal when an expanded tile touches it, and are empty when none does or the goal is
+of type 0. The scripts ask one or the other: buildAdditionalRoads asks only for tiles (worldmap_generator.nut:2228-2232,
+no isEmpty()), settlement placement, ports, attached locations and connections only `isEmpty()`, buildRoads both for the
+same path. MODELLED FROM THE EXE'S CODE, NOT EXERCISED: on the 80 maps no route-tile request had a goal of a blocked type
+(0 of 3585 + 2541 buildAdditionalRoads' and 0 of 2354 + 1890 buildRoads' requests, counted with the batch's counters), so
+no log or grid can tell this rule from the empty tiles the component rule alone would give: gate 2 is equal with and
+without it (0 requests). An enterable goal that nothing reaches has no tiles and is not searched (the exe's search ends
+empty after flooding the reachable tiles: buildRoads' 284 and 244 such calls end empty in the game).
 `Navigator.route_override` is a hook for the lab's road fitting (bb_seedlab `tools/road_fit.py`): it may supply route
 tiles from outside; unset, nothing changes.
 """
@@ -246,7 +254,8 @@ def _heap_make(a):
 
 class Path(SqNative):
     """A found route: the tiles after the start, up to and including the goal (MEASURED, see the module text).
-    `getCurrent()` is the next tile's Coords, `pop()` drops it."""
+    `getCurrent()` is the next tile's Coords, `pop()` drops it. The tiles of a path that `isEmpty()` calls empty are
+    the exe's search too when the goal is a blocked type (see the module text), else none."""
 
     def __init__(self, nav, found, compute):
         self.nav = nav
@@ -258,7 +267,7 @@ class Path(SqNative):
 
     def tiles(self):
         if self._tiles is None:
-            self._tiles = self._compute() if self.found else []
+            self._tiles = self._compute()
         return self._tiles
 
     def sq_get(self, key):
@@ -388,15 +397,23 @@ class Navigator(SqNative):
         stop_at_road = bool(f["StopAtRoad"])
 
         def compute():
-            # route_override (the lab's road-fitting hook, see the module text) supplies the route when it returns a list
-            if self.route_override is not None:
+            # The tiles of an empty path (the component rule says no route): an enterable goal that no tile next to it
+            # reaches ends the exe's search empty too, so nothing is searched (buildRoads asks for these tiles on every
+            # unreachable goal: ~280 calls per Legends map); a goal of a blocked type (cost 0: the exe accepts the goal
+            # when an expanded tile is next to it, never reading its cost) is searched, as for any other request.
+            if not found and goal.Type not in blocked:
+                return []
+            # route_override (the lab's road-fitting hook, see the module text) supplies the route when it returns a list;
+            # it is asked about found routes only (the game's logged routes are those)
+            if found and self.route_override is not None:
                 info = {"costs": costs, "blocked": blocked, "road_only": road_only, "road_mult": road_mult, "nav": self}
                 route = self.route_override(start, goal, info)
                 if route is not None:
                     return list(route)
             route = self.astar(start, goal, costs, blocked, road_only, road_mult, stop_at_road)
-            if not route:
-                raise NavError("the game's search found no route although the components say there is one")
+            if found and not route:
+                raise NavError("the game's search found no route although the components say there is one "
+                               "(not modelled: the exe answers empty up front for a goal of terrain type 0)")
             return route
 
         return Path(self, found, compute)
@@ -409,6 +426,8 @@ class Navigator(SqNative):
         if road_only or stop_at_road:
             raise NavError("route tiles with %s (not modelled: no map script asks for them)" % (
                 "RoadOnly" if road_only else "StopAtRoad"))
+        if goal.Type == 0:
+            return []                   # 0x4ea50c: with a maximum of 0 a goal of terrain type 0 answers "empty" up front
         self.searches += 1
         hm = self.hexmap
         width, height, cols = hm.size_x, hm.size_y, hm.cols

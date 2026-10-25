@@ -401,3 +401,41 @@ def test_a_table_entry_that_is_not_a_whole_number_is_not_modelled_for_route_tile
     assert not path.isEmpty(None)
     with pytest.raises(NavError, match="not modelled"):
         path.getSize(None)
+
+
+def test_route_tiles_to_a_goal_of_a_blocked_type_are_the_exes_search():
+    """The exe accepts the goal when an expanded tile is next to it, before the closed and cost checks (nav_exe.py:230-232):
+    a goal on a cost-0 type (buildAdditionalRoads' attached locations on mountains) gets route tiles that end on it, while
+    `isEmpty()` stays the component rule (true: the goal cannot be entered). A goal no expanded tile touches, and an
+    enterable goal nobody reaches, have no tiles (the second is not even searched); a goal of terrain type 0 is empty up
+    front."""
+    m, nav = small_map(["LLLLH", "LLLLL", "LLLLL"])
+    s = settings(nav, ActionPointCosts=costs(plains=10))                # Hills cost 0: blocked
+    start, goal = m.tile(0, 0), m.tile(4, 0)
+    path = nav.findPath(None, start, goal, s, 0)
+    assert path.isEmpty(None)
+    tiles = path.tiles()
+    assert tiles[-1] is goal and len(tiles) >= m.distance(start, goal) and path.getSize(None) == len(tiles)
+    assert all(t.Type == PLAINS for t in tiles[:-1])
+    for a, b in zip([start] + tiles, tiles):
+        assert m.distance(a, b) == 1
+    assert R.get(path.getCurrent(None), "X") == R.get(tiles[0]._coords(), "X")
+    # an island of one blocked tile in the sea: no expanded tile touches it, so the search ends empty
+    m, nav = small_map(["LLWWW", "LLWHW", "LLWWW", "LLWWW"])
+    s = settings(nav, ActionPointCosts=costs(plains=10))
+    path = nav.findPath(None, m.tile(0, 0), m.tile(3, 1), s, 0)
+    assert path.isEmpty(None) and path.getSize(None) == 0
+    with pytest.raises(NotModelled):
+        path.getCurrent(None)
+    # an enterable goal behind the water: empty, and no search runs for it
+    m, nav = small_map(["LLWLL", "LLWLL"])
+    s = settings(nav, ActionPointCosts=costs(plains=10))
+    before = nav.searches
+    path = nav.findPath(None, m.tile(0, 0), m.tile(4, 0), s, 0)
+    assert path.isEmpty(None) and path.getSize(None) == 0 and nav.searches == before
+    # a goal of terrain type 0 next to an expanded tile: the exe answers empty up front
+    m, nav = small_map(["LLLLH", "LLLLL", "LLLLL"])
+    m.tile(4, 0).Type = 0
+    m.touch()
+    path = nav.findPath(None, m.tile(0, 0), m.tile(4, 0), settings(nav, ActionPointCosts=costs(plains=10)), 0)
+    assert path.isEmpty(None) and path.getSize(None) == 0
