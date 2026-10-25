@@ -42,7 +42,8 @@ until a tile's Type or road changes), which costs nothing per question.
 Not promised: WHICH tiles a route takes. That is a plain A* (cost of entering a tile = its ActionPointCosts entry,
 times RoadMult on a road tile; neighbours in direction order; ties to the earlier found) and is marked
 UNVERIFIED: stage 2 copies the game's A*. The roads, and so everything the generator draws after
-buildRoads, depend on it (map-search Task 5 report).
+buildRoads, depend on it (map-search Task 5 report). `Navigator.route_override` is a hook for the lab's road fitting
+(bb_seedlab `tools/road_fit.py`): it may supply those route tiles from outside; unset, nothing changes.
 """
 import heapq
 import math
@@ -175,6 +176,9 @@ class Navigator(SqNative):
     def __init__(self, hexmap, ntypes=BASE_TYPES):
         self.hexmap = hexmap
         self.ntypes = ntypes            # Const.World.TerrainType.COUNT (terrain_count(engine))
+        # Callable(start, goal, info) -> list of tiles or None: the lab's road-fitting hook (bb_seedlab tools/road_fit.py)
+        # replays the game's logged routes; None (the default) keeps the A* route
+        self.route_override = None
         self.addr = R.new_addr()
         # (blocked types, road only) -> (the tile world's versions it was made at, {tile: component number})
         self._components = {}
@@ -258,7 +262,17 @@ class Navigator(SqNative):
         found = self.reachable(start, goal, blocked, road_only, lacking)
         costs = list(f["ActionPointCosts"])
         road_mult = float(f["RoadMult"])
-        return Path(self, found, lambda: self.astar(start, goal, costs, blocked, road_only, road_mult))
+
+        def compute():
+            # route_override (the lab's road-fitting hook, see the module text) supplies the route when it returns a list
+            if self.route_override is not None:
+                info = {"costs": costs, "blocked": blocked, "road_only": road_only, "road_mult": road_mult, "nav": self}
+                route = self.route_override(start, goal, info)
+                if route is not None:
+                    return list(route)
+            return self.astar(start, goal, costs, blocked, road_only, road_mult)
+
+        return Path(self, found, compute)
 
     def astar(self, start, goal, costs, blocked, road_only, road_mult):
         """UNVERIFIED: stage 2 copies the game's A*. The cheapest route by the cost table (a road tile costs

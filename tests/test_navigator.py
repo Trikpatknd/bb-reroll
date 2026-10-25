@@ -241,3 +241,34 @@ def test_a_type_of_the_base_game_past_the_end_of_a_table_is_still_blocked_on_a_l
     table = costs(plains=10)
     table[OASIS] = 10
     assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
+
+
+# ---------------------------------------------------------------- the route override (stage 2 Task 2: road fitting)
+def test_route_override_used():
+    """`route_override` (the lab's hook for replaying logged routes) supplies the route tiles when it returns a list."""
+    m, nav = small_map(["LLLLL", "LLLLL", "LLLLL", "LLLLL", "LLLLL"])
+    seen = []
+    fixed = [m.tile(1, 0), m.tile(2, 0), m.tile(3, 0)]
+
+    def override(start, goal, info):
+        seen.append((start, goal, info))
+        return fixed
+
+    nav.route_override = override
+    path = nav.findPath(None, m.tile(0, 0), m.tile(4, 4), settings(nav, ActionPointCosts=costs(plains=10)), 0)
+    assert not path.isEmpty(None) and path.getSize(None) == 3
+    assert R.get(path.getCurrent(None), "X") == R.get(m.tile(1, 0)._coords(), "X")
+    start, goal, info = seen[0]
+    assert start is m.tile(0, 0) and goal is m.tile(4, 4)
+    assert info["nav"] is nav and info["road_only"] is False and info["road_mult"] == 1.0
+    assert info["blocked"] == frozenset(range(TYPES)) - {PLAINS} and len(info["costs"]) == TYPES
+
+
+def test_route_override_none_falls_back():
+    """An override that returns None leaves the route to the A* (the same tiles as with no override)."""
+    m, nav = small_map(["LLLLL", "LLLLL", "LLLLL", "LLLLL", "LLLLL"])
+    s = settings(nav, ActionPointCosts=costs(plains=10))
+    plain = nav.findPath(None, m.tile(0, 0), m.tile(4, 4), s, 0).tiles()
+    nav.route_override = lambda start, goal, info: None
+    fell_back = nav.findPath(None, m.tile(0, 0), m.tile(4, 4), s, 0).tiles()
+    assert fell_back and [id(t) for t in fell_back] == [id(t) for t in plain]
