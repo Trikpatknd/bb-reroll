@@ -99,7 +99,9 @@ GAME_TOWNS = {
 }
 GAME_ATTEMPTS = {"1234567890": 2, "0000000002": 1}            # the game's "Land Ocean ratio" lines per map
 # LAB REGRESSION ONLY (see the module text): zlib.crc32 of the summary's terrain string
-LAB_TERRAIN_CRC32 = {"1234567890": 0xFB00CA26, "0000000002": 0x610612B9}
+# (changed 2026-10-25, stage 2 B1 Task 5: the roads are now the game's, so the tiles changed after buildRoads moved;
+# old values 0xFB00CA26 / 0x610612B9 came from the lab's own A*)
+LAB_TERRAIN_CRC32 = {"1234567890": 0x73097295, "0000000002": 0x7D0F5188}
 # Legends counts the black markets it builds in ::Const.World.Buildings.Blackmarket and never resets it (its
 # Buildings.reset() resets Stables only), so what refineSettlements draws depends on the campaigns started before in the
 # same game session: 0 on the first one, at least 2 after any map (2 or more all act alike). The towns and the terrain
@@ -152,7 +154,8 @@ def test_land_and_sea_attempts_are_the_games(maps, seed):
 
 @pytest.mark.parametrize("seed", sorted(GAME_TOWNS))
 def test_terrain_lab_regression(maps, seed):
-    """Not game truth: the summary terrain includes the tiles changed after buildRoads (unverified, stage 2)."""
+    """A regression pin, not game truth: the summary terrain includes the tiles changed after buildRoads (the roads are the
+    game's since stage 2 B1 Task 5, but the tiles that change after them are not compared by this test)."""
     terrain = maps[seed]["terrain"]
     assert len(terrain) == 140 * 170
     assert zlib.crc32(terrain.encode("ascii")) == LAB_TERRAIN_CRC32[seed]

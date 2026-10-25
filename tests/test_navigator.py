@@ -1,6 +1,7 @@
 """The world navigator (bbseed/navigator.py): `findPath(...).isEmpty()` is true exactly when no route exists under
 the cost table (0, negative, inf = blocked; the start tile is never entered) and RoadOnly. The route's tiles come
-from a plain A* (UNVERIFIED: stage 2 copies the game's A*); the tests only ask that they are a route."""
+from the game's own search (copied from the exe, MEASURED on 80 maps); most tests here only ask that they are a route,
+the two "games_route" tests pin the exact tiles of logged routes."""
 import math
 import sys
 from pathlib import Path
@@ -85,11 +86,18 @@ def test_what_blocks_a_tile(cost):
     assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
 
 
-def test_a_type_past_the_end_of_the_table_is_blocked():
-    # buildAdditionalRoads' cost table has 18 entries: the 19th type (Oasis) is not in it
+def test_a_type_past_the_end_of_the_table_costs_2():
+    """MEASURED in the exe (createSettings 0x4ea2b0 fills all 32 table entries with 2; a shorter array only writes its
+    own) and in the game's roads: buildAdditionalRoads' 18-entry table has no entry for Oasis, and its roads cross
+    Oasis tiles. A type past the end is enterable at cost 2, not blocked (this test said "blocked" while that rule was
+    still unverified)."""
     m, nav = small_map(["LLLWLLL", "LLLWLLL"])
-    table = costs(plains=1, ocean=1)[:OCEAN + 1]
+    table = [0, 1]                                  # entries for types 0 and 1 (Ocean) only: Plains is past the end
+    s = settings(nav, ActionPointCosts=table)
+    assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0).isEmpty(None)
+    table = [0, 0]                                  # the ocean blocked: the land is still enterable, the water is not
     assert nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
+    assert not nav.findPath(None, m.tile(0, 0), m.tile(2, 1), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
 
 
 def test_the_start_tile_is_never_entered_but_the_goal_is():
@@ -233,12 +241,14 @@ def test_a_table_with_entries_for_every_type_answers_for_the_types_legends_adds(
         nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0)
 
 
-def test_a_type_of_the_base_game_past_the_end_of_a_table_is_still_blocked_on_a_legends_map():
-    """buildAdditionalRoads' table has 18 entries and every map has Oasis tiles (type 18): that rule is as it was."""
+def test_a_type_of_the_base_game_past_the_end_of_a_table_is_enterable_on_a_legends_map():
+    """buildAdditionalRoads' table has 18 entries and every map has Oasis tiles (type 18): they cost 2 (MEASURED, see
+    test_a_type_past_the_end_of_the_table_costs_2); an explicit 0 entry blocks them."""
     m, nav = legends_map(["LLLOLLL", "LLLOLLL"])
     table = costs(plains=10)[:OASIS]                            # 18 entries
+    assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
+    table = costs(plains=10)                                    # 19 entries, Oasis 0
     assert nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
-    table = costs(plains=10)
     table[OASIS] = 10
     assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
 
@@ -272,3 +282,122 @@ def test_route_override_none_falls_back():
     nav.route_override = lambda start, goal, info: None
     fell_back = nav.findPath(None, m.tile(0, 0), m.tile(4, 4), s, 0).tiles()
     assert fell_back and [id(t) for t in fell_back] == [id(t) for t in plain]
+
+
+# ---------------------------------------------------------------- the game's own search (stage 2 B1 Task 5)
+# buildRoads' settings: its 19-entry cost table and RoadMult 0.15 (the road_fit module of bb_seedlab calls them COSTS)
+BUILD_ROADS_COSTS = [0, 0, 10, 50, 60, 40, 40, 40, 40, 0, 1, 50, 30, 30, 10, 10, 0, 10, 10]
+TYPE_CHARS = "0123456789abcdefghi"                      # one character per terrain type 0..18
+
+
+def window_map(types, roads):
+    """A map cut out of a real one: types = one string per row (TYPE_CHARS), roads = '1' where the tile has a road.
+    The x of the window's first column is even in the real map, so the hex layout is the same."""
+    m = HexMap(None, len(types[0]), len(types), "even-q-up")
+    for y, (trow, rrow) in enumerate(zip(types, roads)):
+        for x, (tc, rc) in enumerate(zip(trow, rrow)):
+            m.tile(x, y).Type = TYPE_CHARS.index(tc)
+            m.tile(x, y).RoadDirections = 9 if rc == "1" else 0
+    m.touch()
+    return m, m.navigator
+
+
+def build_roads_route(m, nav, start, goal):
+    s = settings(nav, ActionPointCosts=BUILD_ROADS_COSTS, RoadMult=0.15)
+    path = nav.findPath(None, m.tile(*start), m.tile(*goal), s, 0)
+    return [(t.x, t.y) for t in path.tiles()]
+
+
+# MEASURED (2026-10-25): Legends job 0 (seed 1234567890), buildRoads call 12, (27,77) -> (24,88) on the real map, cut to
+# the 26 x 32 tiles around it (the rest of the map is ocean here: a smaller window changes which of the equal-cost routes
+# the heap order picks). Two routes cost the same; the game takes (22,85)-(23,85)-(23,86), the lab's old A* took
+# (22,85)-(22,86)-(23,86). The tiles are the game's own logged route (shifted by the window's origin (12, 67)).
+LEGENDS_TYPES = [
+    "11111111111112221111111111", "11111111111222222211111111", "11111111144444444422111111",
+    "11111119994444444222881111", "11111999994222444222888811", "11149999942222444222228888",
+    "12444999442228454522222288", "22444494422522555552222283", "22424222422522255888222255",
+    "88222222222552225582222255", "88228882222255225822222255", "88228882222225522222222222",
+    "82228282252555542222222222", "22222224555555544922222233", "55244944455555449992222233",
+    "55549994455555449994255538", "22549999995553444444445481", "22444999995553499999499111",
+    "22224494942259999999499111", "22222244482249999999949111", "22222224888244999999942111",
+    "42222444888224449499942111", "44254999444822444499942111", "45554999494222444444442111",
+    "14554399999225554442444111", "19994499999422554242334111", "11994444999422222222334111",
+    "11119444999442222225511111", "11111144422248282221111111", "11111111422288888111111111",
+    "11111111112888811111111111", "11111111111181111111111111"]
+LEGENDS_ROADS = ["0" * 26] * 2 + [
+    "00000000000000000001000000", "00000000000000000001000000", "00000000000000000001000000",
+    "00000000000000000000110000", "00000000000000000000001100", "00000000000000000000000100",
+    "00000000000000000000000100", "00000000000000000000011100", "00000000000000010001100100",
+    "00000000000000001110000011"] + ["0" * 26] * 20
+LEGENDS_ROUTE = [(14, 10), (13, 10), (12, 11), (11, 11), (10, 12), (10, 13), (10, 14), (10, 15), (10, 16), (10, 17),
+                 (10, 18), (11, 18), (11, 19), (11, 20), (12, 21)]
+
+
+def test_the_games_route_on_a_legends_map_window():
+    m, nav = window_map(LEGENDS_TYPES, LEGENDS_ROADS)
+    assert build_roads_route(m, nav, (15, 10), (12, 21)) == LEGENDS_ROUTE
+
+
+# MEASURED (2026-10-25): Vanilla job 0 (seed 7100000001), buildRoads call 8, (105,67) -> (110,55) on the real map, cut to
+# the 23 x 30 tiles around it (origin (96, 47)); the game's route runs along road pieces from earlier calls.
+VANILLA_TYPES = [
+    "1111111111111fff1111111", "11111111111fffffff11111", "111111111fffffffffff111",
+    "111111144ffffffffff4ff1", "111111ff4fffffffffff4ff", "111111ffffffffffff4f4ff",
+    "111111fffffffffff4fffff", "111111ffffffffffff4ffff", "111111fffffffffffffffff",
+    "111111fffffffffffffffff", "111111fff9ffffffffffff9", "111111f99994fffffffff49",
+    "1111119999944ffffffff44", "1111119994444ffffffffff", "111114999222ffffffff44f",
+    "1114ff9992224fffffffff4", "1774444442224ffffffffff", "14494444f42222fffffffff",
+    "14999444422222fff94944f", "14999942272222f49999944", "17779992227222249999944",
+    "17729992222222224999422", "12222242222222222494222", "12222222222222224944222",
+    "12222222222272229994211", "11222222272222229991111", "11112222225555255111111",
+    "11111152222255511111111", "11111111222221111111111", "11111111112111111111111"]
+VANILLA_ROADS = [
+    "0" * 23] * 4 + [
+    "00000000000000000000011", "00000000000000000101010", "00000000000000011010100",
+    "00000000000000100000000", "00000000000000100000000"] + ["0" * 23] * 7 + [
+    "00000000000000000001000", "00000000000000000110110", "00000000000000011000001",
+    "00000000000001100000000", "00000000010110000000000", "00000000001000000000000"] + ["0" * 23] * 8
+VANILLA_ROUTE = [(10, 21), (11, 20), (12, 20), (13, 19), (14, 19), (14, 18), (14, 17), (14, 16), (14, 15), (14, 14),
+                 (14, 13), (14, 12), (14, 11), (14, 10), (14, 9), (14, 8)]
+
+
+def test_the_games_route_on_a_vanilla_map_window():
+    m, nav = window_map(VANILLA_TYPES, VANILLA_ROADS)
+    assert build_roads_route(m, nav, (9, 20), (14, 8)) == VANILLA_ROUTE
+
+
+def test_the_window_data_has_the_size_the_comment_says():
+    assert (len(LEGENDS_TYPES), {len(r) for r in LEGENDS_TYPES}) == (32, {26})
+    assert [len(LEGENDS_ROADS), {len(r) for r in LEGENDS_ROADS}] == [32, {26}]
+    assert (len(VANILLA_TYPES), {len(r) for r in VANILLA_TYPES}) == (30, {23})
+    assert [len(VANILLA_ROADS), {len(r) for r in VANILLA_ROADS}] == [30, {23}]
+
+
+def test_route_tiles_for_what_no_map_script_asks_are_not_modelled():
+    """RoadOnly and StopAtRoad route requests (the scripts only ask isEmpty() with RoadOnly, and no script sets StopAtRoad
+    to true) raise NavError when the tiles are asked for; the empty / non-empty answer stays the component rule."""
+    from bbseed.navigator import NavError
+    m, nav = small_map(["LLLLLLL", "LLLLLLL"])
+    for x in range(7):
+        set_field(m, x, 0, "RoadDirections", 9)
+    for field in ("RoadOnly", "StopAtRoad"):
+        s = settings(nav, ActionPointCosts=costs(plains=10), **{field: True})
+        path = nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0)
+        assert not path.isEmpty(None)
+        with pytest.raises(NavError, match="not modelled"):
+            path.getSize(None)
+        with pytest.raises(NotModelled):
+            path.getCurrent(None)
+    # the same question without them gives tiles
+    s = settings(nav, ActionPointCosts=costs(plains=10))
+    assert nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0).getSize(None) >= 6
+
+
+def test_a_table_entry_that_is_not_a_whole_number_is_not_modelled_for_route_tiles():
+    """The exe's cost table holds ints (settings x 10); how it takes 2.5 is not read: reachability is still answered."""
+    from bbseed.navigator import NavError
+    m, nav = small_map(["LLLLLLL", "LLLLLLL"])
+    path = nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=costs(plains=2.5)), 0)
+    assert not path.isEmpty(None)
+    with pytest.raises(NavError, match="not modelled"):
+        path.getSize(None)
