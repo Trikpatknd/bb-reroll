@@ -472,22 +472,279 @@ def test_query_tiles_in_range_through_a_script(lab):
     assert out == ["60 59 1", str(1 + sum(1 for d in range(6) if m.tile(0, 0).hasNextTile(None, d)))]
 
 
-def test_find_next_region():
-    m = HexMap(None, 20, 20, "even-q-up")
+# ---------------------------------------------------------------- stage 2 B2: the game's region search (GOG exe)
+# Terrain types of the grids below (Const.World.TerrainType: Ocean 1, Plains 2, Hills 4, Forest 5).
+PLAINS, FOREST, OCEAN, HILLS = 2, 5, 1, 4
+
+
+def _grid(w, h, fill=PLAINS):
+    """A map of the measured layout with every tile of one type. Around the tile (4, 4) (x even, Coords (4, 2)) the six
+    neighbours are, in square coordinates: N (4, 5), S (4, 3), NE (5, 4), SE (5, 3), NW (3, 4), SW (3, 3) (Coords
+    offsets N (0, 1), S (0, -1), NE (1, 0), SE (1, -1), NW (-1, 1), SW (-1, 0))."""
+    m = HexMap(None, w, h, "even-q-up")
     for t in m.tiles:
-        t.Type = 2
-    t0 = m.tile(10, 10)
-    assert m.find_next_region(t0, 3, 2) == 0                 # no tile has a region yet
-    far = m.ring(t0, 3)[0]
-    far.Region = 7
-    assert m.find_next_region(t0, 3, 2) == 7 and m.find_next_region(t0, 2, 2) == 0
-    assert m.find_next_region(t0, 3, 5) == 0                 # another type
-    assert m.find_next_region(t0, 3, 0) == 7                 # 0: any type
-    near = m.ring(t0, 1)[3]
-    near.Region = 2
-    assert m.find_next_region(t0, 3, 2) == 2                 # the nearer ring first
-    t0.Region = 9
-    assert m.find_next_region(t0, 3, 2) == 2                 # the tile itself does not count
+        t.Type = fill
+    return m
+
+
+def _region(m, x, y, radius, ttype):
+    return m.find_next_region(m.tile(x, y), radius, ttype)
+
+
+def _label_spot(m, x, y, radius, ttype):
+    """findNextTileOfType as the script calls it: the spot's (x, y) or None; the answer and result.Result agree."""
+    result = SqTable()
+    ok = m.find_next_tile_of_type(m.tile(x, y), radius, ttype, result)
+    spot = R.get(result, "Result")
+    assert ok == (spot is not None)
+    return None if spot is None else (spot.x, spot.y)
+
+
+# The exe's flood order in the tile's direction numbers (N=0 NE=1 SE=2 S=3 SW=4 NW=5): N, S, NE, NW, SE, SW (0x553a20).
+FLOOD_DIRECTIONS = (0, 3, 1, 5, 2, 4)
+
+
+def _flood_transcription(m, start, radius, ttype):
+    """0x553a20 + callback 0x4f3770 transcribed with real recursion and a set of stamps: what the iterative
+    HexMap.find_next_region must equal on every grid."""
+    result = [0]
+    stamped = {start}
+
+    def flood(cur):
+        for d in FLOOD_DIRECTIONS:
+            n = cur.nb[d]
+            if n is None or n in stamped or m.distance(start, n) > radius:
+                continue
+            leaf = False
+            if ttype == 0 or n.Type == ttype:
+                if n.Region != 0:
+                    result[0] = n.Region
+                    leaf = True
+            stamped.add(n)
+            if not leaf:
+                flood(n)
+    flood(start)
+    return result[0]
+
+
+def test_find_next_region_is_the_exes_order():
+    """0x553a20 floods depth first, neighbours N, S, NE, NW, SE, SW (blocks 0x553a70, 0x553aee, 0x553b69, 0x553be3,
+    0x553c61, 0x553cdf), and the callback 0x4f3770 OVERWRITES the result at every leaf it meets (0x4f37dc): nothing
+    stops the flood. A tile of the type with a Region is a leaf (answer 3: stamped, not flooded through).
+    MEASURED on 80 logged maps (stage 2 B2 Task 1): the Region grids are equal on all.
+    Two regions at distance 1 of (4, 4): N (4, 5) has 5, S (4, 3) has 7. The flood meets N first and S second, so the
+    answer is 7; the old model (the first match in Legends' ring order NW, N, NE, SE, S, SW) gave 5."""
+    m = _grid(9, 9)
+    m.tile(4, 5).Region = 5
+    m.tile(4, 3).Region = 7
+    assert _region(m, 4, 4, 3, PLAINS) == 7
+    # all six neighbours are leaves with their own regions: the blocks run in order and the last one, SW, wins
+    nb = {"N": (4, 5), "S": (4, 3), "NE": (5, 4), "NW": (3, 4), "SE": (5, 3), "SW": (3, 3)}
+    reg = {"N": 11, "S": 12, "NE": 13, "NW": 14, "SE": 15, "SW": 16}
+    m = _grid(9, 9)
+    for k, (x, y) in nb.items():
+        m.tile(x, y).Region = reg[k]
+    assert _region(m, 4, 4, 3, PLAINS) == reg["SW"]
+    # take the regions away from the end of the order one by one: the last remaining block's region is the answer
+    # (a Region-0 neighbour is flooded through, but every other leaf there is already stamped)
+    for k in ("SW", "SE", "NW", "NE", "S"):
+        m.tile(*nb[k]).Region = 0
+        expect = {"SW": "SE", "SE": "NW", "NW": "NE", "NE": "S", "S": "N"}[k]
+        assert _region(m, 4, 4, 3, PLAINS) == reg[expect], k
+    # UNVERIFIED (0x553a5e..0x553a67): the start tile is stamped before the flood and never handed to the callback, so
+    # its own Region is no answer (buildLabels only asks for tiles whose Region is 0, so no logged map can tell)
+    m = _grid(9, 9)
+    m.tile(4, 4).Region = 3
+    assert _region(m, 4, 4, 3, PLAINS) == 0
+    # the glue (0x4f7640) takes radius and type as integers: a float is cut
+    m = _grid(9, 12)
+    m.tile(4, 8).Region = 6
+    assert _region(m, 4, 4, 4.9, 2.0) == 6 and _region(m, 4, 4, 3.9, 2.0) == 0
+
+
+def test_find_next_region_is_depth_first():
+    """Pins depth-first against breadth-first (reviewer finding of Task 1). The N neighbour of (4, 4) has Region 0 and
+    a Region-9 leaf behind it (one step further north, (4, 6)); the S neighbour is a Region-7 leaf. The flood goes
+    into N first, meets the 9 there, and finds the 7 later: the answer is 7. A breadth-first flood meets the 7 at
+    distance 1 and the 9 at distance 2, and with the same overwrite rule would answer 9 (so would 'the first leaf
+    wins')."""
+    m = _grid(9, 9)
+    m.tile(4, 6).Region = 9
+    m.tile(4, 3).Region = 7
+    assert m.tile(4, 5).Region == 0
+    assert _region(m, 4, 4, 3, PLAINS) == 7
+    assert _flood_transcription(m, m.tile(4, 4), 3, PLAINS) == 7
+    # the mirror image: the near leaf N (Region 7) is met first, the far one (4, 2) behind the Region-0 S neighbour
+    # later, so the LAST leaf in depth-first order (9) is the answer, not the first one
+    m = _grid(9, 9)
+    m.tile(4, 5).Region = 7
+    m.tile(4, 2).Region = 9
+    assert _region(m, 4, 4, 3, PLAINS) == 9
+
+
+def test_find_next_region_radius_and_type():
+    """0x4f3789..0x4f3791: hex distance (0x552680) from the start > radius -> the callback answers 0 and the flood does
+    not enter the tile. A region 4 steps north of (4, 4) - (4, 8) - is found with radius 4 and not with radius 3.
+    0x4f37bc..0x4f37c6: with type != 0 a tile of another type answers 1: no find, but the flood goes on THROUGH it;
+    0x4f37c8: a tile of the type with Region 0 answers 1 too. Type 0 matches any type (pass three of buildLabels;
+    UNVERIFIED for pass one: no logged map has a Type 0 tile)."""
+    m = _grid(9, 12)
+    m.tile(4, 8).Region = 6
+    assert _region(m, 4, 4, 3, PLAINS) == 0
+    assert _region(m, 4, 4, 4, PLAINS) == 6
+    # nor past the map's border: the flood stays on the grid
+    m = _grid(3, 3)
+    m.tile(2, 2).Region = 4
+    assert _region(m, 0, 0, 1, PLAINS) == 0
+    assert _region(m, 0, 0, 3, PLAINS) == 4
+    # another type is no answer; its own type and type 0 find it
+    m = _grid(9, 9)
+    m.tile(4, 5).Type = FOREST                    # N of (4, 4): a forest tile with a region
+    m.tile(4, 5).Region = 8
+    assert _region(m, 4, 4, 3, PLAINS) == 0
+    assert _region(m, 4, 4, 3, FOREST) == 8
+    assert _region(m, 4, 4, 3, 0) == 8
+    # searched through: plains (4, 6) behind the forest ring around (4, 4) is still found (distance 2)
+    m = _grid(9, 9)
+    for x, y in ((4, 5), (4, 3), (5, 4), (5, 3), (3, 4), (3, 3)):
+        m.tile(x, y).Type = FOREST
+    m.tile(4, 6).Region = 2
+    assert _region(m, 4, 4, 3, PLAINS) == 2
+    # a forest leaf in the ring is no answer for plains, whatever its Region
+    m.tile(4, 5).Region = 9
+    assert _region(m, 4, 4, 3, PLAINS) == 2
+
+
+def test_find_next_region_equals_a_recursive_transcription():
+    """The iterative flood (no deep recursion: buildLabels' pass three floods radius 16 from every Region-0 land tile)
+    visits in the order of the exe's recursion: same answer on random grids, radii, types and borders, all layouts."""
+    import random
+    rng = random.Random(20261026)
+    for layout in ("even-q-up", "odd-q-down"):
+        m = HexMap(None, 13, 11, layout)
+        for _ in range(40):
+            for t in m.tiles:
+                t.Type = rng.choice((1, 2, 2, 5))
+                t.Region = rng.choice((0, 0, 0, 0, 3, 4, 5, 9))
+            for _ in range(6):
+                start = rng.choice(m.tiles)
+                radius = rng.choice((1, 2, 3, 5, 8))
+                ttype = rng.choice((0, 2, 5))
+                assert m.find_next_region(start, radius, ttype) == _flood_transcription(m, start, radius, ttype), \
+                    (layout, start, radius, ttype)
+
+
+def test_find_next_region_survives_a_deep_flood():
+    """A flood that visits 3600 tiles one after the other (depth first goes as deep as the map is wide) must not run
+    into Python's recursion limit: nothing but the far corner is a leaf."""
+    m = HexMap(None, 60, 60, "even-q-up")
+    m.tile(59, 59).Region = 5
+    assert m.find_next_region(m.tile(0, 0), 500, 0) == 5
+    m.tile(59, 59).Region = 0
+    assert m.find_next_region(m.tile(0, 0), 500, 0) == 0
+
+
+# 0x5526f0 / 0x552a70: the walk the exe makes for findNextTileOfType, as the tiles' Coords offsets from the centre
+SECTOR_WALK_2 = [(0, 0),
+                 (0, 1), (0, 2), (1, 1),            # sector N: from the N neighbour along N, then NE
+                 (1, 0), (2, 0), (2, -1),           # NE: along NE, then SE
+                 (1, -1), (2, -2), (1, -2),         # SE: along SE, then S
+                 (0, -1), (0, -2), (-1, -1),        # S: along S, then SW
+                 (-1, 0), (-2, 0), (-2, 1),         # SW: along SW, then NW
+                 (-1, 1), (-2, 2), (-1, 2)]         # NW: along NW, then N
+
+
+def _offsets(m, centre, tiles):
+    cx, cy = R.get(R.get(centre, "Coords"), "X"), R.get(R.get(centre, "Coords"), "Y")
+    return [(R.get(R.get(t, "Coords"), "X") - cx, R.get(R.get(t, "Coords"), "Y") - cy) for t in tiles]
+
+
+def _walk_transcription(m, centre, radius):
+    """0x5526f0 + 0x552a70 transcribed literally: a tile reached again is walked again (it pushes nothing new), so the
+    walk is exponential in the radius. In the direction numbers a sector walk from the neighbour k goes along k and k + 1."""
+    out = [centre]
+    stamped = {centre}
+
+    def step(t, a, b, code):
+        if t not in stamped and code in (1, 3) and t is not centre:
+            stamped.add(t)
+            out.append(t)
+        for d in (a, b):
+            n = t.nb[d]
+            if n is not None and m.distance(centre, n) <= radius:
+                step(n, a, b, 1)
+    for k in range(6):
+        n = centre.nb[k]
+        if n is not None:
+            step(n, k, (k + 1) % 6, 1 if m.distance(centre, n) <= radius else 0)
+    return out
+
+
+def test_the_exes_sector_walk_order():
+    """The candidates of findNextTileOfType are the exe's own walk (0x5526f0, with the centre): the centre, then one
+    sector per neighbour in the order N, NE, SE, S, SW, NW, each a depth-first walk (pre-order) along the neighbour's
+    direction and the next one clockwise. Radius 2: all 19 tiles, in this order. UNVERIFIED (0x5526f0 / 0x552a70, the
+    order is not logged: only found / not found is): which decent tile among equally near ones becomes the label's."""
+    m = _grid(13, 13)
+    centre = m.tile(6, 6)
+    assert _offsets(m, centre, m.exe_tiles_in_range(centre, 2)) == SECTOR_WALK_2
+    # radius 3, sector N: pre-order, not ring by ring
+    walk = _offsets(m, centre, m.exe_tiles_in_range(centre, 3))
+    assert walk[1:7] == [(0, 1), (0, 2), (0, 3), (1, 2), (1, 1), (2, 1)]
+    assert len(walk) == len(set(walk)) == 37
+    assert _offsets(m, centre, m.exe_tiles_in_range(centre, 0)) == [(0, 0)]
+    assert _offsets(m, centre, m.exe_tiles_in_range(centre, -1)) == [(0, 0)]
+
+
+def test_the_sector_walk_equals_the_exes_walk_that_revisits():
+    """The walk here skips a tile it already walked in the same sector (everything reachable from it is stamped after
+    its first visit, so a revisit adds nothing): the same vector as the literal walk, on every tile of two small maps,
+    in the interior and at the borders, in two layouts."""
+    for layout in ("even-q-up", "odd-q-down"):
+        m = HexMap(None, 9, 8, layout)
+        for centre in m.tiles:
+            for radius in (1, 2, 3, 4, 5):
+                assert m.exe_tiles_in_range(centre, radius) == _walk_transcription(m, centre, radius), \
+                    (layout, centre, radius)
+
+
+def test_find_next_tile_of_type_is_the_exes_rule():
+    """0x4f37f0: of the tiles within the radius (0x5526f0 with the centre: the start tile counts), a tile of the type
+    qualifies only when its six neighbours exist (0x4f38f7..0x4f3922) and are of the type (0x4f3941); the one nearest to
+    the start wins (score = hex distance, 0x4f38c2; strict < at 0x4f39c5: the first of equals in the walk's order).
+    MEASURED on 80 logged maps (found / not found equal in all, 12 maps per setup with a failed label); the tile
+    among equals and the centre rule are UNVERIFIED (not logged)."""
+    m = _grid(13, 13)
+    assert _label_spot(m, 6, 6, 9, PLAINS) == (6, 6)                    # the start tile itself
+    # a forest tile S of (6, 6): the start and its S, SE, SW neighbours touch it; N, NE, NW do not. All three are at
+    # distance 1; the walk reaches N (sector N) first - the old ring order reached NW first.
+    m.tile(6, 5).Type = FOREST
+    assert _label_spot(m, 6, 6, 9, PLAINS) == (6, 7)
+    # no tile whose six neighbours are all of the type: a line of plains in a forest
+    m = _grid(13, 13, FOREST)
+    for y in range(13):
+        m.tile(6, y).Type = PLAINS
+    assert _label_spot(m, 6, 6, 9, PLAINS) is None
+    # a tile on the border never qualifies: a neighbour is off the grid
+    assert _label_spot(_grid(3, 3), 1, 1, 9, PLAINS) == (1, 1)
+    assert _label_spot(_grid(2, 2), 0, 0, 9, PLAINS) is None
+    # out of the radius: the only decent spot (6, 6) is 3 away from (6, 3)
+    m = _grid(13, 13, FOREST)
+    for x, y in ((6, 6), (6, 7), (6, 5), (7, 6), (7, 5), (5, 6), (5, 5)):
+        m.tile(x, y).Type = PLAINS
+    assert _label_spot(m, 6, 3, 3, PLAINS) == (6, 6)
+    assert _label_spot(m, 6, 3, 2, PLAINS) is None
+    # the nearer of two decent spots wins, however the walk meets them: (6, 6) at 3 from (6, 3), a block around (6, 2)
+    # at 1 (its centre (6, 2) has plains all around)
+    for x, y in ((6, 2), (6, 3), (6, 1), (7, 2), (7, 1), (5, 2), (5, 1)):
+        m.tile(x, y).Type = PLAINS
+    assert _label_spot(m, 6, 3, 9, PLAINS) == (6, 2)
+    # a failed search sets Result to null (0x4f3a22), also over an earlier answer
+    result = SqTable()
+    assert m.find_next_tile_of_type(m.tile(6, 3), 9, PLAINS, result) is True
+    assert R.get(result, "Result") is m.tile(6, 2)
+    assert m.find_next_tile_of_type(m.tile(6, 3), 9, 11, result) is False
+    assert R.get(result, "Result") is None
 
 
 def test_find_next_tile_of_type_wants_a_tile_inside_the_type(lab):

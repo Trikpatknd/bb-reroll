@@ -403,8 +403,14 @@ class HexMap:
     def world_to_tile(self, pos):
         """World.worldToTile: Coords (a Vec) of the tile whose centre is nearest to the position, the distance
         measured with y scaled by sqrt(3) (that makes the stretched lattice a regular hex lattice, whose nearest
-        centre is the hex the point lies in). MEASURED: worldToTile(tile.Pos) is the tile's Coords. UNVERIFIED:
-        which tile the engine gives for a point near a border between two. The position needs readable X and Y."""
+        centre is the hex the point lies in). MEASURED: worldToTile(tile.Pos) is the tile's Coords. UNVERIFIED (read
+        from the GOG exe in stage 2 B2 Task 1 and NOT copied): the exe's own rule (0x4e4240 -> 0x551c60, with 0x553ee0,
+        0x553e10, 0x553fd0 and 0x553d60) picks on the screen: a box guess (X = trunc(px / 180), Y = floor((py - 60 X)
+        / 120)), then per-elevation pixel masks and the tile art's colour-coded "mouse map", then a clamp; the masks
+        are picture data the code only indexes, so this nearest-centre rule stands in for it. Which tile the engine
+        gives for a point near a border between two is not known; in the 80 logged maps (buildLabels' label starts,
+        the only caller on the map's path) the tiles on both sides of every start within 1 px of a border give the
+        same found / not found, so no logged count can tell the rules apart. The position needs readable X and Y."""
         px = float(R.get(pos, "X"))
         py = float(R.get(pos, "Y"))
         xf = (px - POS_X0) / POS_DX
@@ -444,10 +450,9 @@ class HexMap:
         """The tiles at exactly `radius` from `tile`, in ring order; tiles off the map are left out. radius 0 is
         the tile. The order is Legends' own ring walk (config/z_legends_hex.nut traverseCircle): from the tile
         `radius` steps SW, `radius` steps in each direction N, NE, SE, S, SW, NW, every tile after a step.
-        UNVERIFIED (the Task 7 run did not settle it: stage 2): the order of the engine's own queries. Where the
-        generator uses an order-dependent
-        query (findNextTileOfType's pick, which tile findNextRegion's answer comes from) only the label's place
-        and the tiles' Region number depend on it, not a draw or a count."""
+        UNVERIFIED: the order of the engine's own queries. Since stage 2 B2 findNextRegion and findNextTileOfType do
+        not use it (they have the exe's own rules, below); what still does is queryTilesInRange and
+        updateTilesWithHeat, whose results (a count of terrain types, a sum) do not depend on the order."""
         if radius == 0:
             return [tile]
         q, r = tile.q + radius * _AXIAL[4][0], tile.r + radius * _AXIAL[4][1]
@@ -472,43 +477,145 @@ class HexMap:
     def query_tiles_in_range(self, tile, lo, hi, callback, data):
         """World.queryTilesInRange(tile, min, max, callback, data): callback(tile, data) for every tile at
         distance min..max. The generator's only caller (getTerrainInRegion) counts the terrain types, so the
-        order (ring by ring, ring order; UNVERIFIED, stage 2) does not change its result."""
+        order (ring by ring, ring order) does not change its result. UNVERIFIED: the exe's own query (0x4f3ae0, read
+        in stage 2 B2 Task 1 and not ported) walks its sectors without the centre and skips Type 0 tiles; this one
+        gives the centre for a minimum of 0 and every type."""
         lo, hi = _to_int(lo), _to_int(hi)
         for t in self.tiles_in_range(tile, lo, hi):
             R.call(callback, None, (t, data))
 
     def find_next_region(self, tile, radius, terrain):
-        """World.findNextRegion(tile, radius, type), as buildLabels uses it. UNVERIFIED model (Task 5 checks it
-        against the logged region counts): the Region of the first tile within `radius` (ring by ring, rings
-        1..radius) whose Region is not 0 and whose Type is `type` (0: any type); 0 when there is none."""
+        """World.findNextRegion(tile, radius, type), as buildLabels uses it: the game's own flood, read from the GOG
+        exe (1.5.2.3; handler 0x4f3720 -> traversal 0x553180 -> flood 0x553a20, callback 0x4f3770; MODLOG "REGIONS
+        FROM THE EXE"). MEASURED: the Region grids at the end of buildLabels equal the game's on 80 of 80 logged maps
+        (40 Legends, 40 Vanilla), and so do the Found / failed-label / final-region counts; each rule below is
+        load-bearing (changing any one of them gave 0 equal grids on 80 maps).
+
+        A depth-first flood from the tile. The six neighbours of a tile are tried in the order N, S, NE, NW, SE, SW
+        (0x553a70 .. 0x553cdf); a neighbour that is off the grid or was reached already is skipped; otherwise the
+        callback judges it: hex distance from the START tile > radius -> not entered (0x4f378f; the radius is
+        inclusive); `terrain` != 0 and its Type != `terrain` -> entered and flooded through (0x4f37bc); Region 0 ->
+        flooded through (0x4f37c8); else it is a leaf: the result becomes its Region, OVERWRITTEN at every leaf the
+        flood meets (0x4f37dc), so the answer is the Region of the LAST leaf in depth-first order, and the leaf is
+        not flooded through. 0 when there is none. `terrain` 0 matches every type.
+
+        The recursion of the exe is an explicit stack of neighbour iterators here: the same visiting order, no Python
+        recursion (buildLabels' third pass floods radius 16 from every tile still without a region).
+        UNVERIFIED (0x553a5e..0x553a67): the start tile is stamped first and never handed to the callback (its own
+        Region is no answer); buildLabels only asks for tiles whose Region is 0, so no logged map can tell.
+        UNVERIFIED (0x4f37bc): a Type-0 tile (Impassable) would join any region in pass one; no logged map has one
+        (pass three's type 0 is exercised). UNVERIFIED (0x4f37c8): the exe reads Region as an unsigned 16-bit word;
+        regions stay far below 65536. radius and type are cut to integers as the exe's glue 0x4f7640 does."""
         radius = _to_int(radius)
-        for d in range(1, radius + 1):
-            for t in self.ring(tile, d):
-                if t.Region != 0 and (terrain == 0 or t.Type == terrain):
-                    return t.Region
-        return 0
+        terrain = _to_int(terrain)
+        q0, r0 = tile.q, tile.r
+        seen = {tile}
+        result = 0
+        nb = tile.nb
+        stack = [iter((nb[0], nb[3], nb[1], nb[5], nb[2], nb[4]))]
+        push, pop = stack.append, stack.pop
+        while stack:
+            for n in stack[-1]:
+                if n is None or n in seen:
+                    continue
+                dq = n.q - q0
+                dr = n.r - r0
+                if dq > radius or dq < -radius or dr > radius or dr < -radius or dq + dr > radius or dq + dr < -radius:
+                    continue                # beyond the radius: not entered, not stamped
+                seen.add(n)
+                if terrain == 0 or n.Type == terrain:
+                    region = n.Region
+                    if region != 0:
+                        result = region     # a leaf: the last one met wins; it is not flooded through
+                        continue
+                nb = n.nb
+                push(iter((nb[0], nb[3], nb[1], nb[5], nb[2], nb[4])))
+                break                       # go into n now (depth first), then carry on with this tile's list
+            else:
+                pop()
+        return result
+
+    def exe_tiles_in_range(self, tile, radius):
+        """The tiles within `radius` of `tile`, the tile itself first, in the order of the vector the exe's tilesInRange
+        fills (0x5526f0 called with 'with centre' by findNextTileOfType; the walk 0x552a70): after the centre one
+        sector for each neighbour N, NE, SE, S, SW, NW (blocks 0x55275e .. 0x5529bf), each a depth-first walk
+        (pre-order) from that neighbour along its own direction and the next one clockwise (NW: NW, then N), every
+        step to a neighbour on the grid within `radius` (hex distance from the centre, 0x4cdce0); a tile is pushed
+        the first time any sector reaches it. UNVERIFIED (0x5526f0 / 0x552a70; not logged: only found / not found of
+        a label spot is, and 40 of 40 maps per setup were equal with this order and with the old ring order alike):
+        the order itself, and that the centre counts as a candidate (0x552713).
+        The exe walks a tile again each time another path reaches it (the walk is exponential in the radius); here a
+        tile is walked once per sector. Same vector: after a tile's first walk everything reachable from it along the
+        sector's two directions is stamped already, so a repeat pushes nothing (tests prove it against the literal walk)."""
+        radius = _to_int(radius)
+        out = [tile]
+        if radius < 1:
+            return out                      # no neighbour is within the radius: nothing is pushed
+        q0, r0 = tile.q, tile.r
+        stamped = {tile}
+        push = out.append
+        for k in range(6):
+            first = tile.nb[k]
+            if first is None:
+                continue                    # off the grid: the exe's block is skipped
+            a, b = k, (k + 1) % 6
+            walked = {first}
+            if first not in stamped:
+                stamped.add(first)
+                push(first)
+            stack = [iter((first.nb[a], first.nb[b]))]
+            while stack:
+                for n in stack[-1]:
+                    if n is None or n in walked:
+                        continue
+                    dq = n.q - q0
+                    dr = n.r - r0
+                    if dq > radius or dq < -radius or dr > radius or dr < -radius or dq + dr > radius \
+                            or dq + dr < -radius:
+                        continue
+                    walked.add(n)
+                    if n not in stamped:
+                        stamped.add(n)
+                        push(n)
+                    stack.append(iter((n.nb[a], n.nb[b])))
+                    break
+                else:
+                    stack.pop()
+        return out
 
     def find_next_tile_of_type(self, tile, radius, terrain, result):
-        """World.findNextTileOfType(tile, radius, type, result): the first tile within `radius` (the tile itself
-        first, then ring by ring) that is of that Type and whose six neighbours all are too goes to result.Result
-        and the answer is true; false when there is none ("Failed to find decent spot for region label.").
-        The six-neighbour condition is MEASURED, not guessed: any tile of the type alone never fails (in the
-        first 16 logged generations the nearest one is at most 4 tiles from a region's centre), while the game
-        failed 9 times in 7 of those maps; with the condition the lab fails 5 to 7 times in 4 to 7 maps, 3 to 6 of
-        them among the game's 7, under each of four findNextRegion models; over all 96 generations 21 maps fail in
-        both (about 12 expected without a link) and the count is equal in 65 (MODLOG "TOWNS AND REGIONS").
-        UNVERIFIED (stage 2): the order and whether the tile itself counts; only whether a spot exists changes the
-        run (the label's place does not)."""
+        """World.findNextTileOfType(tile, radius, type, result), the game's rule read from the GOG exe (1.5.2.3,
+        0x4f37f0; MODLOG "REGIONS FROM THE EXE"): of the tiles within `radius` of `tile` (exe_tiles_in_range: the tile
+        itself counts) take those of `type` whose six neighbours all exist and are of `type` (0x4f38f7 .. 0x4f3941),
+        and of those the one with the smallest hex distance to `tile` (0x4f38c2; the exe starts at 9000 and compares
+        with a strict <, so the first among equals in the walk's order wins, 0x4f39c5). The answer is true and
+        result.Result the tile; false and result.Result = null (0x4f3a22) when there is none ("Failed to find decent
+        spot for region label."). MEASURED: found / not found equals the game's on all 80 logged maps (a failed
+        label in 12 maps per setup); the six-neighbour rule, the radius and the strict < of the distance each change
+        the counts when altered (MODLOG). UNVERIFIED: which tile among equally near ones is picked (the walk's order)
+        and that the start tile counts: no logged number depends on either, only whether a spot exists changes the
+        run (the label's place is a picture)."""
         radius = _to_int(radius)
-        for t in self.tiles_in_range(tile, 0, radius):
-            if t.Type == terrain:
-                for n in t.nb:
-                    if n is None or n.Type != terrain:
-                        break
-                else:
-                    R.newslot(result, "Result", t)
-                    return True
-        return False
+        terrain = _to_int(terrain)
+        q0, r0 = tile.q, tile.r
+        best = None
+        best_score = 9000
+        for t in self.exe_tiles_in_range(tile, radius):
+            if t.Type != terrain:
+                continue
+            dq = t.q - q0
+            dr = t.r - r0
+            score = max(abs(dq), abs(dr), abs(dq + dr))
+            if score >= best_score:
+                continue
+            for n in t.nb:
+                if n is None or n.Type != terrain:
+                    break
+            else:
+                best = t
+                best_score = score
+        R.newslot(result, "Result", best)
+        return best is not None
 
     def update_tiles_with_heat(self, tiles, radius):
         """World.updateTilesWithHeat(settlement tiles, 6) (vanilla refineSettlements): every tile within
