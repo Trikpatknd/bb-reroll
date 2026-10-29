@@ -410,7 +410,9 @@ class HexMap:
         are picture data the code only indexes, so this nearest-centre rule stands in for it. Which tile the engine
         gives for a point near a border between two is not known; in the 80 logged maps (buildLabels' label starts,
         the only caller on the map's path) the tiles on both sides of every start within 1 px of a border give the
-        same found / not found, so no logged count can tell the rules apart. The position needs readable X and Y."""
+        same found / not found, so no rule difference was found on the 80 logged maps (two-tile borders on flat ground; the
+        exe's elevation masks are not exercised; a box-guess-only pick moved 1 map per setup). The position needs
+        readable X and Y."""
         px = float(R.get(pos, "X"))
         py = float(R.get(pos, "Y"))
         xf = (px - POS_X0) / POS_DX
@@ -477,9 +479,10 @@ class HexMap:
     def query_tiles_in_range(self, tile, lo, hi, callback, data):
         """World.queryTilesInRange(tile, min, max, callback, data): callback(tile, data) for every tile at
         distance min..max. The generator's only caller (getTerrainInRegion) counts the terrain types, so the
-        order (ring by ring, ring order) does not change its result. UNVERIFIED: the exe's own query (0x4f3ae0, read
-        in stage 2 B2 Task 1 and not ported) walks its sectors without the centre and skips Type 0 tiles; this one
-        gives the centre for a minimum of 0 and every type."""
+        order (ring by ring, ring order) does not change its result. UNVERIFIED, differences from the exe's own query
+        (0x4f3ae0, read in stage 2 B2 Task 1 and not ported): the exe walks its sectors WITHOUT the centre, skips
+        Type 0 tiles, and does not reach a disc tile that only off-grid tiles lead to (off_grid_sector); this one
+        gives the centre for a minimum of 0, every type, and every tile of the disc."""
         lo, hi = _to_int(lo), _to_int(hi)
         for t in self.tiles_in_range(tile, lo, hi):
             R.call(callback, None, (t, data))
@@ -488,8 +491,10 @@ class HexMap:
         """World.findNextRegion(tile, radius, type), as buildLabels uses it: the game's own flood, read from the GOG
         exe (1.5.2.3; handler 0x4f3720 -> traversal 0x553180 -> flood 0x553a20, callback 0x4f3770; MODLOG "REGIONS
         FROM THE EXE"). MEASURED: the Region grids at the end of buildLabels equal the game's on 80 of 80 logged maps
-        (40 Legends, 40 Vanilla), and so do the Found / failed-label / final-region counts; each rule below is
-        load-bearing (changing any one of them gave 0 equal grids on 80 maps).
+        (40 Legends, 40 Vanilla), and so do the Found / failed-label / final-region counts. Ablated, and each one
+        gave 0 equal grids on 80 maps: the flood order, the last leaf (not the first), flooding through tiles of
+        other types, and the radius test (inclusive). NOT ablated: "Region 0 -> flooded through" (0x4f37c8, the start
+        of the Region test block, jne at 0x4f37cf): the logs are consistent with it, it was not isolated.
 
         A depth-first flood from the tile. The six neighbours of a tile are tried in the order N, S, NE, NW, SE, SW
         (0x553a70 .. 0x553cdf); a neighbour that is off the grid or was reached already is skipped; otherwise the
@@ -505,7 +510,9 @@ class HexMap:
         Region is no answer); buildLabels only asks for tiles whose Region is 0, so no logged map can tell.
         UNVERIFIED (0x4f37bc): a Type-0 tile (Impassable) would join any region in pass one; no logged map has one
         (pass three's type 0 is exercised). UNVERIFIED (0x4f37c8): the exe reads Region as an unsigned 16-bit word;
-        regions stay far below 65536. radius and type are cut to integers as the exe's glue 0x4f7640 does."""
+        regions stay far below 65536. UNVERIFIED: radius and type are cut to integers as the exe's glue 0x4f7640
+        does (cvttss2si 0x4f76c2 / 0x4f76e7; the glue of findNextTileOfType 0x4f7970: 0x4f7a55 / 0x4f7a7a); no logged
+        call passes a float."""
         radius = _to_int(radius)
         terrain = _to_int(terrain)
         q0, r0 = tile.q, tile.r
@@ -543,7 +550,9 @@ class HexMap:
         step to a neighbour on the grid within `radius` (hex distance from the centre, 0x4cdce0); a tile is pushed
         the first time any sector reaches it. UNVERIFIED (0x5526f0 / 0x552a70; not logged: only found / not found of
         a label spot is, and 40 of 40 maps per setup were equal with this order and with the old ring order alike):
-        the order itself, and that the centre counts as a candidate (0x552713).
+        the order itself, that the centre counts as a candidate (0x552713), that a disc tile reachable only through
+        off-grid tiles is not walked (0x552a70, region_exe off_grid_sector), and the radius-0 sector start
+        (0x5527aa..0x5527d3).
         The exe walks a tile again each time another path reaches it (the walk is exponential in the radius); here a
         tile is walked once per sector. Same vector: after a tile's first walk everything reachable from it along the
         sector's two directions is stamped already, so a repeat pushes nothing (tests prove it against the literal walk)."""
@@ -592,9 +601,11 @@ class HexMap:
         result.Result the tile; false and result.Result = null (0x4f3a22) when there is none ("Failed to find decent
         spot for region label."). MEASURED: found / not found equals the game's on all 80 logged maps (a failed
         label in 12 maps per setup); the six-neighbour rule, the radius and the strict < of the distance each change
-        the counts when altered (MODLOG). UNVERIFIED: which tile among equally near ones is picked (the walk's order)
-        and that the start tile counts: no logged number depends on either, only whether a spot exists changes the
-        run (the label's place is a picture)."""
+        the counts when altered (MODLOG: without the six-neighbour rule 28 of 40 maps equal, a strict radius 36 / 34 of
+        40). Only these two rules are load-bearing. UNVERIFIED: the smallest-distance pick and its first-among-equals
+        tie-break (0x4f38c2 / 0x4f39c5; they only choose among qualifying tiles), and that the start tile counts: no
+        logged number depends on any of them, only whether a spot exists changes the run (the label's place is a
+        picture)."""
         radius = _to_int(radius)
         terrain = _to_int(terrain)
         q0, r0 = tile.q, tile.r

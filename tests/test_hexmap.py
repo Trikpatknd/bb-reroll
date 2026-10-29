@@ -592,7 +592,8 @@ def test_find_next_region_radius_and_type():
     m.tile(4, 8).Region = 6
     assert _region(m, 4, 4, 3, PLAINS) == 0
     assert _region(m, 4, 4, 4, PLAINS) == 6
-    # nor past the map's border: the flood stays on the grid
+    # on a small map the radius still decides: (2, 2) is beyond radius 1 and within radius 3 of (0, 0), and the
+    # flood keeps to the grid
     m = _grid(3, 3)
     m.tile(2, 2).Region = 4
     assert _region(m, 0, 0, 1, PLAINS) == 0
@@ -708,6 +709,18 @@ def test_the_sector_walk_equals_the_exes_walk_that_revisits():
                     (layout, centre, radius)
 
 
+def test_the_sector_walk_equals_the_literal_walk_at_radius_9():
+    """The radius findNextTileOfType gets in buildLabels is 9: the same vector as the literal (revisiting) walk on a
+    25 x 25 map from a few centres whose disc lies on the grid (no clipping), in both layouts. The literal walk is
+    exponential in the radius, so only a few centres are tried."""
+    for layout in ("even-q-up", "odd-q-down"):
+        m = HexMap(None, 25, 25, layout)
+        for x, y in ((12, 12), (11, 12), (12, 11), (11, 13)):
+            centre = m.tile(x, y)
+            assert all(t is not None for t in centre.nb)
+            assert m.exe_tiles_in_range(centre, 9) == _walk_transcription(m, centre, 9), (layout, x, y)
+
+
 def test_find_next_tile_of_type_is_the_exes_rule():
     """0x4f37f0: of the tiles within the radius (0x5526f0 with the centre: the start tile counts), a tile of the type
     qualifies only when its six neighbours exist (0x4f38f7..0x4f3922) and are of the type (0x4f3941); the one nearest to
@@ -716,8 +729,9 @@ def test_find_next_tile_of_type_is_the_exes_rule():
     among equals and the centre rule are UNVERIFIED (not logged)."""
     m = _grid(13, 13)
     assert _label_spot(m, 6, 6, 9, PLAINS) == (6, 6)                    # the start tile itself
-    # a forest tile S of (6, 6): the start and its S, SE, SW neighbours touch it; N, NE, NW do not. All three are at
-    # distance 1; the walk reaches N (sector N) first - the old ring order reached NW first.
+    # a forest tile S of (6, 6): the start and its S, SE, SW neighbours touch it, so they do not qualify. N, NE and
+    # NW qualify, all at distance 1: a tie. This line pins the port's tie-break (the walk reaches N first; the old
+    # ring order reached NW first), which is UNVERIFIED against the game.
     m.tile(6, 5).Type = FOREST
     assert _label_spot(m, 6, 6, 9, PLAINS) == (6, 7)
     # no tile whose six neighbours are all of the type: a line of plains in a forest
