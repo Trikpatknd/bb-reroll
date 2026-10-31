@@ -294,9 +294,9 @@ def test_scripts_read_and_write_tiles(lab):
         t.Type = 7;
         local n = t.getNextTile(1);
         n.Type = 3;
-        n.Level = 2;
+        n.Subregion = 2;
         print(t.hasNextTile(0));
-        print(n.Type + ":" + n.Level);
+        print(n.Type + ":" + n.Subregion);
         print(t.getSurroundingTilesOfType(3));
         print(t.getDistanceTo(n));
         print(n.getDirectionTo(t));
@@ -469,7 +469,75 @@ def test_query_tiles_in_range_through_a_script(lab):
         ::World.queryTilesInRange(::World.getTileSquare(0, 0), 0, 1, counter.onTile.bindenv(counter), counts);
         print(counts[2]);
     ''', "t.nut")
-    assert out == ["60 59 1", str(1 + sum(1 for d in range(6) if m.tile(0, 0).hasNextTile(None, d)))]
+    # the exe's query leaves the centre out: the corner tile's own neighbours at 0..1
+    assert out == ["60 59 1", str(sum(1 for d in range(6) if m.tile(0, 0).hasNextTile(None, d)))]
+
+
+def _query(m, tile, lo, hi):
+    """World.queryTilesInRange as a script calls it: the SquareCoords of the tiles the callback gets, in order."""
+    seen = []
+    cb = R.NativeFn(lambda this, t, data: seen.append((t.x, t.y)), "cb")
+    m.query_tiles_in_range(tile, lo, hi, cb, None)
+    return seen
+
+
+def test_query_tiles_in_range_is_the_exes_order_without_the_centre():
+    """MEASURED by the native probe (kind r5, 352 calls on 4 maps; the game's answer for the corner tile 0,0 radius 0..1
+    was `n=2 t=0,1;1,0`): the sector walk's order, N NE SE S SW NW, the centre never included, min cuts the near tiles."""
+    m = _grid(12, 10, PLAINS)
+    assert _query(m, m.tile(0, 0), 0, 1) == [(0, 1), (1, 0)]
+    assert _query(m, m.tile(0, 0), 1, 1) == [(0, 1), (1, 0)]
+    assert _query(m, m.tile(5, 5), 0, 0) == [] and _query(m, m.tile(5, 5), 0, -1) == []
+    centre = m.tile(5, 5)
+    ring1 = _query(m, centre, 0, 1)
+    assert ring1 == [(n.x, n.y) for n in (centre.nb[k] for k in range(6))]          # N NE SE S SW NW, once each
+    assert _query(m, centre, 1, 1) == ring1
+    two = _query(m, centre, 2, 2)
+    assert len(two) == 12 and len(set(two)) == 12 and not set(two) & set(ring1)
+    assert all(m.distance(centre, m.tile(x, y)) == 2 for x, y in two)
+    both = _query(m, centre, 0, 2)
+    assert len(both) == 18 and set(both) == set(ring1) | set(two) and (5, 5) not in both
+    assert (5, 5) not in _query(m, centre, 0, 4)
+
+
+def test_query_tiles_in_range_skips_type_0_tiles():
+    """MEASURED (probe kind r5t0, 16 calls: the game skipped the tile of Type 0 in every one)."""
+    m = _grid(12, 10, PLAINS)
+    centre = m.tile(5, 5)
+    n = centre.nb[1]
+    n.Type = 0
+    m.touch()
+    got = _query(m, centre, 0, 1)
+    assert (n.x, n.y) not in got and len(got) == 5
+    assert (n.x, n.y) not in _query(m, centre, 1, 3)
+    # the Type is read when the callback comes to the tile: a callback that turns a later tile into Type 0 hides it
+    later = centre.nb[3]
+    seen = []
+
+    def cb(this, t, data):
+        seen.append((t.x, t.y))
+        later.Type = 0
+    m.query_tiles_in_range(centre, 1, 1, R.NativeFn(cb, "cb"), None)
+    assert (later.x, later.y) not in seen
+
+
+def test_world_tile_level_raises_in_scripts(lab):
+    """MEASURED (probe kind level: `err` on 126 of 126 reads): a world tile has no Level for the scripts; the Python
+    attribute the lab's tools read stays."""
+    e, m, out = lab
+    t = m.tile(2, 2)
+    with pytest.raises(SqError):
+        R.get(t, "Level")
+    with pytest.raises(SqError):
+        R.set_(t, "Level", 2)
+    assert t.sq_find("Level") is R.MISSING and not R.has(t, "Level")
+    assert t.Level == 0
+    e.vm.run('''
+        local ok = false;
+        try { local z = ::World.getTileSquare(2, 2).Level; } catch (err) { ok = true; }
+        print(ok);
+    ''', "t.nut")
+    assert out == ["true"]
 
 
 # ---------------------------------------------------------------- stage 2 B2: the game's region search (GOG exe)

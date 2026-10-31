@@ -9,7 +9,9 @@ The map generator asks it two kinds of question:
 
 What is promised (stage 1 of the map search): `isEmpty()` is true exactly when no route exists. A route is a
 chain of neighbouring tiles from the start to the goal in which every tile after the start can be entered:
-its `ActionPointCosts[tile.Type]` is a finite number > 0, and with `RoadOnly` it has a road. The reasons:
+its `ActionPointCosts[tile.Type]` is a finite number > 0, and with `RoadOnly` it has a road (the goal itself is
+the exception when its type is blocked: the search accepts it next to an enterable tile, see "A goal of a blocked
+type" below). The reasons:
 - 0 blocks: `Const.World.TerrainTypeNavCost_Flat` gives the ocean 0 and every land type 10, and
   `TerrainTypeNavCost_Ship` gives every land type 0. If 0 were a free step, ships would cross land and flat
   routes would cross the sea, so the checks that use them (coastal settlements, the deep-sea tile of a port,
@@ -86,20 +88,23 @@ answered; no map script asks for those tiles). A blocked type here is the cost t
 number); the exe blocks only a zero: a negative entry is not in any script table.
 A goal of a blocked type (cost 0). The exe never reads the goal tile's cost: it accepts the goal when an expanded tile is
 next to it, even a blocked one (0x4ea87e), and answers "empty" up front for a goal of terrain type 0 with maximum 0
-(0x4ea50c) (UNVERIFIED too: no logged goal was of type 0). The component rule blocks every goal whose table entry is not
-enterable, so for such a goal `isEmpty()` and
-the tiles can differ, and each follows its own rule: `isEmpty()` stays the component rule (it agrees with the game on
-every logged call, 2354 of 2354 and 1890 of 1890, and the checks that rely on it, ports and attached locations, come out
-as in the game: MEASURED, Checkpoint B); the tiles (getSize / getCurrent / pop) are the exe's search even when
-`isEmpty()` is true: they end on the goal when an expanded tile touches it, and are empty when none does or the goal is
-of type 0. The scripts ask one or the other: buildAdditionalRoads asks only for tiles (worldmap_generator.nut:2228-2232,
-no isEmpty()), settlement placement, ports, attached locations and connections only `isEmpty()`, buildRoads both for the
-same path. UNVERIFIED (modelled from the exe's code, never exercised by a logged call; a precondition of stage 2 Part C):
-on the 80 maps no route-tile request had a goal of a blocked type
-(0 of 3585 + 2541 buildAdditionalRoads' and 0 of 2354 + 1890 buildRoads' requests, counted with the batch's counters), so
-no log or grid can tell this rule from the empty tiles the component rule alone would give: gate 2 is equal with and
-without it (0 requests). An enterable goal that nothing reaches has no tiles and is not searched (the exe's search ends
-empty after flooding the reachable tiles: buildRoads' 284 and 244 such calls end empty in the game).
+(0x4ea50c). For such a goal `isEmpty()` is the SEARCH's answer and not the component rule: false when an expanded tile
+touches the goal (the path then holds the tiles to the goal), true when the search finds none (walled off) or the goal
+is of type 0. The search ends on the goal exactly when the start or a tile it enters touches the goal, whatever the
+costs are, so `touched()` answers from the components (a cost table with fractions, like TerrainTypeNavCost, still
+answers isEmpty(); only its route tiles are not modelled); the tiles are the search's, made when the scripts ask.
+MEASURED (native probe, 2026-10-31, bb_seedlab MODLOG "NATIVE PROBE", the probe kinds n1 / n2): the game's route tiles to
+a blocked-type goal equal the exe's search on all 202 n1 calls (6 cost tables, goals touched by a reachable tile, next to
+the start and walled off), the game's isEmpty() was false where the component rule said true on 109 of them (the rule it
+replaces), and a goal of terrain type 0 answered empty up front on 44 of 44 calls (n2, 5 tables). Enterable goals keep
+the component rule: it equals the game's isEmpty() on n3 121 of 121 and on every logged buildRoads call (2354 of 2354
+and 1890 of 1890). The scripts ask one or the other: buildAdditionalRoads asks only for tiles
+(worldmap_generator.nut:2228-2232, no isEmpty()), settlement placement, ports, attached locations and connections only
+`isEmpty()`, buildRoads both for the same path. The Checkpoint B / B2 map gates are the check that the places that rely
+on `isEmpty()` still come out as in the game. Not modelled with the search (the component rule stays): a blocked-type goal
+with RoadOnly or StopAtRoad (no script asks). An enterable goal that nothing reaches has no tiles and is not searched
+(the exe's search ends empty after flooding the reachable tiles: buildRoads' 284 and 244 such calls end empty in the
+game).
 `Navigator.route_override` is a hook for the lab's road fitting (bb_seedlab `tools/road_fit.py`): it may supply route
 tiles from outside; unset, nothing changes.
 """
@@ -376,6 +381,23 @@ class Navigator(SqNative):
                 return True
         return False
 
+    def touched(self, start, goal, blocked):
+        """Does the exe's search end on a goal of a blocked type? It does when the start tile or a tile the search
+        enters (an enterable tile connected to the start through enterable tiles) is next to the goal; never for a goal
+        of terrain type 0 (answered empty up front, 0x4ea50c). Not RoadOnly (the caller keeps the component rule there)."""
+        if goal.Type == 0:
+            return False
+        comp = self._component_map(blocked, False)          # (reachable() ran first: the `lacking` check has passed)
+        near = {comp[n] for n in start.nb if n is not None and n in comp}
+        if comp.get(start) is not None:
+            near.add(comp[start])
+        for n in goal.nb:
+            if n is None:
+                continue
+            if n is start or (n in comp and comp[n] in near):
+                return True
+        return False
+
     # ------------------------------------------------------------------ findPath
     def findPath(self, this, start, goal, settings, max_cost=0, *rest):
         self.questions += 1
@@ -399,14 +421,18 @@ class Navigator(SqNative):
         costs = list(f["ActionPointCosts"])
         road_mult = float(f["RoadMult"])
         stop_at_road = bool(f["StopAtRoad"])
+        if goal.Type in blocked and not road_only and not stop_at_road:
+            # A goal of a blocked type: isEmpty() is the search's own answer, not the component rule (MEASURED, see the
+            # module text). The search ends on the goal exactly when an expanded tile touches it, which does not depend on
+            # the costs, so the answer comes from the components too (no search runs for isEmpty()).
+            found = self.touched(start, goal, blocked)
 
         def compute():
-            # The tiles of an empty path (the component rule says no route): an enterable goal that no tile next to it
-            # reaches ends the exe's search empty too, so nothing is searched (buildRoads asks for these tiles on every
-            # unreachable goal: 284 calls on the 40 Legends maps and 244 on the 40 Vanilla maps);
-            # UNVERIFIED (0 requests on the 80 maps): a goal of a blocked type (cost 0: the exe accepts the goal
-            # when an expanded tile is next to it, never reading its cost) is searched, as for any other request.
-            if not found and goal.Type not in blocked:
+            # The tiles of an empty path: an enterable goal that no tile next to it reaches ends the exe's search empty
+            # too, so nothing is searched (buildRoads asks for these tiles on every unreachable goal: 284 calls on the
+            # 40 Legends maps and 244 on the 40 Vanilla maps), and neither is a blocked-type goal that no expanded tile
+            # touches or that is of type 0 (`found` is False for both).
+            if not found:
                 return []
             # route_override (the lab's road-fitting hook, see the module text) supplies the route when it returns a list;
             # it is asked about found routes only (the game's logged routes are those)
@@ -432,7 +458,7 @@ class Navigator(SqNative):
             raise NavError("route tiles with %s (not modelled: no map script asks for them)" % (
                 "RoadOnly" if road_only else "StopAtRoad"))
         if goal.Type == 0:
-            return []                   # UNVERIFIED (no logged goal of type 0): 0x4ea50c: with a maximum of 0 a goal of terrain type 0 answers "empty" up front
+            return []                   # 0x4ea50c: with a maximum of 0 a goal of terrain type 0 answers "empty" up front (MEASURED, n2 44 / 44)
         self.searches += 1
         hm = self.hexmap
         width, height, cols = hm.size_x, hm.size_y, hm.cols

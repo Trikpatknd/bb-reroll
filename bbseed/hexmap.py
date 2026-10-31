@@ -283,7 +283,12 @@ class Tile(SqNative):
         return "Tile(%d, %d)" % (self.x, self.y)
 
 
-_PLAIN = ("Type", "Subregion", "Level", "TacticalType", "IsOccupied", "IsMarkedForImpassableTerrain",
+# No "Level": reading Tile.Level on a WORLD tile raises in the game (MEASURED, native probe 2026-10-31: `err` on 126 of 126
+# reads, the tiles of probe kind r1 and every 211th tile of 4 maps), so the scripts get "the index 'Level' does not exist"
+# like for any other field the lab does not have (`sq_find` says MISSING, so `"Level" in tile` is false). The Python
+# attribute `Tile.Level` stays (the lab's tools read it); a script WRITE of it raises as well (UNVERIFIED: no script
+# of Legends 19.4.22 / the base game writes or reads it on a world tile, grep of the extracted scripts, 2026-10-31).
+_PLAIN = ("Type", "Subregion", "TacticalType", "IsOccupied", "IsMarkedForImpassableTerrain",
           "Region", "RoadDirections", "IsFlipped", "HeatFromSettlements")
 _ROUTE_FIELDS = frozenset(("Type", "RoadDirections"))      # what the navigator's answers depend on
 _GET = {name: attrgetter(name) for name in _PLAIN}
@@ -453,8 +458,8 @@ class HexMap:
         the tile. The order is Legends' own ring walk (config/z_legends_hex.nut traverseCircle): from the tile
         `radius` steps SW, `radius` steps in each direction N, NE, SE, S, SW, NW, every tile after a step.
         UNVERIFIED: the order of the engine's own queries. Since stage 2 B2 findNextRegion and findNextTileOfType do
-        not use it (they have the exe's own rules, below); what still does is queryTilesInRange and
-        updateTilesWithHeat, whose results (a count of terrain types, a sum) do not depend on the order."""
+        not use it (they have the exe's own rules, below), and since the native probe fix queryTilesInRange does not
+        either; what still does is updateTilesWithHeat, whose result (a sum) does not depend on the order."""
         if radius == 0:
             return [tile]
         q, r = tile.q + radius * _AXIAL[4][0], tile.r + radius * _AXIAL[4][1]
@@ -477,14 +482,25 @@ class HexMap:
 
     # ------------------------------------------------------------------ world queries
     def query_tiles_in_range(self, tile, lo, hi, callback, data):
-        """World.queryTilesInRange(tile, min, max, callback, data): callback(tile, data) for every tile at
-        distance min..max. The generator's only caller (getTerrainInRegion) counts the terrain types, so the
-        order (ring by ring, ring order) does not change its result. UNVERIFIED, differences from the exe's own query
-        (0x4f3ae0, read in stage 2 B2 Task 1 and not ported): the exe walks its sectors WITHOUT the centre, skips
-        Type 0 tiles, and does not reach a disc tile that only off-grid tiles lead to (off_grid_sector); this one
-        gives the centre for a minimum of 0, every type, and every tile of the disc."""
+        """World.queryTilesInRange(tile, min, max, callback, data): callback(tile, data) for the tiles the game's own
+        query gives, in ITS order (GOG exe 1.5.2.3, handler 0x4f3ae0): the sector walk 0x5526f0 / 0x552a70 over the
+        disc of radius `max` (exe_tiles_in_range) WITHOUT the centre (the call passes 'no centre'), then, in the
+        vector's order, a tile of Type 0 is skipped (0x4f3b73), and so is one whose hex distance to `tile` is below
+        `min` (0x4f3b91); the Type is read when the callback comes to the tile, not when the vector was made.
+        MEASURED (native probe 2026-10-31, bb_seedlab MODLOG "NATIVE PROBE FIX 1"): queryTilesInRange of the game
+        equals this on every call of the probe kinds r5 (352 calls on 4 maps, min 0 and 1, max 1..4, corners and
+        edges) and r5t0 (16 calls with a Type-0 tile around); the old ring model (the centre for min 0, ring order,
+        every type) gave 16 of 352 and 0 of 16. A float `min` / `max` is cut to an integer here (UNVERIFIED: no
+        probe passes a float to this native)."""
         lo, hi = _to_int(lo), _to_int(hi)
-        for t in self.tiles_in_range(tile, lo, hi):
+        q0, r0 = tile.q, tile.r
+        for t in self.exe_tiles_in_range(tile, hi)[1:]:
+            if t.Type == 0:
+                continue
+            dq = t.q - q0
+            dr = t.r - r0
+            if max(abs(dq), abs(dr), abs(dq + dr)) < lo:
+                continue
             R.call(callback, None, (t, data))
 
     def find_next_region(self, tile, radius, terrain):

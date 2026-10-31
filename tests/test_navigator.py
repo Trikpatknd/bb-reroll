@@ -105,6 +105,11 @@ def test_the_start_tile_is_never_entered_but_the_goal_is():
     m, nav = small_map(["LWWWWWW", "LWWWWWW"])
     ship = costs(ocean=10, shore=100)
     assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 1), settings(nav, ActionPointCosts=ship), 0).isEmpty(None)
+    # the other way round the goal is a land tile (blocked for ships): since the native probe fix the search accepts it
+    # next to an ocean tile it expanded, so isEmpty() is false (before: the component rule said true); walled off by
+    # land the same question is empty
+    assert not nav.findPath(None, m.tile(6, 1), m.tile(0, 0), settings(nav, ActionPointCosts=ship), 0).isEmpty(None)
+    m, nav = small_map(["LLWWWWW", "LLWWWWW"])
     assert nav.findPath(None, m.tile(6, 1), m.tile(0, 0), settings(nav, ActionPointCosts=ship), 0).isEmpty(None)
 
 
@@ -405,15 +410,15 @@ def test_a_table_entry_that_is_not_a_whole_number_is_not_modelled_for_route_tile
 
 def test_route_tiles_to_a_goal_of_a_blocked_type_are_the_exes_search():
     """The exe accepts the goal when an expanded tile is next to it, before the closed and cost checks (nav_exe.py:230-232):
-    a goal on a cost-0 type (buildAdditionalRoads' attached locations on mountains) gets route tiles that end on it, while
-    `isEmpty()` stays the component rule (true: the goal cannot be entered). A goal no expanded tile touches, and an
-    enterable goal nobody reaches, have no tiles (the second is not even searched); a goal of terrain type 0 is empty up
-    front."""
+    a goal on a cost-0 type (buildAdditionalRoads' attached locations on mountains) gets route tiles that end on it, and
+    `isEmpty()` is false then (native probe 2026-10-31: the game's isEmpty is the search's answer). A goal no expanded
+    tile touches, and an enterable goal nobody reaches, have no tiles (the second is not even searched); a goal of
+    terrain type 0 is empty up front."""
     m, nav = small_map(["LLLLH", "LLLLL", "LLLLL"])
     s = settings(nav, ActionPointCosts=costs(plains=10))                # Hills cost 0: blocked
     start, goal = m.tile(0, 0), m.tile(4, 0)
     path = nav.findPath(None, start, goal, s, 0)
-    assert path.isEmpty(None)
+    assert not path.isEmpty(None)
     tiles = path.tiles()
     assert tiles[-1] is goal and len(tiles) >= m.distance(start, goal) and path.getSize(None) == len(tiles)
     assert all(t.Type == PLAINS for t in tiles[:-1])
@@ -439,6 +444,87 @@ def test_route_tiles_to_a_goal_of_a_blocked_type_are_the_exes_search():
     m.touch()
     path = nav.findPath(None, m.tile(0, 0), m.tile(4, 0), settings(nav, ActionPointCosts=costs(plains=10)), 0)
     assert path.isEmpty(None) and path.getSize(None) == 0
+
+
+def test_is_empty_for_a_goal_of_a_blocked_type_is_the_searchs_answer():
+    """MEASURED (native probe 2026-10-31, kind n1: 202 calls, the game's isEmpty() was false on 109 where the component
+    rule said true; the tiles equal the search's on all 202): a blocked-type goal that a tile the search expands touches
+    is found, with its tiles; one the search cannot touch (walled off) is empty; so is a goal of terrain type 0. An
+    enterable goal keeps the component rule (n3 121 of 121)."""
+    # touched by a reachable tile (also when it is next to the start)
+    m, nav = small_map(["LLLLH", "LLLLL", "LLLLL"])
+    s = settings(nav, ActionPointCosts=costs(plains=10))                # Hills cost 0: blocked
+    path = nav.findPath(None, m.tile(0, 0), m.tile(4, 0), s, 0)
+    assert not path.isEmpty(None) and path.tiles()[-1] is m.tile(4, 0) and path.getSize(None) >= 4
+    path = nav.findPath(None, m.tile(3, 0), m.tile(4, 0), s, 0)
+    assert not path.isEmpty(None) and path.tiles() == [m.tile(4, 0)]
+    # the same answer with every blocking kind of table entry (0, negative, inf)
+    for cost in (0, -1, math.inf):
+        table = costs(plains=10)
+        table[HILLS] = cost
+        assert not nav.findPath(None, m.tile(0, 0), m.tile(4, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
+    # walled off: a hill island in the sea, nothing the search enters touches it
+    m, nav = small_map(["LLWWW", "LLWHW", "LLWWW", "LLWWW"])
+    s = settings(nav, ActionPointCosts=costs(plains=10))
+    path = nav.findPath(None, m.tile(0, 0), m.tile(3, 1), s, 0)
+    assert path.isEmpty(None) and path.getSize(None) == 0
+    # ... and a land bridge to it makes it reachable (the answer follows the map, not a cache)
+    set_field(m, 2, 1, "Type", PLAINS)
+    assert not nav.findPath(None, m.tile(0, 0), m.tile(3, 1), s, 0).isEmpty(None)
+    # the goal's neighbours are blocked as well: nothing touches it
+    m, nav = small_map(["LLLWH", "LLLWW", "LLLLL"])
+    s = settings(nav, ActionPointCosts=costs(plains=10))
+    assert nav.findPath(None, m.tile(0, 0), m.tile(4, 0), s, 0).isEmpty(None)
+    # a goal of terrain type 0 stays empty up front, even next to a reachable tile
+    m, nav = small_map(["LLLLH", "LLLLL", "LLLLL"])
+    m.tile(4, 0).Type = 0
+    m.touch()
+    assert nav.findPath(None, m.tile(0, 0), m.tile(4, 0), settings(nav, ActionPointCosts=costs(plains=10)), 0).isEmpty(None)
+    # an enterable goal behind the water: still the component rule (empty), and still not searched
+    m, nav = small_map(["LLWLL", "LLWLL"])
+    s = settings(nav, ActionPointCosts=costs(plains=10))
+    before = nav.searches
+    assert nav.findPath(None, m.tile(0, 0), m.tile(4, 0), s, 0).isEmpty(None) and nav.searches == before
+    # a blocked-type goal with RoadOnly keeps the component rule (not searched: no script asks)
+    m, nav = small_map(["LLLLH", "LLLLL"])
+    for x in range(5):
+        set_field(m, x, 1, "RoadDirections", 9)
+    s = settings(nav, ActionPointCosts=costs(plains=10), RoadOnly=True)
+    assert nav.findPath(None, m.tile(0, 1), m.tile(4, 0), s, 0).isEmpty(None)
+
+
+def test_is_empty_for_a_blocked_goal_equals_the_searchs_result_on_random_maps():
+    """isEmpty() for a blocked-type goal comes from the components (touched()); the exe's search must end on the goal in
+    exactly those cases (the tiles are asked for and `compute` raises if the search disagrees with a found path)."""
+    import random
+    rng = random.Random(7)
+    checked = [0, 0]
+    for _ in range(60):
+        rows = ["".join(rng.choice("LLLWHS") for _ in range(9)) for _ in range(7)]
+        m, nav = small_map(rows)
+        table = costs(plains=10, shore=rng.choice([0, 20]), ocean=rng.choice([0, 30]))   # Hills (and sometimes more) blocked
+        s = settings(nav, ActionPointCosts=table)
+        tiles = m.tiles
+        for _ in range(12):
+            a, b = rng.sample(tiles, 2)
+            if b.Type in (PLAINS,) or (b.Type == SHORE and table[SHORE]) or (b.Type == OCEAN and table[OCEAN]):
+                continue                                            # an enterable goal: not this rule
+            path = nav.findPath(None, a, b, s, 0)
+            searched = nav.astar(a, b, list(table), frozenset(t for t in range(TYPES) if not table[t]), False, 1.0)
+            assert (not path.isEmpty(None)) == bool(searched)
+            assert path.tiles() == searched
+            checked[not path.isEmpty(None)] += 1
+    assert checked[0] > 20 and checked[1] > 20                      # both answers were exercised
+
+
+def test_a_blocked_goal_is_answered_with_a_fractional_cost_table_but_has_no_tiles():
+    """TerrainTypeNavCost holds fractions: the search's answer does not depend on them, its tiles are not modelled."""
+    from bbseed.navigator import NavError
+    m, nav = small_map(["LLLLH", "LLLLL"])
+    path = nav.findPath(None, m.tile(0, 0), m.tile(4, 0), settings(nav, ActionPointCosts=costs(plains=2.5)), 0)
+    assert not path.isEmpty(None)
+    with pytest.raises(NavError, match="not modelled"):
+        path.getSize(None)
 
 
 class _HeapItem:
