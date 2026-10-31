@@ -195,13 +195,138 @@ def test_positions_convert_back(layout):
             c = m.world_to_tile(pos)
             assert m.tile_at_coords(R.get(c, "X"), R.get(c, "Y")) is tile
             # createVec(x, y) is a Stub with the fields X and Y; worldToTile reads whatever has them
-            for dx, dy in ((30, -24), (-40, 20), (0, 50), (60, 0)):
+            # (+60, 0) would be the next column's box: on the top / bottom row that box can be off the map, and the game
+            # then clamps it without its pick map (GAME_WTT: 8490,59)
+            for dx, dy in ((30, -24), (-40, 20), (0, 50), (50, 0)):
                 off = Stub(None, "vec", {"X": R.get(pos, "X") + dx, "Y": R.get(pos, "Y") + dy})
                 near = m.world_to_tile(off)
                 assert m.tile_at_coords(R.get(near, "X"), R.get(near, "Y")) is tile, (x, y, dx, dy)
-    # a point off the map still has Coords (the generator averages positions of tiles on the map, so it never asks)
+    # a point off the map is clamped onto it (MEASURED: the native probe's edge and corner calls)
     c = m.world_to_tile(Stub(None, "vec", {"X": -400.0, "Y": -400.0}))
-    assert m.tile_at_coords(R.get(c, "X"), R.get(c, "Y")) is None
+    assert m.tile_at_coords(R.get(c, "X"), R.get(c, "Y")) is m.tile(0, 0)
+
+
+# World.worldToTile as the game answered it: (Pos.X, Pos.Y) -> Coords on the 140 x 170 map of the native probe
+# (bb-decomp/verify_nprobe2_log.html, map job 0, kind r1d; MODLOG "NATIVE PROBE FIX 2"). The comment gives what the old
+# nearest-centre rule answered where it differed.
+GAME_WTT = [
+    # the dense window around tile 70,85 (Pos 12720,10260)
+    ((12630, 10200), (69, 50)),
+    ((12660, 10200), (70, 50)),         # old 69,50
+    ((12709, 10200), (70, 50)),         # old 70,49: the box's top row belongs to the box's tile
+    ((12789, 10209), (71, 49)),         # old 70,50
+    ((12885, 10260), (71, 50)),         # old 71,49
+    ((12962, 10258), (72, 49)),         # old 71,49
+    ((12640, 10301), (70, 50)),         # old 69,51
+    # the half-pixel grid: 0.5 px inside a border where the old rule erred
+    ((12780.5, 10200.5), (71, 49)),     # old 70,50
+    ((12960.5, 10260.5), (72, 49)),     # old 71,50
+    ((12650.5, 10310.5), (70, 50)),     # old 69,51
+    # the map's edges: clamped onto the map
+    ((-130, 60), (0, 0)),               # old -2,1
+    ((210, 58), (1, 0)),                # old 0,0
+    ((2820, -130), (15, -7)),           # old 15,-9
+    ((0, 18120), (0, 151)),             # old -1,151
+    ((11190, 20401), (62, 138)),        # old 61,139
+    ((25230, 20461), (139, 100)),       # old 140,100
+    # a box off the map is clamped at once, without its pick map (which would move these to the left neighbour)
+    ((8490, 59), (47, -23)),            # old 46,-23
+    ((14070, 20408), (78, 130)),        # old 77,131
+    ((210, -190), (1, 0)),              # old 0,-2
+    # the four corners
+    ((-130, -190), (0, 0)),             # old -2,-1
+    ((-130, 90), (0, 1)),               # old -1,1
+    ((90, -40), (0, 0)),                # old 0,-1
+    ((25240, 150), (139, -69)),         # old 140,-69
+    ((-130, 20342), (0, 169)),          # old -2,170
+    ((25170, 20500), (139, 100)),       # old 139,101
+]
+
+
+def _wtt(m, px, py):
+    c = m.world_to_tile(Stub(None, "vec", {"X": px, "Y": py}))
+    return R.get(c, "X"), R.get(c, "Y")
+
+
+def test_world_to_tile_is_the_games():
+    m = HexMap(None, 140, 170, "even-q-up")
+    for (px, py), want in GAME_WTT:
+        assert _wtt(m, float(px), float(py)) == want, (px, py)
+
+
+def test_world_to_tile_pick_map_borders():
+    """The pixels where the game's pick in box 71 (Coords 71,49 / 71,50) changes tile, as the game answered them: the
+    box is 180 x 120 px, its top-left triangle (lx + ly < 60) goes to the upper-left neighbour, rows 60 and 61 are the
+    box's own tile, and from row 62 on the pixels lx < ly - 61 go to the lower-left neighbour."""
+    m = HexMap(None, 140, 170, "even-q-up")
+    game = {(59, 0): (70, 50), (60, 0): (71, 50), (0, 59): (70, 50), (1, 59): (71, 50), (0, 60): (71, 49),
+            (0, 61): (71, 49), (0, 62): (70, 50), (1, 62): (71, 49), (57, 119): (70, 50), (58, 119): (71, 49),
+            (179, 0): (71, 50), (179, 119): (71, 49)}
+    for (lx, ly), want in game.items():
+        py = 10140 + ly if ly >= 60 else 10260 + ly          # box 71,49 holds the rows 60.., box 71,50 the rows ..59
+        assert _wtt(m, float(12780 + lx), float(py)) == want, (lx, ly)
+
+
+def test_world_to_tile_float_border_points():
+    """The native probe's r1 calls from tile 0,0 (Pos 120,60) toward its neighbour 1,0 (offset 180,60): the border's
+    midpoint and 0.01 / 0.5 px to either side, worked out in float32 like the game's script, and 200 / 150 px beyond the
+    map's edges (verify_nprobe_log.html and verify_nprobe2_log.html, map job 0)."""
+    f = R.f32
+    m = HexMap(None, 140, 170, "even-q-up")
+    px, py, dx, dy, length = 120.0, 60.0, 180.0, 60.0, f(189.7367)
+    ux, uy = f(dx / length), f(dy / length)
+    mx, my = f(px + f(dx * 0.5)), f(py + f(dy * 0.5))
+    game = {"m": ((mx, my), (1, 0)),
+            "i001": ((f(mx - f(ux * f(0.01))), f(my - f(uy * f(0.01)))), (0, 0)),
+            "i05": ((f(mx - f(ux * 0.5)), f(my - f(uy * 0.5))), (0, 0)),
+            "o001": ((f(mx + f(ux * f(0.01))), f(my + f(uy * f(0.01)))), (1, 0)),
+            "X0": ((px - 200.0, py), (0, 0)), "X1": ((px + 200.0, py), (1, 0)),
+            "X2": ((px, py - 150.0), (0, 0)), "X3": ((px, py + 150.0), (0, 1))}
+    for tag, ((x, y), want) in game.items():
+        assert _wtt(m, x, y) == want, tag
+
+
+def test_world_to_tile_tiles_in_front_and_the_top_row():
+    """The exe tests tiles in front against their mask before the box's own pixel. (1) The corner C0 of tile 70,85
+    (centre of its centre and the neighbours above and up-right, 12780,10200) moved 0.01 / 0.5 px toward the tile:
+    less than 1 px left of the next column's box, whose tile (X+1, Y-1) = 71,49 then hits (the game: 71,49 on all 4
+    maps; the old rule and a box-only pick: 70,50). (2) Tile 70,0 (Pos 12720,60), border B5 (toward the off-map
+    neighbour up-left) 0.01 / 0.5 px outside: box pixel (29, 29) of the top row of an even column, where (X-1, Y) is off
+    the map, so only the box's own green (lx < 58 - ly) moves - and 29 + 29 is past it: the game keeps 70,-35."""
+    f = R.f32
+    m = HexMap(None, 140, 170, "even-q-up")
+    length = f(69.2820)
+    cx, cy = f(12720.0 + f(180.0 / 3.0)), f(10260.0 + f(-180.0 / 3.0))
+    vx, vy = f(12720.0 - cx), f(10260.0 - cy)
+    for step in (f(0.01), 0.5):
+        assert _wtt(m, f(cx + f(f(vx / length) * step)), f(cy + f(f(vy / length) * step))) == (71, 49), step
+    ux, uy = f(-180.0 / f(189.7367)), f(-60.0 / f(189.7367))
+    mx, my = f(12720.0 + f(-180.0 * 0.5)), f(60.0 + f(-60.0 * 0.5))
+    for step in (f(0.01), 0.5):
+        assert _wtt(m, f(mx + f(ux * step)), f(my + f(uy * step))) == (70, -35), step
+
+
+def test_world_mask_is_the_games_file():
+    """_world_mask equals gfx/masks/hex_mask_world.0 of the installed game pixel for pixel (TGA, bottom-up, BGRA bytes;
+    the exe reads row 119 - ly with blue and red swapped)."""
+    import struct
+    import zipfile
+
+    from bbseed import gamedata
+    from bbseed.hexmap import _BLACK, _BLUE, _GREEN, _RED, _WHITE, _world_mask
+
+    data = gamedata.game_data_dir()
+    if data is None or not (data / "data_001.dat").is_file():
+        pytest.skip("the game is not installed")
+    raw = zipfile.ZipFile(data / "data_001.dat").read("gfx/masks/hex_mask_world.0")
+    assert raw[2] == 2 and struct.unpack("<HH", raw[12:16]) == (240, 120) and raw[16] == 32 and raw[17] & 0x20 == 0
+    # (B, G, R) bytes of the file -> the exe's colour: a file "blue" pixel is the exe's red 0xffff0000 and the other way
+    colour = {(0, 0, 0): _BLACK, (0, 255, 0): _GREEN, (255, 255, 255): _WHITE, (255, 0, 0): _RED, (0, 0, 255): _BLUE}
+    for ly in range(120):
+        for lx in range(240):
+            o = 18 + ((119 - ly) * 240 + lx) * 4
+            b, g, r, a = raw[o:o + 4]
+            assert a == 255 and colour[(b, g, r)] == _world_mask(lx, ly), (lx, ly)
 
 
 @pytest.mark.parametrize("layout", LAYOUTS)

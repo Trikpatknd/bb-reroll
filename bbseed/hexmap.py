@@ -46,6 +46,45 @@ _SQRT3 = math.sqrt(3.0)
 POS_X0, POS_DX = 120.0, 180.0
 POS_Y0, POS_DY = 60.0, 120.0
 
+# World.worldToTile's pick (HexMap.world_to_tile). The exe asks its tile set for the art's size and holds only the
+# factors 0.75 and 0.5: the world's mask is 240 x 120 px, so a box is 180 px wide (0.75 x 240), 120 px high, and each
+# column's boxes start 60 px (0.5 x 120) lower than the previous column's.
+_PICK_W3, _PICK_HH, _PICK_H = 180.0, 60.0, 120.0
+_MASK_W, _MASK_H = 240, 120
+_BLACK = None                   # the tile itself
+# the exe's colours (0x553d60) as moves of the answer: green 0xff00ff00, white 0xffffffff ([0x6608ac]), blue 0xff0000ff,
+# red 0xffff0000
+_GREEN, _WHITE, _BLUE, _RED = (-1, 0), (1, -1), (-1, 1), (1, 0)
+
+
+def _world_mask(lx, ly):
+    """The pixel (lx, ly) of the world's tile mask `gfx/masks/hex_mask_world.0` (data_001.dat: a 240 x 120 32-bit TGA,
+    stored bottom-up; the only world mask, so every world tile is level 0) as the exe reads it: row ly = the file's row
+    119 - ly, blue and red swapped against the file's byte order. Returns _BLACK (the hexagon) or a colour = a move.
+    The rule equals the file pixel for pixel (bb_seedlab tools/wtt_fit.py checks it against the installed game's
+    file; tests/test_hexmap.py too when the game is installed). 0 <= lx < 240, 0 <= ly < 120."""
+    if ly < 58:
+        if lx < 58 - ly:
+            return _GREEN
+        if lx >= 182 + ly:
+            return _WHITE
+        return _BLACK
+    if ly <= 60:
+        return _BLACK
+    if lx < ly - 61:
+        return _BLUE
+    if lx >= 300 - ly:
+        return _RED
+    return _BLACK
+
+
+def _cvtt(v):
+    """cvttss2si: a float truncated toward zero to an int32; NaN and anything out of range give 0x80000000."""
+    if v != v or not -2147483648.0 <= v < 2147483648.0:
+        return -2147483648
+    return int(v)
+
+
 _ADDR_BASE = 0x60000000         # tile addresses come from the tile number, so building a map leaves
 #                                 the interpreter's address counter (R.new_addr) alone
 
@@ -406,31 +445,65 @@ class HexMap:
         return x, -x - r
 
     def world_to_tile(self, pos):
-        """World.worldToTile: Coords (a Vec) of the tile whose centre is nearest to the position, the distance
-        measured with y scaled by sqrt(3) (that makes the stretched lattice a regular hex lattice, whose nearest
-        centre is the hex the point lies in). MEASURED: worldToTile(tile.Pos) is the tile's Coords. UNVERIFIED (read
-        from the GOG exe in stage 2 B2 Task 1 and NOT copied): the exe's own rule (0x4e4240 -> 0x551c60, with 0x553ee0,
-        0x553e10, 0x553fd0 and 0x553d60) picks on the screen: a box guess (X = trunc(px / 180), Y = floor((py - 60 X)
-        / 120)), then per-elevation pixel masks and the tile art's colour-coded "mouse map", then a clamp; the masks
-        are picture data the code only indexes, so this nearest-centre rule stands in for it. Which tile the engine
-        gives for a point near a border between two is not known; in the 80 logged maps (buildLabels' label starts,
-        the only caller on the map's path) the tiles on both sides of every start within 1 px of a border give the
-        same found / not found, so no rule difference was found on the 80 logged maps (two-tile borders on flat ground; the
-        exe's elevation masks are not exercised; a box-guess-only pick moved 1 map per setup). The position needs
-        readable X and Y."""
-        px = float(R.get(pos, "X"))
-        py = float(R.get(pos, "Y"))
-        xf = (px - POS_X0) / POS_DX
-        best = None
-        for x in range(math.floor(xf) - 1, math.floor(xf) + 3):
-            cx = POS_X0 + POS_DX * x
-            yf = (py - POS_Y0 - (POS_DY / 2.0 if x & 1 else 0.0)) / POS_DY
-            for y in range(math.floor(yf) - 1, math.floor(yf) + 3):
-                cy = py - (POS_Y0 + POS_DY * y + (POS_DY / 2.0 if x & 1 else 0.0))
-                d = (px - cx) ** 2 + 3.0 * cy ** 2
-                if best is None or d < best[0]:
-                    best = (d, x, y)
-        cx, cy = self.coords_of_square(best[1], best[2])
+        """World.worldToTile: Coords (a Vec) of the tile the game picks for a position. The exe's code (GOG exe
+        0x4e4240 -> 0x551c60 with 0x553ee0 / 0x553e10 / 0x553d60, read in stage 2 B2 Task 1) with its picture data,
+        the world's tile mask (`_world_mask`, read from the game's data_001.dat; NATIVE PROBE FIX 2, bb_seedlab MODLOG).
+        In float32 like the exe; (X, Y) are the exe's grid coordinates = Coords in the measured layout (square y =
+        Y + X // 2), "on the map" = 0 <= X < W and 0 <= Y + X // 2 < H; local(X', Y') = (trunc(px - 180 X'),
+        trunc(py - (60 X' + 120 Y'))) truncated toward zero:
+          1. the box guess: X = trunc(px / 180), Y = trunc((py - 60 X) / 120), one less when py - (60 X + 120 Y) < 0;
+          2. a box off the map goes to 4 at once (no mask is read);
+          3. the tiles in front, in this order: (X, Y-2), (X+1, Y-2), (X-1, Y-1), (X, Y-1), (X+1, Y-1), (X-1, Y): the
+             first one on the map whose mask pixel at its local(X', Y') is black (inside 240 x 120) is the answer.
+             With the world's one mask only (X+1, Y-1) and (X-1, Y) can hit: (X-1, Y) is the box's top-left triangle,
+             (X+1, Y-1) a point less than 1 px left of the next column's box in its rows 0 and 1 (-0.4 truncates to 0);
+          4. else the box's own mask pixel at local(X, Y) (lx < 0 reads column 0): green moves to (X-1, Y), blue to
+             (X-1, Y+1) (white and red lie right of the box: never read here);
+          5. clamp (0x552334): X into [0, W - 1], then Y into that column (square y into [0, H - 1]).
+        MEASURED (native probe, game 1.5.2.3 + Legends 19.4.22, verify_nprobe2_log.html and verify_nprobe_log.html):
+        every r1d call (47,008 on map job 0: every integer pixel of one lattice period, the same window at +0.5, the
+        four edges inside and outside, the four corners) and every r1 call (2,676 per log on 4 maps: centres, border
+        midpoints and corners with 0.01 / 0.5 px to either side in float32, points beyond the edges) - incl. step 2
+        (89 r1d edge / corner calls that a mask read before the clamp would change), step 3's (X+1, Y-1) (r1's corner
+        points C0 i001 / i05: 64 calls per log) and the 2-px band of the top-left triangle that only step 3's (X-1, Y)
+        covers (r1's 70,0 B5 o001 / o05, 8 calls per log: the top row of an even column, where (X-1, Y) is off the
+        map, so only the box's own green moves). Not modelled: the exe's mirrored path for a flipped world
+        ([world+0x73]); elevation levels above 0 (the exe reads the level min(tile byte +0x0c, [world+0x58]); the world
+        has the one mask, and every probe call agrees with level 0); a float rounding that leaves the box row outside
+        0..119 (the exe would read past the mask's row; here the box's tile stays). The position needs readable X
+        and Y."""
+        px = f32(float(R.get(pos, "X")))
+        py = f32(float(R.get(pos, "Y")))
+        w, h = self.size_x, self.size_y
+
+        def on_map(bx, by):
+            return 0 <= bx < w and -(bx // 2) <= by < h - bx // 2
+
+        def local(bx, by):
+            return (_cvtt(f32(px - f32(bx * _PICK_W3))),
+                    _cvtt(f32(py - f32(f32(bx * _PICK_HH) + f32(by * _PICK_H)))))
+
+        X = _cvtt(f32(px / _PICK_W3))
+        Y = _cvtt(f32(f32(py - f32(X * _PICK_HH)) / _PICK_H))
+        if f32(py - f32(f32(X * _PICK_HH) + f32(Y * _PICK_H))) < 0.0:
+            Y -= 1
+        if on_map(X, Y):
+            for bx, by in ((X, Y - 2), (X + 1, Y - 2), (X - 1, Y - 1), (X, Y - 1), (X + 1, Y - 1), (X - 1, Y)):
+                if on_map(bx, by):
+                    lx, ly = local(bx, by)
+                    if 0 <= lx < _MASK_W and 0 <= ly < _MASK_H and _world_mask(lx, ly) is _BLACK:
+                        X, Y = bx, by
+                        break
+            else:
+                lx, ly = local(X, Y)
+                if 0 <= ly < _MASK_H:
+                    move = _world_mask(min(max(lx, 0), _MASK_W - 1), ly)
+                    if move is not _BLACK:
+                        X += move[0]
+                        Y += move[1]
+        x = min(max(X, 0), w - 1)
+        y = min(max(Y + x // 2, 0), h - 1)
+        cx, cy = self.coords_of_square(x, y)
         return Vec(int(cx), int(cy))            # as Coords (see Tile._coords)
 
     # ------------------------------------------------------------------ state
