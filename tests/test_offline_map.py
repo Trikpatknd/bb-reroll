@@ -16,7 +16,7 @@ buildRoads were the game's. Two of those seeds are pinned here:
 
 The maps use the Mod Options the game had for that run (its own log lists them), and Legends' black-market counter
 as the run had it (BLACKMARKET_BEFORE). Skipped unless Legends 19.4.22 on 1.5.2.3 is installed. Two whole maps, each
-built once per test session (MAPS).
+built once per test session (MAPS); all three tests are slow (--full): the lab here has its own Map Options, so no map is shared.
 """
 import zlib
 
@@ -142,16 +142,19 @@ def _verified(town):
             town["port"], town["southern"], town["military"])
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("seed", sorted(GAME_TOWNS))
 def test_towns_are_the_games(maps, seed):
     assert [_verified(t) for t in maps[seed]["towns"]] == GAME_TOWNS[seed]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("seed", sorted(GAME_TOWNS))
 def test_land_and_sea_attempts_are_the_games(maps, seed):
     assert maps[seed]["attempts"] == GAME_ATTEMPTS[seed]
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("seed", sorted(GAME_TOWNS))
 def test_terrain_lab_regression(maps, seed):
     """A regression pin, not game truth: the summary terrain includes the tiles changed after buildRoads (the roads are the

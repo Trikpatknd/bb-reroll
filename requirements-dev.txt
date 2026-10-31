@@ -1,3 +1,5 @@
 # Dev/test dependencies. Install with:  pip install -r requirements-dev.txt
-# Run the suite from the repo root with:  python -m pytest
+# Run the suite from the repo root with:  python -m pytest            (fast tier)
+#                                         python -m pytest --full -n 4  (everything, 4 worker processes)
 pytest
+pytest-xdist

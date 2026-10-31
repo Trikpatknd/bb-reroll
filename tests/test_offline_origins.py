@@ -61,12 +61,21 @@ def test_the_in_game_mod_is_never_loaded_by_the_offline_search(tmp_path):
     assert summary["legends"] is True and summary["reroll_mod"] == ["mod_bb_reroll_dump.zip"]
 
 
+@pytest.mark.xdist_group("labs")          # it takes the session labs through request.getfixturevalue
 @pytest.mark.skipif(O.FOUND is None, reason="no installed game found")
-def test_every_offered_origin_exists_in_the_game_menu():
+def test_every_offered_origin_exists_in_the_game_menu(request):
     from bbseed.lab import Lab, big_stack
 
+    shared = {}            # the session's shared labs (conftest.py) that can run here; any other profile gets a new lab
+    for profile in ("legends", "vanilla"):
+        if any(p == profile for p, _legends in O.SETUPS.values()):
+            try:
+                shared[profile] = request.getfixturevalue(profile + "_lab").lab
+            except pytest.skip.Exception:
+                pass
+
     def run():
-        return {setup: {script for script, _id, _title in Lab(profile).origins()}
+        return {setup: {script for script, _id, _title in (shared.get(profile) or Lab(profile)).origins()}
                 for setup, (profile, _legends) in O.SETUPS.items()}
     offered = big_stack(run)
     for setup in O.SETUPS:

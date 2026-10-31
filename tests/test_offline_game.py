@@ -14,11 +14,11 @@ HAVE_LEGENDS = HAVE_GAME and any("mod_legends-19.4.22" in m for m in FOUND["mods
 
 
 @pytest.mark.skipif(not HAVE_GAME, reason="Battle Brothers 1.5.2.3 is not installed")
-def test_vanilla_gives_the_rosters_the_game_gave():
-    from bbseed.lab import Lab, big_stack
+def test_vanilla_gives_the_rosters_the_game_gave(vanilla_lab):
+    from bbseed.lab import big_stack
 
     def run():
-        lab = Lab("vanilla")
+        lab = vanilla_lab.lab         # the session's shared lab (conftest.py): every roster here is on a fresh world state
         return {seed: lab.roster(seed, "early_access_scenario") for seed in ("1234567890", "SEEDTEST", "seedtest")}, lab.eng
     rosters, eng = big_stack(run)
     bros = rosters["1234567890"]
@@ -34,14 +34,14 @@ def test_vanilla_gives_the_rosters_the_game_gave():
 
 
 @pytest.mark.skipif(not HAVE_LEGENDS, reason="Battle Brothers 1.5.2.3 with Legends 19.4.22 + MSU 1.9.0 is not installed")
-def test_legends_gives_the_rosters_the_game_gave():
-    from bbseed.lab import Lab, big_stack
+def test_legends_gives_the_rosters_the_game_gave(legends_lab):
+    from bbseed.lab import big_stack
 
     roots, _version = profiles.get("legends")
     assert all(r.is_file() for r in roots), "every root is an archive: nothing extracted"
 
     def run():
-        lab = Lab("legends")
+        lab = legends_lab.lab         # the session's shared lab (conftest.py): every roster here is on a fresh world state
         eng = lab.eng
         compiled = [p for p in eng.included if p in eng.cfiles]
         return (len(compiled), not eng.files.keys() & eng.cfiles.keys(), lab.info(),

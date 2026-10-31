@@ -1,6 +1,6 @@
 """Features read from the installed game (Legends 19.4.22 + MSU 1.9.0 + Modern Hooks 0.6.0 on
-Battle Brothers 1.5.2.3). One lab per setup is shared by the whole module: booting one takes
-~15 s. Skipped when that game / those mods are not installed."""
+Battle Brothers 1.5.2.3). The read-only tests share the session's labs (conftest.py), the survey tests one lab per
+setup of their own for this module: booting one takes ~15 s. Skipped when that game / those mods are not installed."""
 import pytest
 
 from bbseed import profiles
@@ -18,14 +18,28 @@ def _in_lab(lab, fn):
     return big_stack(lambda: fn(lab))
 
 
+@pytest.fixture
+def legends(legends_lab):
+    """The session's shared Legends lab (conftest.py), the Lab itself: these tests only read it."""
+    return legends_lab.lab
+
+
+@pytest.fixture
+def vanilla(vanilla_lab):
+    """The session's shared Vanilla lab (conftest.py), the Lab itself: these tests only read it."""
+    return vanilla_lab.lab
+
+
+# The survey tests wrap the player class for good (talents.TalentWatch: every later roster would also fill its logs), so
+# they get labs of their own for this module and leave the shared ones as they were.
 @pytest.fixture(scope="module")
-def legends():
+def survey_legends():
     from bbseed.lab import Lab, big_stack
     return big_stack(lambda: Lab("legends"))
 
 
 @pytest.fixture(scope="module")
-def vanilla():
+def survey_vanilla():
     from bbseed.lab import Lab, big_stack
     return big_stack(lambda: Lab("vanilla"))
 
@@ -92,6 +106,7 @@ def _rolls_unchanged_and_in_range(make_lab, origins):
                 assert r["lo"] <= r["value"] <= r["hi"], (bro["background"], stat, r)
 
 
+@pytest.mark.slow
 @legends_only
 def test_legends_rolls_are_recorded_inside_their_ranges_without_changing_rosters():
     from bbseed.lab import Lab
@@ -99,6 +114,7 @@ def test_legends_rolls_are_recorded_inside_their_ranges_without_changing_rosters
                                                             "legends_rangers_scenario", "legend_risen_legion_scenario"])
 
 
+@pytest.mark.slow
 @game_only
 def test_vanilla_rolls_are_recorded_inside_their_ranges_without_changing_rosters():
     from bbseed.lab import Lab
@@ -117,25 +133,26 @@ def _survey(lab, origin):
 
 
 @legends_only
-def test_berserker_always_has_stars_in_four_stats(legends):
-    (slot,) = _survey(legends, "legends_berserker_scenario")["slots"]
+def test_berserker_always_has_stars_in_four_stats(survey_legends):
+    (slot,) = _survey(survey_legends, "legends_berserker_scenario")["slots"]
     assert slot["most"] == slot["least"] == 4 and slot["picks"] == 2
     assert slot["fixed"] == {"hp": 3, "msk": 3}
     assert all(top == 3 for top in slot["max"].values())
 
 
 @legends_only
-def test_scaling_beggar_can_never_have_four_starred_stats_nor_hp_or_resolve_stars(legends):
+def test_scaling_beggar_can_never_have_four_starred_stats_nor_hp_or_resolve_stars(survey_legends):
     # the user's case of 2026-10-15: 100,000 seeds searched for 4 starred stats, none found
-    (slot,) = _survey(legends, "legends_scaling_beggar_scenario")["slots"]
+    (slot,) = _survey(survey_legends, "legends_scaling_beggar_scenario")["slots"]
     assert slot["most"] == 3 and slot["fixed"] == {}
     assert slot["max"]["hp"] == 0 and slot["max"]["res"] == 0
     assert slot["rolled"] == ["fat", "init", "msk", "rsk", "mdf", "rdf"]
 
 
 @legends_only
-def test_inquisition_fixes_stars_after_the_roll(legends):
-    slots = _survey(legends, "legends_inquisition_scenario")["slots"]
+@pytest.mark.slow
+def test_inquisition_fixes_stars_after_the_roll(survey_legends):
+    slots = _survey(survey_legends, "legends_inquisition_scenario")["slots"]
     assert [s["fixed"] for s in slots] == [{"hp": 3, "res": 3, "msk": 2}, {"res": 3, "rsk": 3},
                                            {"res": 3, "msk": 2, "mdf": 3}]
     assert slots[0]["most"] == 3 and slots[0]["rolled"] == []          # nothing rolled survives
@@ -143,25 +160,27 @@ def test_inquisition_fixes_stars_after_the_roll(legends):
 
 
 @legends_only
-def test_ranger_brother_two_gets_stars_from_his_background_and_the_origin(legends):
+@pytest.mark.slow
+def test_ranger_brother_two_gets_stars_from_his_background_and_the_origin(survey_legends):
     # the druid background fixes FAT 2 and rolls two more; then the origin writes MSK 2 and HP 2
-    slots = _survey(legends, "legends_rangers_scenario")["slots"]
+    slots = _survey(survey_legends, "legends_rangers_scenario")["slots"]
     assert slots[1]["fixed"] == {"hp": 2, "fat": 2, "msk": 2}
     assert slots[1]["picks"] == 2 and slots[1]["most"] == 5
 
 
 @legends_only
-def test_legends_a_new_company_has_fixed_stars_too(legends):
+@pytest.mark.slow
+def test_legends_a_new_company_has_fixed_stars_too(survey_legends):
     # the hand-written table had these as rolled; the game gives every seed the same stars
-    slots = _survey(legends, "early_access_scenario")["slots"]
+    slots = _survey(survey_legends, "early_access_scenario")["slots"]
     assert [s["fixed"] for s in slots] == [{"hp": 2, "fat": 1, "res": 1}, {"res": 1, "msk": 2, "mdf": 1},
                                            {"init": 1, "rsk": 2, "rdf": 1}]
     assert all(s["picks"] == 0 for s in slots)
 
 
 @game_only
-def test_vanilla_a_new_company_has_the_same_stars_on_every_seed(vanilla):
-    slots = _survey(vanilla, "early_access_scenario")["slots"]
+def test_vanilla_a_new_company_has_the_same_stars_on_every_seed(survey_vanilla):
+    slots = _survey(survey_vanilla, "early_access_scenario")["slots"]
     assert [s["fixed"] for s in slots] == [{"hp": 2, "fat": 1, "res": 1}, {"res": 1, "msk": 2, "mdf": 1},
                                            {"init": 1, "rsk": 2, "rdf": 1}]
     assert all(s["rolled"] == [] for s in slots)
