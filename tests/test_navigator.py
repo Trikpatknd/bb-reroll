@@ -485,12 +485,37 @@ def test_is_empty_for_a_goal_of_a_blocked_type_is_the_searchs_answer():
     s = settings(nav, ActionPointCosts=costs(plains=10))
     before = nav.searches
     assert nav.findPath(None, m.tile(0, 0), m.tile(4, 0), s, 0).isEmpty(None) and nav.searches == before
-    # a blocked-type goal with RoadOnly keeps the component rule (not searched: no script asks)
+    # a blocked-type goal with RoadOnly / StopAtRoad is UNVERIFIED (0x4ea87e / 0x4ea88d; no script asks): NavError
+    from bbseed.navigator import NavError
     m, nav = small_map(["LLLLH", "LLLLL"])
     for x in range(5):
         set_field(m, x, 1, "RoadDirections", 9)
-    s = settings(nav, ActionPointCosts=costs(plains=10), RoadOnly=True)
-    assert nav.findPath(None, m.tile(0, 1), m.tile(4, 0), s, 0).isEmpty(None)
+    for field in ("RoadOnly", "StopAtRoad"):
+        s = settings(nav, ActionPointCosts=costs(plains=10), **{field: True})
+        with pytest.raises(NavError, match="blocked terrain type"):
+            nav.findPath(None, m.tile(0, 1), m.tile(4, 0), s, 0)
+
+
+def test_a_goal_of_terrain_type_0_is_empty_up_front_whatever_the_table_says():
+    """0x4ea50c (MEASURED, native probe n2): with a maximum of 0 a goal of terrain type 0 answers empty before anything
+    else is read, also when the cost table lets type 0 be entered (no NavError, no search, no tiles)."""
+    m, nav = small_map(["LLLLL", "LLLLL", "LLLLL"])
+    m.tile(4, 0).Type = 0
+    m.touch()
+    for cost in (10, 1, 2.5, 0, -1, math.inf):          # type 0 enterable, blocked in every way, or fractional
+        table = costs(plains=10)
+        table[0] = cost
+        before = nav.searches
+        path = nav.findPath(None, m.tile(0, 0), m.tile(4, 0), settings(nav, ActionPointCosts=table), 0)
+        assert path.isEmpty(None) and path.getSize(None) == 0 and path.tiles() == [] and nav.searches == before
+    # also next to the start, and with RoadOnly / StopAtRoad (the check is first)
+    table = costs(plains=10)
+    table[0] = 10
+    for extra in ({}, {"RoadOnly": True}, {"StopAtRoad": True}):
+        s = settings(nav, ActionPointCosts=table, **extra)
+        assert nav.findPath(None, m.tile(3, 0), m.tile(4, 0), s, 0).isEmpty(None)
+    # a goal of another type is not touched by this: the same table, an enterable goal is found
+    assert not nav.findPath(None, m.tile(0, 0), m.tile(3, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
 
 
 def test_is_empty_for_a_blocked_goal_equals_the_searchs_result_on_random_maps():
