@@ -595,13 +595,13 @@ class HexMap:
 
         The recursion of the exe is an explicit stack of neighbour iterators here: the same visiting order, no Python
         recursion (buildLabels' third pass floods radius 16 from every tile still without a region).
-        UNVERIFIED (0x553a5e..0x553a67): the start tile is stamped first and never handed to the callback (its own
-        Region is no answer); buildLabels only asks for tiles whose Region is 0, so no logged map can tell.
-        UNVERIFIED (0x4f37bc): a Type-0 tile (Impassable) would join any region in pass one; no logged map has one
-        (pass three's type 0 is exercised). UNVERIFIED (0x4f37c8): the exe reads Region as an unsigned 16-bit word;
-        regions stay far below 65536. UNVERIFIED: radius and type are cut to integers as the exe's glue 0x4f7640
-        does (cvttss2si 0x4f76c2 / 0x4f76e7; the glue of findNextTileOfType 0x4f7970: 0x4f7a55 / 0x4f7a7a); no logged
-        call passes a float."""
+        MEASURED (native probe 2026-10-31, bb_seedlab MODLOG "NATIVE PROBE", result block): the start tile is stamped
+        first and never handed to the callback (0x553a5e..0x553a67; its own Region is no answer): probe kind r3, 5524
+        of 5524 calls equal the game's; a Type-0 tile (Impassable) is entered and flooded through in a typed query
+        (0x4f37bc): kind r3t0, 52 of 52; radius and type are cut to integers as the exe's glue 0x4f7640 does
+        (cvttss2si 0x4f76c2 / 0x4f76e7; the glue of findNextTileOfType 0x4f7970: 0x4f7a55 / 0x4f7a7a): kind r4 with
+        float arguments, 244 of 244. UNVERIFIED (0x4f37c8): the exe reads Region as an unsigned 16-bit word; regions
+        stay far below 65536 and no probe wrote a Region that large."""
         radius = _to_int(radius)
         terrain = _to_int(terrain)
         q0, r0 = tile.q, tile.r
@@ -637,11 +637,13 @@ class HexMap:
         sector for each neighbour N, NE, SE, S, SW, NW (blocks 0x55275e .. 0x5529bf), each a depth-first walk
         (pre-order) from that neighbour along its own direction and the next one clockwise (NW: NW, then N), every
         step to a neighbour on the grid within `radius` (hex distance from the centre, 0x4cdce0); a tile is pushed
-        the first time any sector reaches it. UNVERIFIED (0x5526f0 / 0x552a70; not logged: only found / not found of
-        a label spot is, and 40 of 40 maps per setup were equal with this order and with the old ring order alike):
-        the order itself, that the centre counts as a candidate (0x552713), that a disc tile reachable only through
-        off-grid tiles is not walked (0x552a70, region_exe off_grid_sector), and the radius-0 sector start
-        (0x5527aa..0x5527d3).
+        the first time any sector reaches it. MEASURED (native probe 2026-10-31, MODLOG "NATIVE PROBE" and "FIX 1": the
+        game's queryTilesInRange and findNextTileOfType hand out tiles in this order): the order, the centre as a first
+        candidate (0x552713) and the off-grid sector rule (a disc tile reachable only through off-grid tiles is not
+        walked, 0x552a70, region_exe off_grid_sector) and the radius 0 case (the centre alone, 0x5527aa..0x5527d3; kind r2
+        asks radius 0 too), on corner and edge tiles too: probe kind r2 17798 of 17798 calls equal the game's and kind
+        r5 352 of 352. Before the probe this order was UNVERIFIED (not logged: 40 of 40 maps per setup were equal with
+        this order and with the old ring order alike).
         The exe walks a tile again each time another path reaches it (the walk is exponential in the radius); here a
         tile is walked once per sector. Same vector: after a tile's first walk everything reachable from it along the
         sector's two directions is stamped already, so a repeat pushes nothing (tests prove it against the literal walk)."""
@@ -689,12 +691,11 @@ class HexMap:
         with a strict <, so the first among equals in the walk's order wins, 0x4f39c5). The answer is true and
         result.Result the tile; false and result.Result = null (0x4f3a22) when there is none ("Failed to find decent
         spot for region label."). MEASURED: found / not found equals the game's on all 80 logged maps (a failed
-        label in 12 maps per setup); the six-neighbour rule, the radius and the strict < of the distance each change
-        the counts when altered (MODLOG: without the six-neighbour rule 28 of 40 maps equal, a strict radius 36 / 34 of
-        40). Only these two rules are load-bearing. UNVERIFIED: the smallest-distance pick and its first-among-equals
-        tie-break (0x4f38c2 / 0x4f39c5; they only choose among qualifying tiles), and that the start tile counts: no
-        logged number depends on any of them, only whether a spot exists changes the run (the label's place is a
-        picture)."""
+        label in 12 maps per setup); the six-neighbour rule and the radius each change the counts when altered
+        (MODLOG: without the six-neighbour rule 28 of 40 maps equal, a strict radius 36 / 34 of 40). MEASURED (native
+        probe 2026-10-31, MODLOG "NATIVE PROBE"): the smallest-distance pick, its first-among-equals tie-break
+        (0x4f38c2 / 0x4f39c5) and that the start tile counts as a candidate: the Result tile equals the game's on probe
+        kind r2, 17798 of 17798 calls (Result null included), and r2t0, 12 of 12 (a Type-0 goal type)."""
         radius = _to_int(radius)
         terrain = _to_int(terrain)
         q0, r0 = tile.q, tile.r
