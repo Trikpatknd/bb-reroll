@@ -8,6 +8,21 @@ it AGAIN before the roster is made (engine fact 2). The run is stopped from insi
 
   stop_at="accepted"  right after the generator logs "World accepted." (the land/sea/elevation loop is done)
   stop_at="reseed"    at the second Math.seedRandomString(Seed): the whole map is done there
+  stop_at="spawn"     past the second seeding, through Assets.setCampaignSettings (the origin's onSpawnAssets) and the
+                      origin's onSpawnPlayer, to the call of the origin's onInit() right after it (vanilla world_state
+                      startNewCampaign: setCampaignSettings, onSpawnPlayer, onInit, uncoverFogOfWar): the company is on the
+                      map and every recruit is made (Deserters makes its recruits in onSpawnPlayer, engine fact 4)
+
+The start ("spawn"). Deserters' onSpawnPlayer (vanilla deserters_scenario.nut and Legends' copy in its hook, checked
+in both the vanilla bytecode and Legends' shipped text: a plain loop with a break) takes the FIRST settlement in
+getSettlements() order that isMilitary() && !isIsolatedFromRoads() && !isSouthern(), or the LAST settlement when none
+does (the loop runs out without a break), and then loops: x = rand(max(2, X - 7), min(SizeX - 2, X + 7)), y likewise
+(SizeX / SizeY = Const.World.Settings), until the square is valid, not Ocean / Shore / occupied, more than 4 away, has
+a road and findPath(tile, fort, TerrainTypeNavCost_Flat) is not empty. Nothing between the second seeding and that loop
+draws except setCampaignSettings (the same draws a roster run makes), and nothing in the loop draws but its two rand()
+calls, each of which draws only when its range has two values or more (engine fact 1): a run checks that the draws it
+counted from the entry of onSpawnPlayer to World.spawnEntity are deserters_loop_draws(fort, loop, size). The loop is
+capped at SPAWN_LOOP_CAP iterations (MapError past it: the game itself would hang there).
 
 `MapGen` is not a native: root_state.onInit() makes it from `scripts/mapgen/map_generator.nut`, which
 instantiates every script under `scripts/mapgen/templates/` (mod hooks applied, `init()` called) and hands them
@@ -28,7 +43,7 @@ import time
 
 from .hexmap import LAYOUTS, HexMap, MapError, NotModelled  # noqa: F401  (MapError/NotModelled: mapgen's API)
 from .sq import runtime as R
-from .sq.runtime import MISSING, NativeFn, SqError, SqTable, tostring
+from .sq.runtime import MISSING, NativeFn, SqError, SqNative, SqTable, tostring
 
 # The hex layout of the engine's tile grid (see hexmap.py), measured against the 96 world generations of the
 # in-game logs (map-search Task 4; bb_seedlab MODLOG "CHECKPOINT A"): N is y+1 (high y is north:
@@ -42,7 +57,7 @@ from .sq.runtime import MISSING, NativeFn, SqError, SqTable, tostring
 #   (mirrored masks such as 62 for 55, or other warnings where its terrain past "accepted" differs).
 LAYOUT = "even-q-up"
 
-STOPS = ("accepted", "reseed")
+STOPS = ("accepted", "reseed", "spawn")
 ACCEPTED = "World accepted."
 
 # The probe: one Math.rand(1, 2147483646) drawn where a whole map run stops (stop_at="reseed"), before the second
@@ -278,6 +293,265 @@ MAP_NOT_BUILT = "map could not be built: "
 # The campaign start itself; the lab puts its campaign settings on the world state first (lab._SETTINGS).
 START = "::World.State.startNewCampaign();"
 
+# ---------------------------------------------------------------------------------------------- the start (spawn)
+DESERTERS = "scenario.deserters"       # the origin whose recruits depend on the map (engine fact 4)
+SPAWN_RANGE = 7                        # x / y = rand(max(2, X - 7), min(Size - 2, X + 7)) around the fort
+SPAWN_EDGE = 2
+# A run whose start loop (the World.isValidTileSquare calls of onSpawnPlayer before World.spawnEntity) passes this
+# many iterations raises MapError instead of running on: a map on which no square passes would hang the game too.
+# The 400 lab maps of stage 2 C2 Task 1 needed at most 197 (bb_seedlab MODLOG "DESERTERS IN THE LAB").
+SPAWN_LOOP_CAP = 100000
+
+
+def loop_ranges(fort_xy, size):
+    """The two ranges one iteration of Deserters' start loop draws from: ((x_lo, x_hi), (y_lo, y_hi)) for a fort on the
+    square fort_xy = (X, Y) of a map size = (Const.World.Settings.SizeX, SizeY): max(2, X - 7) .. min(SizeX - 2, X + 7)."""
+    (fx, fy), (sx, sy) = fort_xy, size
+    return ((max(SPAWN_EDGE, fx - SPAWN_RANGE), min(sx - SPAWN_EDGE, fx + SPAWN_RANGE)),
+            (max(SPAWN_EDGE, fy - SPAWN_RANGE), min(sy - SPAWN_EDGE, fy + SPAWN_RANGE)))
+
+
+def deserters_loop_draws(fort_xy, n, size=None):
+    """How many numbers n iterations of Deserters' start loop take from the seeded stream: per iteration one for x and
+    one for y, but a range with a single value (or none: hi < lo) draws nothing (engine fact 1: rand(a, a) draws
+    nothing). fort_xy None: the full +-7 ranges (2 per iteration, size not read) - right for every fort at least
+    9 squares from each edge (X - 7 >= 2 and X + 7 <= SizeX - 2). A fort closer to an edge has clamped ranges, but
+    they still hold two values or more whenever the side is 5 squares or more (min(Size - 2, X + 7) > max(2, X - 7)
+    for every X of 0 .. Size - 1 then), so the count is 2n on every real map (Settings 140 x 170 in Legends and in
+    Vanilla); only a side of 4 squares or fewer gives a single value (2 .. 2) or none."""
+    if n < 0:
+        raise ValueError("a loop runs 0 or more times, not %r" % (n,))
+    if fort_xy is None:
+        return 2 * n
+    if size is None:
+        raise ValueError("a fort square needs the map size (Const.World.Settings.SizeX, SizeY)")
+    return n * sum(1 for lo, hi in loop_ranges(fort_xy, size) if hi > lo)
+
+
+# What onSpawnPlayer's settlement loop reads, per settlement in getSettlements() order (isIsolatedFromRoads only
+# when isMilitary, as the script's && does - it is a plain field read either way: ConnectedToByRoads.len() == 0).
+_FORT_FLAGS = """
+local out = [];
+foreach (s in ::World.EntityManager.getSettlements())
+    out.push([s.isMilitary(), s.isIsolatedFromRoads(), s.isSouthern()]);
+return [out, ::Const.World.Settings.SizeX, ::Const.World.Settings.SizeY];
+"""
+
+
+def fort_index(flags):
+    """The settlement Deserters' onSpawnPlayer starts from, as an index into getSettlements() (and summary towns):
+    the first one with military and not isolated and not southern, else the last one (the script's loop has no
+    break then); None for no settlements (the script would fail). flags: [military, isolated, southern] per town."""
+    for i, (military, isolated, southern) in enumerate(flags):
+        if military and not isolated and not southern:
+            return i
+    return len(flags) - 1 if flags else None
+
+
+def spawn_summary(lab, start, summ, origin_id):
+    """The "spawn" part of a stop_at="spawn" run (Lab.world_map), as plain data:
+
+      "tile":     the square (x, y) the party was spawned on (World.spawnEntity in onSpawnPlayer), any origin
+      "fort":     Deserters only (else None): the index into summ["towns"] of the settlement the start loop circles
+      "loop":     Deserters only: the loop's iterations N (World.isValidTileSquare calls before World.spawnEntity)
+      "draws":    Deserters only: the seeded draws D from onSpawnPlayer's entry to World.spawnEntity
+      "isolated": isIsolatedFromRoads() of every settlement, in summ["towns"] order
+      "size":     [Const.World.Settings.SizeX, SizeY], the size the loop's ranges are clamped to
+
+    For Deserters it checks what the start rests on and raises MapError when one fails: D is
+    deserters_loop_draws(fort, N, size) (nothing else in onSpawnPlayer drew before the party), and the tile lies in the
+    fort's ranges more than 4 away from it."""
+    eng = lab.eng
+    try:
+        rows, sx, sy = eng.vm.compile(_FORT_FLAGS, "lab_map_forts").invoke(eng.root, ())
+    except SqError:
+        eng.vm.note_trace(0)
+        del eng.vm.stack[:]
+        raise
+    flags = [[bool(m), bool(i), bool(s)] for m, i, s in rows]
+    size = [int(sx), int(sy)]
+    out = {"tile": start["tile"], "fort": None, "loop": None, "draws": None,
+           "isolated": [f[1] for f in flags], "size": size}
+    if origin_id != DESERTERS:
+        return out
+    if start["tile"] is None:
+        raise MapError("Deserters' onSpawnPlayer spawned no party")
+    fort = fort_index(flags)
+    town = summ["towns"][fort]
+    fort_xy = (town["x"], town["y"])
+    n, d = start["loop"], start["draws"]
+    want = deserters_loop_draws(fort_xy, n, size)
+    if d != want:
+        raise MapError("onSpawnPlayer drew %d numbers before the party, the start loop's %d iterations around town %d "
+                       "take %d" % (d, n, fort, want))
+    (xlo, xhi), (ylo, yhi) = loop_ranges(fort_xy, size)
+    x, y = start["tile"]
+    hm = lab._maps.hexmap
+    if not (xlo <= x <= xhi and ylo <= y <= yhi and hm.distance(hm.cols[x][y], hm.cols[fort_xy[0]][fort_xy[1]]) > 4):
+        raise MapError("the start tile %r is not one the loop around town %d at %r can accept" % ((x, y), fort, fort_xy))
+    out.update(fort=fort, loop=n, draws=d)
+    return out
+
+
+# ---------------------------------------------------------------------------------------------- the start without a map
+# Lab.deserters_start: Deserters' own onSpawnPlayer on a world state WITHOUT a map, made to run its start loop exactly n
+# times. Its stand-ins answer only what that function asks, so that the draws are the ones the map's run makes:
+#   - a fort in front of the settlement list (in place of the first placeholder town: the counts of northern towns
+#     and city states, which the recruits' descriptions draw from, stay those of every roster run): military, not
+#     isolated, not southern, standing on fort_xy; its noble house gives a banner (the shields' picture) and takes
+#     the relation change (faction.addPlayerRelation draws nothing: a min/max and the allies' list);
+#   - World.isValidTileSquare: false for the first n - 1 calls (the loop draws x and y and goes round again, as it
+#     does for every square that fails, whatever check fails: none of them draws), true for the n-th;
+#   - World.getTileSquare: a square that passes the checks (plains, free, a road, 5 away from the fort), and
+#     World.getNavigator().findPath a route that is not empty, so the n-th iteration ends the loop as the map's did;
+#   - World.spawnEntity: the real player_party script on that square (create / onInit / onAfterInit, as on the map).
+# Const.World.Settings.SizeX / SizeY are set to `size` for the run (the loop clamps its ranges to them).
+_NO_MAP_FORT = """
+local tile = vargv[0];
+local faction = {
+    function getBanner() { return 2; }
+    function addPlayerRelation(_r, _reason = "") {}
+    function addPlayerRelationEx(_r, _reason = "") {}
+};
+return {
+    ClassName = "settlement", Name = "Fort",
+    function getNameOnly() { return this.Name; }
+    function getName() { return this.Name; }
+    function isMilitary() { return true; }
+    function isIsolatedFromRoads() { return false; }
+    function isSouthern() { return false; }
+    function getTile() { return tile; }
+    function getFactionOfType(_type) { return faction; }
+};
+"""
+_SETTLEMENT_SLOT = """
+local list = ::World.EntityManager.m.Settlements;
+local old = list[0];
+list[0] = vargv[0];
+return old;
+"""
+_SIZES = """
+local s = ::Const.World.Settings;
+local old = [s.SizeX, s.SizeY];
+if (vargv[0] != null) { s.SizeX = vargv[0]; s.SizeY = vargv[1]; }
+return old;
+"""
+
+
+class _StandInTile(SqNative):
+    """A world square for the start without a map: the fields onSpawnPlayer's loop reads, and getDistanceTo 5."""
+
+    def __init__(self, engine, x, y, terrain):
+        from .hexmap import Vec
+        self.addr = R.new_addr()
+        self.hm = self                    # world.World's entity natives ask a tile's map for its Pos
+        self._pos = Vec(0.0, 0.0)
+        self.fields = {"Type": terrain, "IsOccupied": False, "HasRoad": True, "SquareCoords": Vec(x, y),
+                       "Coords": Vec(x, y), "Pos": self._pos, "ID": -1 - x * 1000 - y,
+                       "getDistanceTo": NativeFn(lambda this, other: 5, "getDistanceTo")}
+        self.engine = engine
+
+    def pos_of(self, tile):
+        return self._pos
+
+    def sq_get(self, key):
+        if key in self.fields:
+            return self.fields[key]
+        self.engine.note_stub("no-map tile", key)
+        raise SqError("the index '%s' does not exist" % tostring(key))
+
+    def sq_set(self, key, value):
+        self.fields[key] = value
+
+
+class NoMapStart:
+    """The stand-ins of Lab.deserters_start (see above); install() before the run, restore() after it."""
+
+    def __init__(self, eng, world):
+        self.eng = eng
+        self.world = world
+        self._fort_script = eng.vm.compile(_NO_MAP_FORT, "lab_no_map_fort")
+        self._slot_script = eng.vm.compile(_SETTLEMENT_SLOT, "lab_no_map_slot")
+        self._size_script = eng.vm.compile(_SIZES, "lab_no_map_sizes")
+        self._plains = R.get(R.get(R.get(eng.root.get("Const"), "World"), "TerrainType"), "Plains")
+        self._saved = []
+        self.calls = 0
+        self.n = 0
+        self.drawn = None               # the square the n-th iteration drew (the map's start tile for the right n)
+        self.spawned = None
+        self._tile = None
+
+    def install(self, n, fort_xy, size):
+        from .engine import Stub
+        eng = self.eng
+        self.n, self.calls, self.drawn, self.spawned = n, 0, None, None
+        self._rng, self._entry, self.spawn_draws = None, 0, None
+        old_size = self._size_script.invoke(eng.root, tuple(size) if size is not None else (None, None))
+        self._old_size = list(old_size)
+        sx, sy = (size if size is not None else old_size)
+        if fort_xy is None:
+            fort_xy = (int(sx) // 2, int(sy) // 2)
+        fort_tile = _StandInTile(eng, int(fort_xy[0]), int(fort_xy[1]), self._plains)
+        fort = self._fort_script.invoke(eng.root, (fort_tile,))
+        self._old_town = self._slot_script.invoke(eng.root, (fort,))
+        nav = SqTable()
+        path = SqTable()
+        path.newslot("isEmpty", NativeFn(lambda this: False, "isEmpty"))
+        nav.newslot("createSettings", NativeFn(lambda this: Stub(eng, "no-map nav settings"), "createSettings"))
+        nav.newslot("findPath", NativeFn(lambda this, *args: path, "findPath"))
+        fns = {
+            "isValidTileSquare": self._valid,
+            "getTileSquare": self._tile_square,
+            "getNavigator": lambda this: nav,
+            "spawnEntity": self._spawn_entity,
+        }
+        w = eng.World
+        for name, fn in fns.items():
+            self._saved.append((name, w.d.get(name, MISSING)))
+            w.newslot(name, NativeFn(fn, name))
+
+    def _valid(self, this, x, y):
+        self.calls += 1
+        if self.calls > self.n:
+            raise MapError("the start loop went on past its %d iterations" % self.n)
+        return self.calls == self.n
+
+    def _tile_square(self, this, x, y):
+        if self.calls != self.n:
+            raise MapError("getTileSquare before the last iteration")
+        self.drawn = (int(x), int(y))
+        self._tile = _StandInTile(self.eng, int(x), int(y), self._plains)
+        return self._tile
+
+    def entry(self, rng):
+        """onSpawnPlayer starts (the caller wraps it): the draws are counted from here."""
+        self._rng, self._entry = rng, rng.draws
+
+    def _spawn_entity(self, this, script, cx, cy, *rest):
+        if self._tile is None or self.spawned is not None:
+            raise MapError("World.spawnEntity outside the start loop's end")
+        rng = self.eng.rng
+        self.spawn_draws = rng.draws - self._entry if rng is self._rng else None
+        self.spawned = self.world.create_entity(script, tile=self._tile)
+        return self.spawned
+
+    def restore(self):
+        eng = self.eng
+        w = eng.World
+        for name, value in reversed(self._saved):
+            if value is MISSING:
+                w.remove(name)
+            else:
+                w.d[name] = value
+        self._saved.clear()
+        if getattr(self, "_old_town", None) is not None:
+            self._slot_script.invoke(eng.root, (self._old_town,))
+            self._old_town = None
+        if getattr(self, "_old_size", None) is not None:
+            self._size_script.invoke(eng.root, tuple(self._old_size))
+            self._old_size = None
+        self._tile = None
+
 # The world screen's day-time module, the way world_screen.create() makes it, with a JS side (vargv[0]).
 _TOPBAR = """
 local module = ::new("scripts/ui/screens/world/modules/topbar/world_screen_topbar_daytime_module");
@@ -326,6 +600,13 @@ HARMLESS_STUBS = {
     ("UI.handle", "asyncCall"): "a message to the loading screen's HTML side; nothing comes back",
     # an achievement counter in the Steam client (settlement / location scripts)
     ("root", "updateAchievement"): "a Steam achievement; nothing in the scripts reads it back",
+    # the start (stop_at="spawn"): what onSpawnPlayer does after the party is placed, besides the recruits
+    ("World", "getCamera"): "onSpawnPlayer moves the world camera to the party (getCamera().setPos(party.getPos())): "
+                            "what the screen shows; nothing in the scripts reads it back before the stop",
+    ("World.getCamera()", "setPos"): "the camera's position (see World.getCamera): drawing only",
+    ("Time", "scheduleEvent"): "onSpawnPlayer schedules the origin's intro event and music 1000 ms of real time later; "
+                               "the callback runs only once the running game's clock passes that, after the campaign "
+                               "start (the stop comes first), so it cannot change a recruit or a draw before it",
 }
 
 
@@ -413,6 +694,9 @@ class MapRun:
         world = {name: _missing(name, why) for name, why in _NOT_YET.items()}
         world["resizeScene"] = NativeFn(self._resize_scene, "resizeScene")
         world["spawnLocation"] = NativeFn(self._spawn_location, "spawnLocation")
+        world["spawnEntity"] = NativeFn(self._spawn_entity, "spawnEntity")
+        self._spawn = None              # a "spawn" run, from onSpawnPlayer's entry on: what it counts (see run())
+        self._map_draws = None
         # The world's game speed (startNewCampaign pauses the game: setPause sets it to 0). It is the speed of
         # the running world's clock; map generation never reads it. UNVERIFIED start value 1.0 (normal speed).
         self._speed = 1.0
@@ -473,6 +757,46 @@ class MapRun:
             raise NotModelled("World.spawnLocation on coordinates outside the map")
         return self.world.spawn_location(script, tile)
 
+    def _spawn_entity(self, this, script, cx, cy, *rest):
+        """World.spawnEntity(script, X, Y) with the tile's hex coordinates (Tile.Coords): a world entity (the player's
+        party, onSpawnPlayer) made like World.spawnLocation's, standing on that tile. UNVERIFIED like spawnLocation:
+        that the engine places it before create(), and whether it marks the tile (nothing before the stop reads it)."""
+        if rest:
+            raise NotModelled("World.spawnEntity with %d more arguments" % len(rest))
+        if self.world is None:
+            raise NotModelled("World.spawnEntity: this map run has no world.World to make entities")
+        tile = self.hexmap.tile_at_coords(int(cx), int(cy))
+        if tile is None:
+            raise NotModelled("World.spawnEntity on coordinates outside the map")
+        sp = self._spawn
+        if sp is not None and sp["tile"] is None:
+            if self.eng.rng is not sp["rng"]:
+                raise MapError("the random stream was seeded again inside onSpawnPlayer: the start draws are not "
+                               "counted on one stream")
+            sp["tile"] = (tile.x, tile.y)
+            sp["draws"] = self.eng.rng.draws - sp["entry"]
+        return self.world.create_entity(script, tile=tile)
+
+    def _on_spawn_player(self, this, original):
+        """The origin's onSpawnPlayer, counted: the draws from here to the first World.spawnEntity and the
+        World.isValidTileSquare calls in between (one per iteration of Deserters' start loop)."""
+        world = self.eng.World
+        valid = world.d["isValidTileSquare"]          # the HexMap's, put there by resizeScene
+        sp = self._spawn = {"rng": self.eng.rng, "entry": self.eng.rng.draws, "loop": 0, "tile": None, "draws": None}
+
+        def counted(this, x, y):
+            if sp["tile"] is None:
+                sp["loop"] += 1
+                if sp["loop"] > SPAWN_LOOP_CAP:
+                    raise MapError("onSpawnPlayer's start loop ran past %d iterations without a square that passes "
+                                   "(the game would not get past it either)" % SPAWN_LOOP_CAP)
+            return R.call(valid, this, (x, y))
+        self._put(world, "isValidTileSquare", NativeFn(counted, "isValidTileSquare"))
+        return R.call(original, this, ())
+
+    def _on_scenario_init(self, this, *args):
+        raise StopCampaign("spawn")
+
     # Draws are counted by the generator itself (rng.MT64.draws: every number Math.rand takes from the seeded
     # stream, whatever path of the native took it); re-seeding starts a new generator, so the old one's count
     # is added up first. Only a seeding with the campaign seed itself counts towards the stop: startNewCampaign
@@ -480,13 +804,16 @@ class MapRun:
     def _on_seed_string(self, this, s):
         if s == self._seed:
             self._reseeds += 1
-            if self._reseeds == 2 and self._stop_at == "reseed":
+            if self._reseeds == 2 and self._stop_at in ("reseed", "spawn"):
                 # the probe (PROBE_RANGE): one more draw from the map's stream, not counted in the run's draws
+                # (a "spawn" run draws it too: the seeding right after it starts a new stream, so it changes nothing)
                 rng = self.eng.rng
                 before = rng.draws
                 self._probe = R.call(self._rand, self.eng.Math, PROBE_RANGE)
                 self._draws -= rng.draws - before
-                raise StopCampaign("reseed")
+                if self._stop_at == "reseed":
+                    raise StopCampaign("reseed")
+                self._map_draws = self._draws + rng.draws
         self._draws += self.eng.rng.draws
         return R.call(self._seed_string, this, (s,))
 
@@ -525,7 +852,11 @@ class MapRun:
     def run(self, seed, scenario, stop_at="reseed", layout=None):
         """Run the campaign start on the current world state up to stop_at (see the module text).
         Returns {"log": logInfo lines, "draws": seeded draws, "seconds", "stub_uses": this run's only}, and for
-        stop_at="reseed" also "probe": the PROBE_RANGE draw at the stop (not counted in "draws")."""
+        stop_at="reseed" also "probe": the PROBE_RANGE draw at the stop (not counted in "draws"). stop_at="spawn" gives
+        the same (its "draws" and "probe" are the map's: up to the second seeding) plus "start": {"tile": the square
+        (x, y) of the first World.spawnEntity in onSpawnPlayer, "loop": World.isValidTileSquare calls from onSpawnPlayer's
+        entry to it, "draws": seeded draws in between} (all None when onSpawnPlayer spawned nothing). The recruits are
+        left on the player roster for the caller (Lab.world_map reads and clears them)."""
         if stop_at not in STOPS:
             raise ValueError("stop_at must be one of %s, not %r" % (", ".join(STOPS), stop_at))
         layout = layout or LAYOUT
@@ -537,6 +868,8 @@ class MapRun:
         self._stop_at = stop_at
         self._reseeds = 0
         self._probe = None
+        self._spawn = None
+        self._map_draws = None
         self._speed = 1.0
         stubs_before = dict(eng.stub_uses)
         log = []
@@ -553,6 +886,12 @@ class MapRun:
             eng.log_lines = log
             eng.info_hook = self._on_info
             self._install()
+            if stop_at == "spawn":
+                # the origin's own onSpawnPlayer, counted, and a stop where startNewCampaign calls its onInit()
+                original = R.get(scenario, "onSpawnPlayer")
+                self._put(scenario, "onSpawnPlayer",
+                          NativeFn(lambda this, *args: self._on_spawn_player(this, original), "onSpawnPlayer"))
+                self._put(scenario, "onInit", NativeFn(self._on_scenario_init, "onInit"))
             self._start.invoke(eng.root, (seed, scenario))
         except StopCampaign:
             stopped = True
@@ -573,6 +912,14 @@ class MapRun:
             raise MapError("the campaign start ran to its end without reaching the stop %r" % stop_at)
         stubs = {k: n - stubs_before.get(k, 0) for k, n in eng.stub_uses.items() if n != stubs_before.get(k, 0)}
         out = {"log": log, "draws": draws, "seconds": seconds, "stub_uses": stubs}
-        if stop_at == "reseed":
+        if stop_at in ("reseed", "spawn"):
             out["probe"] = self._probe
+        if stop_at == "spawn":
+            out["draws"] = self._map_draws
+            sp = self._spawn
+            if sp is None or sp["tile"] is None:
+                out["start"] = {"tile": None, "loop": None, "draws": None}
+            else:
+                out["start"] = {"tile": sp["tile"], "loop": sp["loop"], "draws": sp["draws"]}
+        self._spawn = None
         return out

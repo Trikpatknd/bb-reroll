@@ -27,7 +27,7 @@ from pathlib import Path
 from . import gamedata, mapgen, profiles
 from .engine import Engine
 from .sq import runtime as R
-from .sq.runtime import SqError, SqTable, call, tostring
+from .sq.runtime import NativeFn, SqError, SqTable, call, tostring
 from .world import World
 
 ATTRIBUTES = {"hp": "Hitpoints", "fat": "Fatigue", "res": "Bravery", "init": "Initiative",
@@ -52,6 +52,10 @@ if ("Buildings" in ::Const.World && "Blackmarket" in ::Const.World.Buildings)
 _START = _SETTINGS + """
 ::Math.seedRandomString(settings.Seed);
 ::World.Assets.setCampaignSettings(settings);
+"""
+# Deserters without a map (Lab.deserters_start): the same, then the origin's onSpawnPlayer, where it makes its recruits
+_DESERTERS_START = _START + """
+settings.StartingScenario.onSpawnPlayer();
 """
 # Quick reset between seeds when the world state is reused (search loop): what BB Reroll's own
 # loop resets. Some origins shrink the stash on every start (Lone Wolf, Gladiators), so its
@@ -237,6 +241,7 @@ class Lab:
         self._rolls = None
         self._maps = None               # mapgen.MapRun, made by the first world_map()
         self._blackmarket = None        # the compiled _BLACKMARKET, made with it
+        self._no_map = None             # mapgen.NoMapStart, made by the first deserters_start()
         self._state_spent = False       # a map run used the world state: the next roster needs a new one
         self._stash_capacity = eng.vm.compile("return ::World.Assets.getStash().getCapacity();", "lab_cap").invoke(eng.root, ())
         for key, value in (mod_settings or {}).items():
@@ -390,6 +395,12 @@ class Lab:
         before; None leaves the counter as the last run left it. The towns, their ports and the terrain before the
         roads do not depend on it (measured, map-search Task 7). A game without the counter (no Legends) ignores it.
 
+        stop_at="spawn" runs on past the second seeding through setCampaignSettings and the origin's onSpawnPlayer
+        (mapgen.py, "The start") and gives everything "reseed" gives ("draws" and "probe" are still the map's) plus
+        "spawn": mapgen.spawn_summary() ({"tile", "fort", "loop", "draws", "isolated", "size"}; fort / loop / draws for
+        Deserters only) and "roster": the recruits as roster() lists them (the origin's own onSpawnPlayer ran, so no
+        _POST_SPAWN step is added). A start loop past mapgen.SPAWN_LOOP_CAP iterations raises LabError.
+
         Returns {"log": [the logInfo lines of the run], "draws": seeded draws in the run, "seconds",
         "stub_uses": {(kind, name): uses in this run}}, and for stop_at="reseed" (the whole map) also
         "map": mapgen.summary() - the terrain and the towns as plain data - and "probe": one
@@ -408,9 +419,17 @@ class Lab:
             self.world.build_state()
             if blackmarket is not None:
                 self._blackmarket.invoke(self.eng.root, (blackmarket,))
-            out = self._maps.run(seed, scenario, stop_at, layout)
-            if stop_at == "reseed":
-                out["map"] = mapgen.summary(self, out["log"])
+            try:
+                out = self._maps.run(seed, scenario, stop_at, layout)
+                if stop_at in ("reseed", "spawn"):
+                    out["map"] = mapgen.summary(self, out["log"])
+                if stop_at == "spawn":
+                    origin_id = call(R.get(scenario, "getID"), scenario, ())
+                    out["spawn"] = mapgen.spawn_summary(self, out.pop("start"), out["map"], origin_id)
+                    out["roster"] = self._read_roster()
+            finally:
+                if stop_at == "spawn":
+                    self._clear_roster()
             return out
         except SqError as e:
             if self.eng.vm.stack:         # an error outside the run (the run notes and clears its own)
@@ -421,6 +440,82 @@ class Lab:
         except mapgen.MapError as e:
             raise LabError("map of seed %r: %s (at %s)" % (
                 seed, e, " > ".join(self.eng.vm.last_trace[-6:]))) from e
+
+    def _read_roster(self):
+        """The player roster as roster() reports it (with "rolls" when watch_rolls() is on)."""
+        eng = self.eng
+        bros = [self._bro(b) for b in self._report.invoke(eng.root, ())]
+        if self._rolls is not None:
+            self._rolls.attach(bros, self._rolls.probe.invoke(eng.root, ()))
+        return bros
+
+    def _clear_roster(self):
+        try:
+            self._cleanup.invoke(self.eng.root, (self._stash_capacity,))
+        except SqError:
+            del self.eng.vm.stack[:]
+
+    # ------------------------------------------------------------------ Deserters without a map
+    def deserters_start(self, seed, n, fort_xy=None, size=None, fresh=True):
+        """Deserters' start without a map: the campaign start's draws from the second seeding on (setCampaignSettings,
+        then Deserters' own onSpawnPlayer) with its start loop made to run exactly n times (mapgen.NoMapStart). The
+        recruits depend on the map only through the draws of that loop (engine fact 4), so with the n of a map
+        (world_map(..., stop_at="spawn")["spawn"]["loop"]) and its fort's square this is that map's roster.
+
+        fort_xy: the fort's square (x, y) (summary town x, y); None puts it in the middle of the map, where both of the
+        loop's ranges have their full 15 values - which gives the same draws as any fort on a map whose sides are 5
+        squares or more (mapgen.deserters_loop_draws), so None is wrong only on such tiny maps.
+        size: (Const.World.Settings.SizeX, SizeY) for the run; None keeps the lab's values (the scripts' defaults, or
+        what the last map run set).
+        Returns {"roster": as roster() gives it, "tile": the square the n-th iteration drew (on the map: the start
+        tile), "draws": seeded draws from onSpawnPlayer's entry to World.spawnEntity}."""
+        if not isinstance(n, int) or not 1 <= n <= mapgen.SPAWN_LOOP_CAP:
+            raise ValueError("n must be 1 .. %d iterations, not %r" % (mapgen.SPAWN_LOOP_CAP, n))
+        eng = self.eng
+        if fresh or self._state_spent:
+            self.world.build_state()
+            self.world.add_placeholder_settlements()
+            self._state_spent = False
+        if self._no_map is None:
+            self._no_map = mapgen.NoMapStart(eng, self.world)
+            self._desert_start = eng.vm.compile(_DESERTERS_START, "lab_deserters_start")
+        scenario = self.scenario("deserters_scenario")
+        stand = self._no_map
+        try:
+            stand.install(n, fort_xy, size)
+            original = R.get(scenario, "onSpawnPlayer")
+
+            def counted(this, *args):
+                stand.entry(eng.rng)
+                return call(original, this, ())
+            had = scenario.d.get("onSpawnPlayer", R.MISSING)
+            scenario.newslot("onSpawnPlayer", NativeFn(counted, "onSpawnPlayer"))
+            try:
+                self._desert_start.invoke(eng.root, (seed, scenario))
+            finally:
+                if had is R.MISSING:
+                    scenario.remove("onSpawnPlayer")
+                else:
+                    scenario.d["onSpawnPlayer"] = had
+            if stand.calls != n or stand.spawned is None:
+                raise LabError("seed %r: the start loop ran %d of %d times" % (seed, stand.calls, n))
+            bros = self._read_roster()
+        except SqError as e:
+            eng.vm.note_trace(0)
+            trace = " > ".join(eng.vm.last_trace[-6:])
+            del eng.vm.stack[:]
+            raise LabError("seed %r, Deserters with n=%d: %s (at %s)" % (seed, n, tostring(e.value), trace))
+        except mapgen.MapError as e:
+            del eng.vm.stack[:]
+            raise LabError("seed %r, Deserters with n=%d: %s" % (seed, n, e)) from e
+        finally:
+            stand.restore()
+            self._clear_roster()
+        return {"roster": bros, "tile": stand.drawn, "draws": stand.spawn_draws}
+
+    def deserters_roster(self, seed, n, fort_xy=None, size=None, fresh=True):
+        """The roster of a Deserters campaign whose start loop ran n times (deserters_start(...)["roster"])."""
+        return self.deserters_start(seed, n, fort_xy, size, fresh)["roster"]
 
     def _bro(self, t):
         talents = t.get("talents")
