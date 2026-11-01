@@ -159,6 +159,8 @@ def summary(lab, log=()):
                    never worked out again here), faction (the name of its owner faction, or None)
       "attempts": how many times the generator built the land and sea before it accepted a world: the LAND_AND_SEA
                  lines of `log` (the run's lines; one per attempt in Legends and in Vanilla)
+      "start":   only after a stop_at="spawn" run (Lab.world_map adds it): the square [x, y] the company starts on, or
+                 None; mapdraw draws it as a star on a verified setup
 
     Compared with the game (map-search Task 7, 40 in-game maps, bb_seedlab MODLOG "CHECKPOINT B"): every town's
     script, x, y, size, name (city states aside), port, southern and military, in this order, are the game's in 40 of
@@ -636,6 +638,9 @@ HARMLESS_STUBS = {
     ("Time", "scheduleEvent"): "onSpawnPlayer schedules the origin's intro event and music 1000 ms of real time later; "
                                "the callback runs only once the running game's clock passes that, after the campaign "
                                "start (the stop comes first), so it cannot change a recruit or a draw before it",
+    ("World", "spawnParticleEffect"): "some origins' onSpawnPlayer start a smoke or fire effect on the world map; "
+                                      "drawing only, nothing is returned and no draw is made",
+    ("Sound", "play"): "some origins' onSpawnPlayer play a sound on the world map; audio only, nothing comes back",
 }
 
 

@@ -549,3 +549,32 @@ def test_a_deserters_run_always_reads_the_map_options_on_legends_only():
     assert V.run_options(option_texts(Settlements=99), "Vanilla") == ({}, [])
     assert V.run_options(option_texts(Settlements=99), "Modded") == ({}, [])
     assert V.mod_settings(values or V.default_option_values(), "Vanilla") == {}
+
+
+# ------------------------------------------------------------------ the start marker on the map (stage 2 C1)
+LEGENDS_RESULT = {"version": "19.4.22", "legends": True, "game_version": "1.5.2.3", "dlc_complete": None,
+                  "mods": [{"file": "mod_legends-19.4.22.zip", "id": "mod_legends", "version": "19.4.22"},
+                           {"file": "mod_msu 479 1.9.0.zip", "id": "mod_msu", "version": "1.9.0"}]}
+VANILLA_RESULT = {"version": "Vanilla 1.5.2.3", "legends": False, "game_version": "1.5.2.3", "dlc_complete": True,
+                  "mods": []}
+
+
+def test_a_result_is_verified_by_the_setup_it_was_made_on():
+    assert V.result_verified(LEGENDS_RESULT) and V.result_verified(VANILLA_RESULT)
+    assert not V.result_verified(dict(VANILLA_RESULT, dlc_complete=False))
+    assert not V.result_verified(dict(VANILLA_RESULT, dlc_complete=None))
+    assert not V.result_verified(dict(LEGENDS_RESULT, game_version="1.5.2.4"))
+    assert not V.result_verified(dict(LEGENDS_RESULT, version="19.5.0"))
+    assert not V.result_verified(dict(LEGENDS_RESULT, mods=LEGENDS_RESULT["mods"] + [{"file": "mod_other-1.0.zip"}]))
+    assert not V.result_verified(dict(LEGENDS_RESULT, version=None))
+    assert not V.result_verified({}) and not V.result_verified(None), "nothing known: not verified"
+    assert not V.result_verified({"version": None, "build_name": None, "battle_sisters": None, "origin": None,
+                                  "map_options": {}})
+
+
+def test_the_start_note_is_the_first_campaign_line_on_legends_only_and_only_with_a_start():
+    shown = {"start": [3, 4]}
+    assert V.start_line(shown, LEGENDS_RESULT) == V.FIRST_CAMPAIGN == "Start this seed as your first campaign after you start the game."
+    assert V.start_line(shown, VANILLA_RESULT) == "", "the base game has no black-market counter"
+    assert V.start_line({"start": None}, LEGENDS_RESULT) == "" and V.start_line({}, LEGENDS_RESULT) == ""
+    assert V.start_line(shown, dict(LEGENDS_RESULT, game_version="1.5.2.4")) == "", "no marker, no note"

@@ -207,6 +207,11 @@ class FakeLab:
     def info(self):
         return {"profile": "fake"}
 
+    spawn_error = None                  # a LabError text: every run on through the start fails with it
+
+    def start(self, seed):
+        return [int(seed) % 10 + 3, 40]
+
     def _bros(self, seed):
         return [bro(["brave"], hp=int(seed) % 2)] + [bro() for _ in range(ROSTER_SIZE - 1)]
 
@@ -226,6 +231,8 @@ class FakeLab:
         self.map_calls.append((stop_at, perks))
         if self.map_crash is not None:
             raise self.map_crash
+        if stop_at == "spawn" and self.spawn_error is not None:
+            raise LabError(self.spawn_error)
         if self.map_errors is True or seed in self.map_errors:
             raise LabError("map of seed %r: the index '0' does not exist" % seed)
         self.builds[seed] = self.builds.get(seed, 0) + 1
@@ -235,6 +242,8 @@ class FakeLab:
         if self.builds[seed] == 2 and self.second_map is not None:
             summary = self.second_map(summary)
         stubs = self.stubs(seed) if callable(self.stubs) else self.stubs.get(seed, {})
+        if stop_at == "spawn":          # the real lab's run through the start puts the party's square in the map
+            summary = dict(summary, start=self.start(seed))
         found = {"map": summary, "seconds": 0.0, "log": [], "stub_uses": stubs}
         if stop_at == "spawn":          # the start run: the recruits too (Deserters)
             bros = self._bros(seed)
@@ -388,7 +397,7 @@ def test_the_confirming_map_is_checked_too(monkeypatch):
     class SecondUnreviewed(FakeLab):
         def world_map(self, seed, *args, **kwargs):
             out = FakeLab.world_map(self, seed, *args, **kwargs)
-            if self.builds[seed] == 2:
+            if self.builds[seed] >= 2:      # (the real lab is deterministic: the map without its start fails the same)
                 out["stub_uses"] = UNREVIEWED
             return out
     events = run_worker(monkeypatch, SecondUnreviewed(), criteria={"map": {"ports": 9}}, limit=10)
@@ -911,3 +920,119 @@ def test_show_a_deserters_seed_runs_the_whole_map_for_the_roster(monkeypatch, ca
     assert "seed 1234567890, origin deserters_scenario:" in out and "Hans" in out
     assert out.count("Start this seed as your first campaign after you start the game.") == 1
     assert "Map Options used: Settlements 24, Water 38" in out and NOTE not in out
+
+
+# ---------------------------------------------------------------- the company's start tile on the map (stage 2 C1)
+def test_a_match_with_a_map_carries_the_start_tile_of_the_confirming_map(monkeypatch):
+    """Every origin's confirming map is run on through the start (the sift maps are not: the start is no condition),
+    so the payload's map has "start" = the party's square."""
+    lab = FakeLab()
+    events = run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10)
+    [match] = matches_of(events)
+    assert match["seed"] == "0000000009" and match["map"]["start"] == [12, 40]
+    assert lab.map_calls == [("reseed", False)] * 10 + [("spawn", False)], "the sift maps stay as they were"
+    assert lab.blackmarket == [0] * 11
+
+
+def test_a_roster_only_search_still_builds_no_map(monkeypatch):
+    lab = FakeLab()
+    events = run_worker(monkeypatch, lab, criteria={"stars_by_slot": {"1": "hp1"}}, limit=10)
+    assert lab.map_calls == [] and all(m["map"] is None for m in matches_of(events))
+
+
+def test_a_checked_seed_gets_a_start_on_its_map(monkeypatch):
+    events = run_worker(monkeypatch, FakeLab(), criteria={"map": {"ports": 1}}, seeds=["0000000004"])
+    [match] = matches_of(events)
+    assert match["map"]["start"] == [7, 40]
+
+
+def test_a_start_that_cannot_be_made_leaves_the_map_without_one(monkeypatch):
+    """The start is a picture only: an origin whose start the lab cannot run (a mod's) must not lose its matches."""
+    lab = FakeLab()
+    lab.spawn_error = "map of seed '9': the index 'x' does not exist"
+    events = run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10)
+    [match] = matches_of(events)
+    assert match["seed"] == "0000000009" and "start" not in match["map"] and match["stable"]
+    assert not [e for e in events if e[0] in ("error", "fatal")]
+    assert lab.map_calls[-2:] == [("spawn", False), ("reseed", False)]
+
+
+def test_a_confirming_map_that_is_bad_without_its_start_too_is_still_skipped(monkeypatch):
+    class Bad(FakeLab):
+        def world_map(self, seed, *args, **kwargs):
+            out = FakeLab.world_map(self, seed, *args, **kwargs)
+            if self.builds[seed] >= 2:
+                out["stub_uses"] = UNREVIEWED
+            return out
+    events = run_worker(monkeypatch, Bad(), criteria={"map": {"ports": 9}}, limit=10)
+    assert matches_of(events) == []
+    assert len([p for k, _i, p in events if k == "error"]) == 1
+
+
+def small_cli_map(**extra):
+    """A map summary mapdraw can draw: 10 x 8 tiles of land and two towns."""
+    towns = [{"name": "Hafen", "script": "legends_fishing_village", "size": 1, "x": 2, "y": 3, "southern": False,
+              "military": False, "port": True, "faction": None},
+             {"name": "Burg", "script": "legends_forest_fort", "size": 2, "x": 7, "y": 5, "southern": False,
+              "military": True, "port": False, "faction": None}]
+    return dict({"size": [10, 8], "layout": "even-q-up", "terrain": "L" * 80, "towns": towns, "attempts": 1}, **extra)
+
+
+def test_the_map_report_has_a_start_line_only_for_a_verified_setup():
+    from bbseed.mapgen import FIRST_CAMPAIGN
+    m = small_cli_map(start=[4, 6])
+    verified = S.map_report("1234567890", m, "trader_scenario", "legends", 3.0, True, True)
+    assert "   Start: 4, 6" in verified and verified.count("   " + FIRST_CAMPAIGN) == 1
+    assert verified.index("   Start: 4, 6") < verified.index("   " + FIRST_CAMPAIGN)
+    assert all(line.isascii() for line in verified)
+    base = S.map_report("1234567890", m, "trader_scenario", "vanilla", 3.0, True, False)
+    assert "   Start: 4, 6" in base and not any("first campaign" in line for line in base)
+    for lines in (S.map_report("1", m), S.map_report("1", m, verified=False, legends=True),
+                  S.map_report("1", small_cli_map(), verified=True, legends=True),
+                  S.map_report("1", small_cli_map(start=None), verified=True, legends=True)):
+        assert not any(line.strip().startswith("Start:") or "first campaign" in line for line in lines)
+
+
+def test_cli_map_prints_the_start_and_draws_it_only_on_a_verified_setup(monkeypatch, capsys, tmp_path):
+    import bbseed.lab as lab_module
+    calls = []
+    setup = {"verified": True}
+
+    class FakeMapLab:
+        profile = "legends"
+
+        def __init__(self, profile, mod_settings=None):
+            pass
+
+        def info(self):
+            return dict(VERIFIED_INFO, game_version="1.5.2.3" if setup["verified"] else "1.5.2.4")
+
+    def fake_world_map(lab, seed, origin, **kwargs):
+        calls.append(kwargs)
+        return {"map": small_cli_map(start=[4, 6]), "seconds": 1.0}
+    monkeypatch.setattr(lab_module, "Lab", FakeMapLab)
+    monkeypatch.setattr(lab_module, "big_stack", lambda fn: fn())
+    monkeypatch.setattr(S, "checked_world_map", fake_world_map)
+    svg = tmp_path / "m.svg"
+    S.main(["--map", "1234567890", "--svg", str(svg)])
+    out = capsys.readouterr().out
+    assert "   Start: 4, 6" in out and out.count("Start this seed as your first campaign") == 1 and NOTE not in out
+    assert calls == [{"stop_at": "spawn", "blackmarket": 0}]
+    assert 'class="start"' in svg.read_text(encoding="utf-8")
+    setup["verified"] = False
+    S.main(["--map", "1234567890", "--svg", str(svg)])
+    out = capsys.readouterr().out
+    assert "Start:" not in out and NOTE in out and 'class="start"' not in svg.read_text(encoding="utf-8")
+    # a start that cannot be made: the map alone, as before
+    setup["verified"] = True
+    calls.clear()
+
+    def no_start(lab, seed, origin, **kwargs):
+        calls.append(kwargs)
+        if kwargs.get("stop_at") == "spawn":
+            raise LabError("no start")
+        return {"map": small_cli_map(), "seconds": 1.0}
+    monkeypatch.setattr(S, "checked_world_map", no_start)
+    S.main(["--map", "1234567890"])
+    out = capsys.readouterr().out
+    assert "Start:" not in out and "map of seed 1234567890" in out and len(calls) == 2

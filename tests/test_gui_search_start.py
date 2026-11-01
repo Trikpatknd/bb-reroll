@@ -1241,6 +1241,80 @@ def test_the_map_window_legend_and_the_tooltips_use_the_words_of_the_map_view_fi
     assert all("least" not in tip for tip in map_view.CONDITION_TIPS.values())
 
 
+LEGENDS_VERIFIED = {"version": "19.4.22", "legends": True, "game_version": "1.5.2.3", "dlc_complete": None,
+                    "mods": [{"file": "mod_legends-19.4.22.zip", "id": "mod_legends", "version": "19.4.22"},
+                             {"file": "mod_msu 479 1.9.0.zip", "id": "mod_msu", "version": "1.9.0"}]}
+VANILLA_VERIFIED = {"version": "Vanilla 1.5.2.3", "legends": False, "game_version": "1.5.2.3", "dlc_complete": True,
+                    "mods": []}
+
+
+def start_window(app, info, start=(10, 25), seed="2222222222"):
+    summary = dict(small_map(), start=None if start is None else list(start))
+    app._run = dict(RUN, north_band=33)
+    entry = result(app, seed, summary)
+    entry["info"] = dict(info)
+    app._show_map(entry)
+    pump(app, lambda: False, 0.2)
+    window = next(iter(app._map_windows.values()))
+    return window, summary
+
+
+def test_the_map_window_draws_the_start_star_on_a_verified_setup(map_app):
+    """Stage 2 C1: a star on the company's start tile, the same polygon as the SVG's, a legend entry "Start", the
+    tooltip "Your company starts here." and, with Legends, the first-campaign note."""
+    from bbreroll import map_view
+    from bbseed import mapdraw
+    window, summary = start_window(map_app, LEGENDS_VERIFIED)
+    canvas, scale = canvas_of(window), window.scale
+    stars = [i for i in canvas.find_all() if canvas.type(i) == "polygon" and canvas.itemcget(i, "fill") == mapdraw.START_FILL]
+    assert len(stars) == 1
+    cx, cy, r, _fill, tip = mapdraw.start_mark(summary, True, scale)
+    want = [v for point in mapdraw.star_points(cx, cy, r) for v in point]
+    assert canvas.coords(stars[0]) == pytest.approx(want)
+    # the SVG draws the same corners (scale 1 there; same formula)
+    svg_cx, svg_cy, svg_r, *_ = mapdraw.start_mark(summary, True, 1)
+    assert (cx / scale, cy / scale, r / scale) == pytest.approx((svg_cx, svg_cy, svg_r))
+    # on the tile of summary["start"]
+    tile_x0 = 10 * mapdraw.CELL_W * scale
+    assert tile_x0 < cx < tile_x0 + mapdraw.CELL_W * scale
+    texts = labels_of(window)
+    assert "Start" in texts and map_view.FIRST_CAMPAIGN in texts
+    # the pointer on the star shows the tooltip line, and takes it away again
+    window.update()
+    canvas.event_generate("<Enter>", x=round(cx), y=round(cy))
+    canvas.event_generate("<Motion>", x=round(cx), y=round(cy))
+    pump(map_app, lambda: window.info_var.get() == tip, 1.0)
+    assert window.info_var.get() == "Your company starts here."
+    # (the star lies above the towns: it is the last item drawn but the north arrow)
+    assert canvas.find_all().index(stars[0]) > max(canvas.find_all().index(i) for i in canvas.find_all()
+                                                   if canvas.type(i) == "oval")
+
+
+def test_the_map_window_has_no_first_campaign_note_on_the_base_game(map_app):
+    from bbreroll import map_view
+    window, _summary = start_window(map_app, VANILLA_VERIFIED)
+    canvas = canvas_of(window)
+    assert [i for i in canvas.find_all() if canvas.type(i) == "polygon" and canvas.itemcget(i, "fill") == "#ffd400"]
+    texts = labels_of(window)
+    assert "Start" in texts and map_view.FIRST_CAMPAIGN not in texts
+
+
+def test_the_map_window_draws_no_star_when_the_setup_is_not_verified_or_the_start_is_not_known(map_app):
+    from bbreroll import map_view
+    from bbseed import mapdraw
+    unverified = dict(LEGENDS_VERIFIED, game_version="1.5.2.4")
+    for info, start in ((unverified, (10, 25)), (LEGENDS_VERIFIED, None), ({}, (10, 25))):
+        for window in list(map_app._map_windows.values()):
+            window.destroy()
+        map_app._map_windows.clear()
+        window, _summary = start_window(map_app, info, start)
+        canvas = canvas_of(window)
+        assert not [i for i in canvas.find_all() if canvas.type(i) == "polygon" and canvas.itemcget(i, "fill") == mapdraw.START_FILL]
+        texts = labels_of(window)
+        assert "Start" not in texts and map_view.FIRST_CAMPAIGN not in texts
+        assert [canvas.type(i) for i in canvas.find_all()].count("polygon") == 2, "only the north arrow's two plates"
+
+
 def test_a_checked_seed_whose_map_could_not_be_built_shows_its_roster_and_the_reason(map_app):
     """Final review M3: the search reports the roster of a checked seed with the failure "map could not be built"
     and no map; the window shows that card, not "See the results" over nothing."""

@@ -406,6 +406,8 @@ class Lab:
         Deserters only) and "roster": the recruits as roster() lists them (the origin's own onSpawnPlayer ran, so no
         _POST_SPAWN step is added). A start loop past mapgen.SPAWN_LOOP_CAP iterations raises LabError.
         perks=True (stop_at="spawn" only): the recruits also have their perk trees, as roster_with_perks() gives them.
+        A "spawn" run also puts the party's square in the map summary: out["map"]["start"] = [x, y] (None when no
+        party was spawned); the other stops leave the key out (mapdraw draws no start marker without it).
 
         Returns {"log": [the logInfo lines of the run], "draws": seeded draws in the run, "seconds",
         "stub_uses": {(kind, name): uses in this run}}, and for stop_at="reseed" (the whole map) also
@@ -432,6 +434,8 @@ class Lab:
                 if stop_at == "spawn":
                     origin_id = call(R.get(scenario, "getID"), scenario, ())
                     out["spawn"] = mapgen.spawn_summary(self, out.pop("start"), out["map"], origin_id)
+                    tile = out["spawn"]["tile"]
+                    out["map"]["start"] = None if tile is None else [int(tile[0]), int(tile[1])]    # the picture's marker
                     out["roster"] = self._read_roster()
                     if perks:
                         self._add_perks(out["roster"], self._perks.invoke(self.eng.root, ()))

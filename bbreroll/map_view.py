@@ -343,6 +343,26 @@ def verified(game_version, legends_version, mods=None, dlc_complete=True):
     return verified_setup(game_version, legends_version, mods, dlc_complete)
 
 
+def result_verified(info):
+    """Were the maps of the setup a result was made on checked against the game? `info` = the result's report info
+    (gui `_report_info`: "version" = the Legends version or "Vanilla <game>", "legends", "game_version", "mods",
+    "dlc_complete"). Anything missing counts as not verified: the map window then draws no start marker."""
+    info = info or {}
+    legends = info.get("version") if info.get("legends") else None
+    if info.get("legends") and not legends:
+        return False
+    return verified(info.get("game_version"), legends, info.get("mods") or [], bool(info.get("dlc_complete")))
+
+
+def start_line(summary, info):
+    """The note under a map window's legend when the picture shows the company's start (a verified setup and a start
+    tile in the summary): "" otherwise. With Legends it says the start is for the first campaign after the game
+    starts (the search builds every map at black-market counter 0, and the start comes after the roads)."""
+    if not (summary or {}).get("start") or not result_verified(info):
+        return ""
+    return FIRST_CAMPAIGN if (info or {}).get("legends") else ""
+
+
 def legends_version_from_files(mod_files):
     """The Legends version in the name of its mod zip (mod_legends-19.4.22.zip), or None. The zip of Legends'
     assets (mod_legends-assets-19.4.3.zip) is not it."""

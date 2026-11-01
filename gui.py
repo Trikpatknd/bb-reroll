@@ -350,6 +350,9 @@ class _MapWindow(ctk.CTkToplevel):
         self._app, self._key = app, key
         summary, band = entry["map"], entry.get("north_band")
         self.summary, self.band = summary, band     # what the picture shows (App._show_map compares them)
+        # the company's start tile: drawn only for a setup whose maps are checked against the game (verified_setup)
+        self.verified = map_view.result_verified(entry.get("info"))
+        self.start_note = map_view.start_line(summary, entry.get("info"))
         self.title(f"Map of seed {entry['seed']} - {entry['origin']}")
         self.configure(fg_color=PALETTE["bg"])
         self.resizable(False, False)
@@ -407,6 +410,13 @@ class _MapWindow(ctk.CTkToplevel):
             for item in items:
                 canvas.tag_bind(item, "<Enter>", lambda _e, text=label: self.info_var.set(text))
                 canvas.tag_bind(item, "<Leave>", lambda _e: self.info_var.set(self._line))
+        start = mapdraw.start_mark(summary, self.verified, scale)
+        if start is not None:       # a star on the start tile, above the towns
+            cx, cy, r, fill, label = start
+            star = canvas.create_polygon(*[c for p in mapdraw.star_points(cx, cy, r) for c in p], fill=fill,
+                                         outline=mapdraw.START_OUTLINE, width=max(1, round(scale)))
+            canvas.tag_bind(star, "<Enter>", lambda _e, text=label: self.info_var.set(text))
+            canvas.tag_bind(star, "<Leave>", lambda _e: self.info_var.set(self._line))
         # north is at the top: an arrow on a dark plate in the corner (it must show on snow and on sea)
         canvas.create_polygon(4, 4, 32, 4, 32, 44, 4, 44, fill="#111111", outline="#ffffff")
         canvas.create_polygon(18, 8, 26, 24, 18, 20, 10, 24, fill="#ffffff", outline="#ffffff")
@@ -433,10 +443,17 @@ class _MapWindow(ctk.CTkToplevel):
         chip(lambda c: (c.create_oval(5, 4, 13, 12, fill=mapdraw.TOWN_FILL["town"], outline="#111111"),
                         c.create_oval(2, 1, 16, 15, outline=mapdraw.PORT_RING, width=2)), bg="#cfd8dc")
         text("Port")
+        if mapdraw.start_mark(self.summary, self.verified) is not None:
+            chip(lambda c: c.create_polygon(*[v for p in mapdraw.star_points(9, 8, 7) for v in p], fill=mapdraw.START_FILL,
+                                            outline=mapdraw.START_OUTLINE))
+            text(mapdraw.START_LABEL)
         if band is not None:
             chip(lambda c: c.create_line(0, 8, 18, 8, fill=mapdraw.BAND_COLOUR, width=2, dash=(4, 2)))
             text(f"North band: the top {band:g} %")
         text("North is at the top.")
+        if self.start_note and mapdraw.start_mark(self.summary, self.verified) is not None:
+            ctk.CTkLabel(self, text=self.start_note, font=(FONT, 11), text_color=PALETTE["muted"], anchor="w").pack(
+                fill="x", padx=12, pady=(0, 8))
 
 
 class App(ctk.CTk):
@@ -2495,7 +2512,10 @@ class App(ctk.CTk):
                 self.update()
                 report["map_window"] = {"title": window.title(), "scale": window.scale, "info": window.info_var.get(),
                                         "canvas": [int(window.canvas.cget("width")), int(window.canvas.cget("height"))],
-                                        "items": len(window.canvas.find_all())}
+                                        "items": len(window.canvas.find_all()),
+                                        "start": window.summary.get("start"),       # the star: only when verified
+                                        "start_drawn": mapdraw.start_mark(window.summary, window.verified) is not None,
+                                        "start_note": window.start_note}
                 Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
                 if spec.get("screenshot"):
                     shot = Path(spec["screenshot"])

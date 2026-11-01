@@ -368,3 +368,65 @@ def test_mapdraw_is_standard_library_only_and_never_imports_tkinter():
     out = subprocess.run([sys.executable, "-c", "import sys, bbseed.mapdraw; sys.exit('tkinter' in sys.modules)"],
                          cwd=str(ROOT), capture_output=True, text=True, stdin=subprocess.DEVNULL)
     assert out.returncode == 0, out.stderr
+
+
+# ---------------------------------------------------------------- the start marker (stage 2 C1)
+def started(start, **kw):
+    s = tiny_summary("LLLL" "LLLL" "LLLL", [town(0, 0, name="Hafen")])
+    if start is not _MISSING:
+        s["start"] = start
+    return s
+
+
+_MISSING = object()
+
+
+def test_the_start_star_is_drawn_only_for_a_verified_setup_with_a_known_tile():
+    s = started([2, 1])
+    assert mapdraw.start_mark(s, verified=True) is not None
+    assert mapdraw.start_mark(s) is None and mapdraw.start_mark(s, False) is None, "fail closed"
+    assert mapdraw.start_mark(started(_MISSING), True) is None, "a run that did not go on through the start"
+    assert mapdraw.start_mark(started(None), True) is None
+    for bad in ([4, 1], [2, 3], [-1, 0], [2], [2, 1, 0], [1.5, 1], ["2", "1"]):
+        assert mapdraw.start_mark(started(bad), True) is None, bad       # not a tile of the map: no marker, no error
+    text = svg(s, verified=True)
+    assert text.count('class="start"') == 1
+    for plain in (svg(s), svg(s, verified=False), svg(started(None), verified=True), svg(started(_MISSING), verified=True)):
+        assert 'class="start"' not in plain and "star =" not in plain
+
+
+def test_the_start_star_is_on_the_middle_of_its_tile_with_north_up_and_the_key_names_it():
+    s = started([2, 1])
+    c = cells(s)
+    x0, y0, x1, y1, _ = c[1 * 4 + 2]
+    cx, cy, r, fill, label = mapdraw.start_mark(s, True)
+    assert (cx, cy) == ((x0 + x1) / 2, (y0 + y1) / 2)
+    assert fill == mapdraw.START_FILL and label == "Your company starts here." == mapdraw.START_TIP
+    assert r > max(mapdraw.TOWN_RADIUS.values()), "the star is the biggest mark"
+    north = mapdraw.start_mark(started([2, 2]), True)
+    assert north[1] < cy, "a higher y is further up the picture"
+    # a start tile is always an odd or even column with the same half-row offset as the towns' circles
+    town_circle = mapdraw.town_marks(started([0, 0]))[0]
+    start_here = mapdraw.start_mark(started([0, 0]), True)
+    assert (town_circle[0], town_circle[1]) == (start_here[0], start_here[1])
+    root = _parse(svg(s, verified=True))
+    poly, = [e for e in root.iter(SVG_NS + "polygon") if e.get("class") == "start"]
+    assert poly.find(SVG_NS + "title").text == "Your company starts here."
+    assert "star = start" in svg(s, verified=True)
+    assert mapdraw.START_LABEL == "Start"
+
+
+def test_svg_and_canvas_share_the_stars_corners():
+    """The SVG polygon's points are mapdraw.star_points of the mark, at any scale (the Tk canvas draws the same list)."""
+    for scale in (1, 2.5):
+        s = started([3, 2])
+        cx, cy, r, *_ = mapdraw.start_mark(s, True, scale)
+        corners = mapdraw.star_points(cx, cy, r)
+        assert len(corners) == 10
+        poly, = [e for e in _parse(svg(s, scale=scale, verified=True)).iter(SVG_NS + "polygon")]
+        got = [tuple(float(v) for v in pair.split(",")) for pair in poly.get("points").split()]
+        assert got == pytest.approx([(round(x, 2), round(y, 2)) for x, y in corners])
+        top = min(corners, key=lambda p: p[1])
+        assert top[0] == pytest.approx(cx) and top[1] == pytest.approx(cy - r), "one point straight up"
+    s = started([3, 2])
+    assert mapdraw.start_mark(s, True, 2)[:3] == tuple(2 * v for v in mapdraw.start_mark(s, True)[:3])

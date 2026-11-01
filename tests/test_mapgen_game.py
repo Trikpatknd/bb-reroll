@@ -57,6 +57,26 @@ def test_a_spawn_run_leaves_the_roster_path_unchanged(legends_lab):
     natives, world_keys = _natives(legends_lab.lab.eng), set(legends_lab.lab.eng.World.d)
     out = legends_lab.world_map("1234567890", "deserters_scenario", stop_at="spawn")
     assert len(out["roster"]) == 3 and out["spawn"]["loop"] >= 1
+    assert out["map"]["start"] == list(out["spawn"]["tile"])        # the picture's marker (stage 2 C1)
+    assert _natives(legends_lab.lab.eng) == natives and set(legends_lab.lab.eng.World.d) == world_keys
+    assert legends_lab.roster("0000000001", "trader_scenario", fresh=False) == fresh
+    assert legends_lab.roster("0000000001", "trader_scenario", fresh=True) == fresh
+
+
+@pytest.mark.slow
+def test_a_trader_spawn_run_gives_the_start_tile_and_leaves_the_roster_path_unchanged(legends_lab):
+    """Stage 2 C1: the party's square of ANY origin is in the map summary ("start"), on land and not on a town. The
+    run takes everything it put in place away again (as the Deserters run does)."""
+    from bbseed import mapdraw
+    fresh = legends_lab.roster("0000000001", "trader_scenario", fresh=True)
+    natives, world_keys = _natives(legends_lab.lab.eng), set(legends_lab.lab.eng.World.d)
+    out = legends_lab.world_map("1234567890", "trader_scenario", stop_at="spawn", blackmarket=0)
+    m = out["map"]
+    x, y = m["start"]
+    assert [x, y] == list(out["spawn"]["tile"]) and 0 <= x < m["size"][0] and 0 <= y < m["size"][1]
+    assert m["terrain"][y * m["size"][0] + x] not in "OC", "the party does not start in the sea or on the shore"
+    assert (x, y) not in [(t["x"], t["y"]) for t in m["towns"]]
+    assert 'class="start"' in mapdraw.svg(m, verified=True) and 'class="start"' not in mapdraw.svg(m)
     assert _natives(legends_lab.lab.eng) == natives and set(legends_lab.lab.eng.World.d) == world_keys
     assert legends_lab.roster("0000000001", "trader_scenario", fresh=False) == fresh
     assert legends_lab.roster("0000000001", "trader_scenario", fresh=True) == fresh
@@ -261,7 +281,10 @@ def test_real_search_finds_a_port_rich_map(town_maps):
     assert match["seed"] == seed and match["failure"] is None and match["stable"]
     assert len(match["roster"]) == 2 and all(bro.get("perk_groups") for bro in match["roster"])   # confirmed roll
     assert sum(t["port"] for t in match["map"]["towns"]) >= 1
-    assert match["map"] == town_maps.maps[seed]["map"]
+    # the confirming map is run on through the start (stage 2 C1): the same map plus the party's square
+    start = match["map"]["start"]
+    assert len(start) == 2 and all(isinstance(v, int) for v in start)
+    assert {k: v for k, v in match["map"].items() if k != "start"} == town_maps.maps[seed]["map"]
 
 
 @pytest.mark.slow
@@ -319,6 +342,8 @@ def test_harmless_stubs_all_have_a_reason():
     from bbseed.mapgen import HARMLESS_STUBS, unexplained_stubs
     assert all(isinstance(why, str) and len(why) > 20 for why in HARMLESS_STUBS.values())
     assert unexplained_stubs({("sprite", "varyColor"): 3, ("World", "spawnEntity"): 1}) == {("World", "spawnEntity"): 1}
+    # display / audio natives some origins' onSpawnPlayer reach (Northern Raiders, Berserker, Random Party ...)
+    assert unexplained_stubs({("World", "spawnParticleEffect"): 2, ("Sound", "play"): 1}) == {}
 
 
 def test_events_from_log_reads_the_generators_attempt_lines():

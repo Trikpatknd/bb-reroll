@@ -491,12 +491,19 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
 
         def map_run(seed, perks=False):
             """The map run of a seed: the lab's result with "map". Deserters: run on through the start, so the result
-            also has "roster" (with the perk trees when `perks`)."""
+            also has "roster" (with the perk trees when `perks`) and the map has the start tile."""
             kwargs = {"stop_at": "spawn", "perks": perks} if deserters else {}
             return map_code(lambda: checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET, **kwargs))
 
         def world_map(seed):
-            return map_run(seed)["map"]
+            """The confirming map of a result, with the company's start tile (map["start"], for the picture: the map
+            run goes on through the origin's start, mapgen.py "The start"). The start is not a condition: when that run
+            fails (an origin whose start uses an engine function the lab does not model), the map alone is made,
+            without a start (a map that fails itself fails here again, as before)."""
+            try:
+                return checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET, stop_at="spawn")["map"]
+            except Exception:       # (a picture only: whatever went wrong, the map without a start is the result)
+                return map_run(seed)["map"]
 
         def map_fails(summary):
             return map_code(map_failure, summary, want_map)
@@ -782,9 +789,11 @@ def _ascii(text):
     return str(text).encode("ascii", "replace").decode()
 
 
-def map_report(seed, m, origin=None, profile=None, seconds=None):
+def map_report(seed, m, origin=None, profile=None, seconds=None, verified=False, legends=False):
     """A map summary (mapgen.summary) as text lines for the console: the towns (name, kind = the settlement's script,
-    size, port, southern, military) and the port counts. ASCII only."""
+    size, port, southern, military) and the port counts. With `verified` (the setup's maps are checked against the
+    game) and a start in the summary, the line "Start: x, y" (square coordinates) and, with `legends`, the
+    first-campaign line. ASCII only."""
     from .mapdraw import town_name
     towns = m["towns"]
     ports = [t for t in towns if t["port"]]
@@ -798,7 +807,13 @@ def map_report(seed, m, origin=None, profile=None, seconds=None):
     head.append("%d attempt%s" % (m["attempts"], "" if m["attempts"] == 1 else "s"))
     if seconds is not None:
         head.append("%.0f s" % seconds)
-    lines = ["map of %s" % ", ".join(head), "   %d x %d tiles, %d towns" % (m["size"][0], m["size"][1], len(towns)), ""]
+    lines = ["map of %s" % ", ".join(head), "   %d x %d tiles, %d towns" % (m["size"][0], m["size"][1], len(towns))]
+    if verified and m.get("start"):
+        from .mapgen import FIRST_CAMPAIGN
+        lines.append("   Start: %d, %d" % tuple(m["start"]))
+        if legends:         # Legends' black-market counter: the maps are built at 0, the start comes after the roads
+            lines.append("   " + FIRST_CAMPAIGN)
+    lines.append("")
     width = max([len(town_name(t)) for t in towns] + [4])
     kind = max([len(t["script"]) for t in towns] + [4])
     lines.append("   %-*s  %-*s  size  port  southern  military" % (width, "name", kind, "kind"))
@@ -836,13 +851,20 @@ def _print_map(profile, origin, seed, svg_path=None, mod_settings=None):
         note = _setup_note(lab.info())
         if note:
             print(note, flush=True)
-        return lab, checked_world_map(lab, seed, origin)
+        # run on through the origin's start: the map then has the start tile (a picture only: without it, as before)
+        try:
+            return lab, checked_world_map(lab, seed, origin, stop_at="spawn", blackmarket=SEARCH_BLACKMARKET)
+        except Exception:
+            return lab, checked_world_map(lab, seed, origin)
     lab, out = big_stack(run)
-    for line in map_report(seed, out["map"], origin, lab.profile, out["seconds"]):
+    info = lab.info()
+    verified = not _setup_note(info)
+    legends = bool(info.get("legends_version"))
+    for line in map_report(seed, out["map"], origin, lab.profile, out["seconds"], verified, legends):
         print(line)
     if svg_path:
         with open(svg_path, "w", encoding="utf-8") as f:
-            f.write(mapdraw.svg(out["map"]))
+            f.write(mapdraw.svg(out["map"], verified=verified))
         print("\npicture written to %s" % svg_path)
 
 

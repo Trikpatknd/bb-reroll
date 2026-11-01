@@ -5,8 +5,10 @@ SVG and the canvas show one picture:
 
     cells(summary)                 -> [(x0, y0, x1, y1, colour)]   one rectangle per tile, in the order of the terrain
     town_marks(summary)            -> [(cx, cy, radius, fill, port, label)]
+    start_mark(summary, verified)  -> (cx, cy, radius, fill, label) of the start star, or None
+    star_points(cx, cy, radius)    -> the star's ten corners [(x, y)]
     band_y(summary, north_band)    -> y of the north band's line
-    svg(summary, north_band=None)  -> the whole picture as SVG text
+    svg(summary, north_band=None, verified=False)  -> the whole picture as SVG text
 
 How the tiles are placed (the layout the lab measured against the game, mapgen.LAYOUT "even-q-up"): the map is
 drawn with NORTH AT THE TOP, i.e. high y is up the picture (the game's direction N is y + 1). Flat-topped hexes in
@@ -56,6 +58,13 @@ TOWN_FILL = {"southern": "#8e44ad", "military": "#c0392b", "town": "#ffffff"}
 KIND_LABELS = {"town": "Village, town or city", "military": "Stronghold", "southern": "City state"}
 NAME_NOT_VERIFIED = "(name not verified)"
 PORT_RING = "#0b2a4a"
+# The company's start tile (summary["start"], from a stop_at="spawn" run): a star in the middle of its tile, drawn only on
+# a setup whose maps were checked against the game (mapgen.verified_setup: the caller says so with `verified`).
+START_RADIUS = 6.0          # pixels at scale 1: a little bigger than the biggest town circle
+START_FILL = "#ffd400"
+START_OUTLINE = "#111111"
+START_LABEL = "Start"
+START_TIP = "Your company starts here."
 BAND_COLOUR = "#e11d48"
 _BACKGROUND = "#f4f1ea"
 
@@ -137,6 +146,34 @@ def town_marks(summary, scale=1):
     return out
 
 
+def start_mark(summary, verified=False, scale=1):
+    """(cx, cy, radius, fill, label) of the start star: the middle of the tile summary["start"] = [x, y], with the same
+    formulas as the towns' circles. None when `verified` is false (the setup's maps are not checked against the game),
+    when the summary has no start (a run that did not go on through the start) or when it is not a tile of the map."""
+    w, h, _ = _checked(summary)
+    start = summary.get("start")
+    if not verified or not start or len(start) != 2:
+        return None
+    x, y = start
+    if not (isinstance(x, int) and isinstance(y, int) and 0 <= x < w and 0 <= y < h):
+        return None
+    cx = (x * CELL_W + CELL_W / 2) * scale
+    cy = (_top(y, h) + _lower(x) + CELL_H / 2) * scale
+    return cx, cy, START_RADIUS * scale, START_FILL, START_TIP
+
+
+def star_points(cx, cy, radius):
+    """The ten corners of a five-pointed star with one point straight up: outer corners at `radius`, inner ones at
+    0.4 of it. The SVG polygon and the Tk canvas polygon use these numbers."""
+    import math
+    out = []
+    for i in range(10):
+        r = radius if i % 2 == 0 else radius * 0.4
+        angle = -math.pi / 2 + i * math.pi / 5
+        out.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    return out
+
+
 def band_y(summary, north_band, scale=1):
     """The y of the north band's lower edge: `north_band` percent of the rows down from the top (0..100)."""
     _w, h, _ = _checked(summary)
@@ -148,9 +185,10 @@ def _num(v):
     return str(int(v)) if v == int(v) else repr(v)
 
 
-def svg(summary, north_band=None, scale=1):
+def svg(summary, north_band=None, scale=1, verified=False):
     """The map as SVG text: one <rect> per tile, a circle (class "town") per town, a ring (class "port") round the
-    ports, and with `north_band` (percent of the rows from the top) a dashed line (class "north-band")."""
+    ports, and with `north_band` (percent of the rows from the top) a dashed line (class "north-band"). With `verified`
+    (the setup's maps are checked against the game) and a start tile in the summary, a star (class "start")."""
     w, h, terrain = _checked(summary)
     width, height = picture_size(summary, scale)
     foot = FOOTER * scale
@@ -182,8 +220,16 @@ def svg(summary, north_band=None, scale=1):
         if port:
             out.append('<circle class="port" cx="%s" cy="%s" r="%s" fill="none"/>' % (_num(cx), _num(cy), _num(r + 2.5 * scale)))
     out.append("</g>")
+    start = start_mark(summary, verified, scale)
+    if start is not None:
+        cx, cy, r, fill, label = start
+        points = " ".join("%s,%s" % (_num(x), _num(y)) for x, y in star_points(cx, cy, r))
+        out.append('<polygon class="start" points="%s" fill="%s" stroke="%s" stroke-width="%s" stroke-linejoin="round">'
+                   '<title>%s</title></polygon>' % (points, fill, START_OUTLINE, _num(max(1, scale)), escape(label)))
     key = "circle = %s (white), %s (red), %s (purple); ring = port" % (
         KIND_LABELS["town"].lower(), KIND_LABELS["military"].lower(), KIND_LABELS["southern"].lower())
+    if start is not None:
+        key += "; star = %s" % START_LABEL.lower()
     if north_band is not None:
         key += "; dashed line = north band (%d%% from the top)" % north_band
     out.append('<text x="%s" y="%s" font-family="sans-serif" font-size="%s" fill="#222222">%s</text>'
