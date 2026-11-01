@@ -43,7 +43,7 @@ Other versions are read the same way and will usually just work, but they are un
 
 ## Install
 
-Build from source:
+Download `bb_reroll_gui.exe` from the [latest release](https://github.com/Trikpatknd/bb-reroll/releases/latest) (the release notes give its SHA-256), or build from source:
 
 ```powershell
 git clone https://github.com/Trikpatknd/bb-reroll.git
