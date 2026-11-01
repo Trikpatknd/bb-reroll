@@ -624,6 +624,12 @@ VERIFIED_GAME = "1.5.2.3"
 VERIFIED_LEGENDS = "19.4.22"
 VERIFIED_MOD_IDS = ("mod_legends", "mod_legends_assets", "mod_msu", "mod_modern_hooks")
 NOT_VERIFIED = "Map results are not verified for this setup."
+# What a seed post and the console say about Legends' black-market counter (every map of a search is built at counter 0):
+FIRST_CAMPAIGN = "Start this seed as your first campaign after you start the game."
+# Deserters make their brothers on the map (engine fact 4), so they can be searched only where the maps are verified.
+DESERTERS_UNVERIFIED = ("Deserters need the world map. BB Reroll checked the maps for only two setups. "
+                        "One is Legends 19.4.22 with no other mods. The other is the base game with all DLCs and no "
+                        "mods. Both use game version 1.5.2.3. This game setup is not one of them.")
 # Vanilla maps (no Legends, no mod, every DLC installed: gamedata.all_dlc) were checked against the game: 40 in-game
 # Trader maps on game 1.5.2.3 with all DLCs and no mod had the same towns, pre-road terrain and rosters as the lab's
 # (bb_seedlab MODLOG "CHECKPOINT V", 2026-10-24; map-search stage 2, Task 9).

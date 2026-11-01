@@ -20,11 +20,11 @@ from pathlib import Path
 
 from . import gamedata, profiles
 
-CATALOG_VERSION = 5
+CATALOG_VERSION = 6
 
-# not surveyed: the tutorial and the random-origin picker are not origins of their own; Deserters
-# creates its recruits only after the map exists (see bbreroll/offline_origins.NOT_SEARCHABLE)
-SKIP = {"tutorial_scenario", "random_scenario", "deserters_scenario"}
+# not surveyed: the tutorial and the random-origin picker are not origins of their own. Deserters is surveyed with
+# the start loop lengths of talents.DESERTERS_LOOPS (its recruits depend on the map through that length)
+SKIP = {"tutorial_scenario", "random_scenario"}
 
 
 def _key(profile, mod_settings):

@@ -1324,3 +1324,145 @@ def test_the_saved_options_note_shows_only_on_legends(map_app):
     app._on_setup_change()
     assert map_view.OPTIONS_DIFFER in app.map_note_var.get()
     app._options_note = None
+
+
+# ---------------------------------------------------------------- Deserters (stage 2 C2 Task 4)
+VERIFIED_LEGENDS_MODS = ["mod_legends-19.4.22.zip", "mod_legends-assets-19.4.3.zip",
+                         "mod_modern_hooks-685-0-6-0-1748620177.zip", "mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip"]
+
+
+@pytest.fixture()
+def deserters_app(map_app, monkeypatch):
+    """The window on a setup whose maps are verified (the fixture's mod file has no version: not verified), with
+    Deserters selected."""
+    from bbreroll import offline_origins as O
+    monkeypatch.setitem(O.FOUND, "mods", VERIFIED_LEGENDS_MODS)
+    map_app.setup_var.set("Legends")
+    map_app._on_setup_change()
+    map_app.origin_var.set("Deserters")
+    map_app._on_origin_change("Deserters")
+    yield map_app
+    monkeypatch.undo()
+    map_app.origin_var.set("Trading Caravan")
+    map_app._on_origin_change("Trading Caravan")
+
+
+def test_deserters_are_offered_with_a_note_on_a_verified_setup_only(map_app, monkeypatch):
+    from bbreroll import map_view
+    from bbreroll import offline_origins as O
+    app = map_app
+    # the fixture's setup: a mod file without a version, so the maps are not verified
+    assert "Deserters" not in O.names_for("Legends")
+    app.origin_var.set("Deserters")
+    app._on_origin_change("Deserters")
+    assert app.origin_var.get() != "Deserters"
+    assert "Deserters is not in the list. Deserters need the world map." in app.origin_info_var.get()
+    monkeypatch.setitem(O.FOUND, "mods", VERIFIED_LEGENDS_MODS)
+    app.origin_var.set("Deserters")
+    app._on_origin_change("Deserters")
+    assert app.origin_var.get() == "Deserters" and app.bro_count_var.get() == "3"
+    assert map_view.DESERTERS_INFO in app.origin_info_var.get()
+    assert "is not in the list" not in app.origin_info_var.get()
+    app._on_origin_change("Deserters")
+    assert app.origin_info_var.get().count(map_view.DESERTERS_INFO) == 1, "the note is not added twice"
+    app.origin_var.set("Trading Caravan")
+    app._on_origin_change("Trading Caravan")
+    assert map_view.DESERTERS_INFO not in app.origin_info_var.get()
+
+
+def test_a_deserters_search_always_sends_the_map_options_and_builds_every_map(deserters_app, calls):
+    from bbreroll import map_view
+    app = deserters_app
+    app.map_option_vars["Settlements"].set("24")
+    app.map_option_vars["StackCitadels"].set("Yes")
+    app.workers_var.set("8")
+    app.stars_vars[("1", "res")].set("1")
+    app._on_search()
+    assert "Deserters make their brothers on the map." in app.status_var.get()
+    assert "With 8 workers, the search tests about 10.7 seeds each minute." in app.status_var.get()
+    pump(app, lambda: calls and not app._searching)
+    (call,) = calls
+    assert call["origin"] == "deserters_scenario" and "map" not in call["criteria"] and call["workers"] == 8
+    settings = call["mod_settings"]
+    assert sorted(k for k in settings if k != "mod_legends:GenderEquality") == sorted("mod_legends:" + k
+                                                                                      for k in MAP_OPTION_KEYS)
+    assert settings["mod_legends:Settlements"] == 24 and settings["mod_legends:StackCitadels"] is True
+    assert app._run["deserters"] is True and app._run["map_first"] is True and app._run["workers"] == 8
+    assert app.errors == []
+
+
+def test_a_deserters_check_builds_the_map_too(deserters_app, calls):
+    app = deserters_app
+    app.map_option_vars["Factions"].set("5")
+    app.check_seed_var.set("1234567890")
+    app._on_check_seed()
+    from bbreroll import map_view
+    assert map_view.DESERTERS_INFO in app.status_var.get() and "tests about" not in app.status_var.get()
+    pump(app, lambda: calls and not app._searching)
+    assert calls[0]["seeds"] == ["1234567890"] and calls[0]["mod_settings"]["mod_legends:Factions"] == 5
+
+
+def test_a_wrong_map_option_stops_a_deserters_search_but_not_other_origins(deserters_app, calls):
+    app = deserters_app
+    app.map_option_vars["Water"].set("abc")
+    assert search_now(app, calls) == [] and app.errors and "Water must be a whole number" in app.errors[-1][1]
+    app.errors.clear()
+    app.check_seed_var.set("1234567890")
+    app._on_check_seed()
+    assert calls == [] and app.errors and "Water must be a whole number" in app.errors[-1][1]
+    app.errors.clear()
+    app.origin_var.set("Trading Caravan")
+    app._on_origin_change("Trading Caravan")
+    assert len(search_now(app, calls)) == 1 and app.errors == []
+
+
+def test_deserters_need_working_maps(deserters_app, calls):
+    from bbreroll import map_view
+    app = deserters_app
+    app._map_off = True             # a map fatal turned the maps off
+    try:
+        assert search_now(app, calls) == []
+        assert app.errors and app.errors[-1][1].startswith(map_view.DESERTERS_NEEDS_MAPS)
+    finally:
+        app._map_off = False
+
+
+def test_a_vanilla_deserters_search_has_no_map_options(deserters_app, calls):
+    app = deserters_app
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    assert app.origin_var.get() == "Deserters"
+    (call,) = search_now(app, calls)
+    assert call["profile"] == "vanilla" and call["origin"] == "deserters_scenario" and call["mod_settings"] is None
+    assert app._run["deserters"] is True
+
+
+def test_the_progress_of_a_deserters_search_waits_for_30_seeds(deserters_app):
+    app = deserters_app
+    app._run = dict(RUN, origin="Deserters", deserters=True, map_first=True, workers=4)
+    app._search_total = 1000
+    app._ev_progress((6, 90.0, 0, {"chance": None, "never": [], "never_any": False, "never_map": False,
+                                   "maps": 6, "tested": 6}))
+    assert app.status_var.get() == ("Each seed needs its whole map. A map takes about 45 seconds for each worker. "
+                                    "The estimate of the odds shows after 30 seeds. Seeds tested: 6.")
+    app._ev_progress((30, 600.0, 0, {"chance": 0.04, "never": [], "never_any": False, "never_map": False,
+                                     "maps": 30, "tested": 30}))
+    assert app.status_var.get().startswith("Approximately 1 in 25 seeds matches (from 30 seeds).")
+    assert "maps" not in app.status_var.get()
+
+
+def test_a_deserters_seed_post_lists_the_map_options_and_the_counter_line(deserters_app, calls):
+    app = deserters_app
+    app.map_option_vars["Settlements"].set("24")
+    search_now(app, calls)
+    options = {"LandRatio": 50, "Water": 38, "Snowline": 85, "Settlements": 24, "Factions": 3,
+               "StackCitadels": False, "AllTradeLocations": False}
+    app._ev_ready((1, 1, {"legends_version": "19.4.22", "legends_build": "Bandits & Greenskins",
+                          "game_version": "1.5.2.3", "battle_sisters": "Enabled", "mods": [], "map_options": options}))
+    app._ev_match({"seed": "0000000001", "stable": True, "failure": None, "map": None, "roster": [
+        {"name": "A", "background": "background.deserter", "background_name": "Background: Deserter",
+         "stars": {"hp": 1, "msk": 2}, "traits": [], "trait_names": []}]})
+    text = app._share_report(app._matches[0])
+    assert "Origin: Deserters" in text and "Settlements: 24" in text
+    assert text.count("Start this seed as your first campaign after you start the game.") == 1
+    assert "Map Options: any" not in text and "\nMap:" not in text

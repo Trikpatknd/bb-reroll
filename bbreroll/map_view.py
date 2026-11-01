@@ -11,7 +11,8 @@ Fields (all text, as the player typed them):
                 "StackCitadels", "AllTradeLocations"}; the last two are "Yes" / "No"
 The conditions go to the search as criteria["map"]; the options go to it as mod_settings["mod_legends:<Key>"]
 (mod_settings()) and into map_conditions.problems(). They matter only when a map condition is set: they never change
-the brothers, so a search without map conditions sends none.
+the brothers, so a search without map conditions sends none. The one exception is Deserters: its brothers are made on
+the map, so a Deserters search always sends them (run_options()).
 The base game (setup "Vanilla", every DLC, no mod) has the conditions only: it has no Map Options, so
 build(vanilla=True) reads none and mod_settings(options, "Vanilla") sends none.
 """
@@ -27,6 +28,9 @@ from bbseed.mapgen import DEFAULT_NORTH_BAND, NOT_VERIFIED, VERIFIED_GAME, VERIF
 # cap; the texts say so.
 MAP_SECONDS = 40
 MIN_MAPS = 30               # maps built before the "about 1 in N" estimate shows
+# Deserters: one whole map run on through the start (onSpawnPlayer) per seed, on one worker: median 47 s with Legends,
+# 43 s with the base game, 18 workers running (bb_seedlab MODLOG "DESERTERS IN THE LAB").
+DESERTERS_SECONDS = 45
 MIN_TESTED = 100            # seeds tested before it shows (as for the brothers alone)
 
 # ------------------------------------------------------------------ the fields
@@ -85,6 +89,9 @@ MAP_FATAL_ADVICE = ("Map conditions are off. Change a Map Option in the Map view
                     "Roster searches still work.")
 MAP_FATAL_ADVICE_BASE = ("Map conditions are off. Start the program again to turn them on. "
                          "Roster searches still work.")
+DESERTERS_INFO = ("Deserters make their brothers on the map. Each seed needs its whole map. "
+                  "A map takes about %d seconds for each worker." % DESERTERS_SECONDS)
+DESERTERS_NEEDS_MAPS = "Deserters need the world map. "
 # The setup kinds the GUI passes (not the menu names): Legends, the base game ("Vanilla"), Modded (mods, no Legends).
 SETUP_KINDS = ("Legends", "Vanilla", "Modded")
 
@@ -97,6 +104,39 @@ def help_text(setup):
 def wait_text(setup):
     """How long a map takes, as the texts say it: with Legends' default Map Options, or the base game's text."""
     return WAIT if setup == "Legends" else WAIT_BASE
+
+
+def deserters_speed(workers):
+    """How many Deserters seeds a search tests each minute, about, with this many workers (one map per seed)."""
+    return max(1, workers) * 60 / DESERTERS_SECONDS
+
+
+def deserters_note(workers):
+    """The note before a Deserters search: every seed needs its map, how fast that is with this many workers, and
+    when the estimate of the odds shows (the maps are the seeds: MIN_MAPS of them)."""
+    workers = max(1, workers)
+    return ("%s With %d worker%s, the search tests about %s seeds each minute. The estimate of the odds shows after "
+            "%d seeds." % (DESERTERS_INFO, workers, "" if workers == 1 else "s",
+                           format(round(deserters_speed(workers), 1), "g"), MIN_MAPS))
+
+
+def deserters_wait_note(odds, workers):
+    """The note while the first maps of a Deserters search are built, "" once there are MIN_MAPS of them."""
+    seeds = odds.get("tested", 0)
+    if seeds >= MIN_MAPS:
+        return ""
+    return ("Each seed needs its whole map. A map takes about %d seconds for each worker. "
+            "The estimate of the odds shows after %d seeds. Seeds tested: %d." % (DESERTERS_SECONDS, MIN_MAPS, seeds))
+
+
+def run_options(options, setup):
+    """(the Map Options as numbers and booleans, errors) for a search whose brothers depend on the map (Deserters),
+    from the fields' texts. They are always sent then, with or without a map condition. The base game and any other
+    setup have none: ({}, [])."""
+    if setup != "Legends":
+        return {}, []
+    parsed, errors = _parsed_options(options)
+    return (None, errors) if errors else (parsed, [])
 
 
 def default_conditions():

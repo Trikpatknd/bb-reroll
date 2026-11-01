@@ -10,12 +10,14 @@ the map is made — they are the same whatever the Map Options are, so the post
 says so unless the caller knows the options and passes them.
 
 A search with map conditions passes the map of the seed (game_map, a map summary): the post then
-adds a 'Map:' line and always lists the Map Options, because the map depends on them. report_info "legends" False
+adds a 'Map:' line and always lists the Map Options, because the map depends on them. A Deserters seed lists them too
+(its brothers depend on the map) and, on Legends, says it is for the first campaign after the game starts. report_info "legends" False
 (the base game) has no Map Options: the post says so in one line instead.
 """
 
 from bbreroll.criteria import STATS
 from bbreroll.map_conditions import DEFAULT_NORTH_BAND, map_line
+from bbseed.mapgen import FIRST_CAMPAIGN
 
 GITHUB_URL = "github.com/Trikpatknd/bb-reroll"
 
@@ -33,6 +35,11 @@ _BOOLEAN_KEYS = {"StackCitadels", "AllTradeLocations"}
 _UNKNOWN = "(unknown)"
 _ANY_MAP = "Map Options: any. They change the map, not the starting brothers."
 _NO_MAP_OPTIONS = "Map Options: none. The base game has no Map Options."     # report_info "legends" False
+# Deserters make their brothers on the map, so the Map Options change them and the post lists every one. Legends keeps
+# a black-market counter for the whole game session that changes the map after the roads (and with it the start of the
+# Deserters): the seed is for the first campaign after the game starts. The base game has no such counter.
+_DESERTERS = "Deserters"
+_FIRST_CAMPAIGN = FIRST_CAMPAIGN
 
 
 def _yes_no(raw) -> str:
@@ -106,20 +113,24 @@ def build_seed_report(origin, description, seed, report_info, tool_version, rost
             lines.append("DLCs: all" if report_info["dlc_complete"] else "DLCs: not all installed")
     lines.append("")
     with_map = game_map is not None
+    deserters = (report_info.get("origin") or origin) == _DESERTERS
+    map_matters = with_map or deserters         # then the post lists every Map Option
     if with_map:
         lines.append(_map_text(game_map, north_band))
-    if with_map and report_info.get("legends") is False:     # the base game: no Map Options to list
+    if map_matters and report_info.get("legends") is False:     # the base game: no Map Options to list
         lines.append(_NO_MAP_OPTIONS)
-    elif map_options or with_map:
+    elif map_options or map_matters:
         lines.append("Map Options:")
         for key, label in _MAP_OPTION_LABELS:
-            if key in map_options and not (with_map and map_options[key] is None):
+            if key in map_options and not (map_matters and map_options[key] is None):
                 raw = map_options[key]
                 lines.append(f"{label}: {_yes_no(raw) if key in _BOOLEAN_KEYS else raw}")
-            elif with_map:      # the map depends on every option: say which one is not known
+            elif map_matters:      # the map depends on every option: say which one is not known
                 lines.append(f"{label}: {_UNKNOWN}")
     else:
         lines.append(_ANY_MAP)
+    if deserters and report_info.get("legends") is not False:
+        lines.append(_FIRST_CAMPAIGN)
 
     lines.append("")
     footer = "Found with BB Reroll"

@@ -4,6 +4,8 @@ Tkinter-free (unit-tested).
 """
 import os
 
+from bbseed.mapgen import DESERTERS_UNVERIFIED, verified_setup
+
 # GUI origin name -> scenario script under scripts/scenarios/world/
 # (the `m.Name` of each scenario, Legends 19.4.22)
 SCENARIO = {
@@ -90,9 +92,11 @@ ORIGINS = [
 ]
 COUNTS = dict(ORIGINS)
 
-# Its recruits are created in onSpawnPlayer, after a search that depends on the generated
-# map: the roster is not a function of the seed text alone.
-NOT_SEARCHABLE = {"Deserters": "its recruits are created after a step that depends on the generated map"}
+# Deserters create their recruits in onSpawnPlayer, after a search that depends on the generated map: the roster is
+# not a function of the seed text alone. Each seed needs its whole map, so Deserters can be searched only on a setup
+# whose maps were checked against the game (mapgen.verified_setup, see searchable()). NOT_SEARCHABLE: origin name ->
+# the note for a setup where it is not offered.
+NOT_SEARCHABLE = {"Deserters": DESERTERS_UNVERIFIED}
 
 # Game setup shown in the GUI -> (bbseed profile, does it have the Legends origins?).
 # Filled by refresh() from the game found on this PC: nothing to extract or configure.
@@ -170,11 +174,46 @@ def is_legends_only(name):
     return SCENARIO[name].startswith(("legends_", "legend_"))
 
 
+def verified_for_maps(setup):
+    """Were the maps of this game setup checked against the game (mapgen.verified_setup), as the installed files say
+    it? Legends: game 1.5.2.3, Legends 19.4.22 and no mod beyond Legends' own set. Vanilla: game 1.5.2.3 with every DLC
+    (the mod zips on the disk do not matter: the base game loads none). Any other setup: no."""
+    profile, _legends = SETUPS.get(setup, (None, False))
+    if FOUND is None or profile not in ("legends", "vanilla"):
+        return False
+    game = FOUND.get("game_version")
+    if profile == "vanilla":
+        return bool(verified_setup(game, None, [], FOUND.get("dlc_complete", False)))
+    from bbreroll.map_view import legends_version_from_files
+    mods = FOUND.get("mods") or []
+    return bool(verified_setup(game, legends_version_from_files(mods), mods, FOUND.get("dlc_complete", False)))
+
+
+DESERTERS = "deserters_scenario"
+
+
+def is_deserters(name):
+    """Is this GUI origin name the Deserters origin?"""
+    return SCENARIO.get(name) == DESERTERS
+
+
+def searchable(name, setup):
+    """May this origin be searched on this setup? Everything but the NOT_SEARCHABLE origins always; those (Deserters)
+    only where the maps are verified."""
+    return name not in NOT_SEARCHABLE or verified_for_maps(setup)
+
+
+def not_offered(setup):
+    """{origin name: note} of the origins this setup does not offer because its maps are not verified (empty on a
+    verified setup)."""
+    return {} if verified_for_maps(setup) else dict(NOT_SEARCHABLE)
+
+
 def names_for(setup):
     """Origin names offered for a game setup, in the GUI's order: the known origins, then any
     the setup's own mods add (see add_extras)."""
     profile, legends = SETUPS.get(setup, (None, False))
-    known = [n for n in BUILT_IN if n not in NOT_SEARCHABLE and (legends or not is_legends_only(n))]
+    known = [n for n in BUILT_IN if searchable(n, setup) and (legends or not is_legends_only(n))]
     return known + EXTRAS.get(profile, [])
 
 

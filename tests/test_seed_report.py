@@ -308,3 +308,50 @@ def test_the_dlc_line_is_for_the_base_game_only():
     assert "DLCs:" not in legends
     assert "DLCs:" not in build_seed_report("Trading Caravan", "", "0000000009", _base_game_info(), "4.2.0",
                                             roster=ROSTER)
+
+
+# ---------------------------------------------------------------- Deserters (stage 2 C2 Task 4)
+COUNTER_LINE = "Start this seed as your first campaign after you start the game."
+
+
+def _deserters_info(**changes):
+    return dict(info_with_map_options(), origin="Deserters", **changes)
+
+
+def test_a_legends_deserters_post_lists_the_map_options_and_the_counter_line():
+    """Deserters make their brothers on the map: the Map Options change them, so the post lists every one (also with
+    no map condition) and says to start the seed as the first campaign after the game starts (Legends' counter)."""
+    text = build_seed_report("Deserters", "", "0000000009", _deserters_info(legends=True), "4.3.0", roster=ROSTER)
+    assert text.count(COUNTER_LINE) == 1 and _ANY_MAP not in text
+    assert "Map Options:\nLand Mass Ratio: 55" in text and "All trade buildings available: No" in text
+    assert "\n\nMap Options:" in text and "\nMap:" not in text, "no map condition: no Map line"
+    assert text.index("All trade buildings available") < text.index(COUNTER_LINE) < text.index("Found with BB Reroll")
+    assert "\nOrigin: Deserters\n" in text
+
+
+def test_a_deserters_post_with_a_map_has_the_counter_line_once():
+    text = build_seed_report("Deserters", "", "0000000009", _deserters_info(legends=True), "4.3.0", roster=ROSTER,
+                             game_map=MAP_9_PORTS)
+    assert text.count(COUNTER_LINE) == 1 and "\nMap: Ports 9 (south 2, north 3) · 3 city states\n" in text
+
+
+def test_a_deserters_option_the_lab_did_not_report_is_unknown():
+    info = _deserters_info(legends=True, map_options={"Settlements": 24})
+    text = build_seed_report("Deserters", "", "0000000009", info, "4.3.0", roster=ROSTER)
+    assert "Settlements: 24" in text and "Land Mass Ratio: (unknown)" in text
+
+
+def test_a_base_game_deserters_post_has_no_counter_line_and_no_map_options():
+    """The base game has no black-market counter and no Map Options; its map depends on the DLCs."""
+    info = _base_game_info(dlc_complete=True, origin="Deserters")
+    text = build_seed_report("Deserters", "", "0000000009", info, "4.3.0", roster=ROSTER)
+    assert COUNTER_LINE not in text and _ANY_MAP not in text
+    assert "DLCs: all\n\nMap Options: none. The base game has no Map Options.\n\nFound with BB Reroll" in text
+
+
+def test_no_other_origin_gets_the_counter_line():
+    """A map-search post for another origin keeps its text (the README says the map is the same in every campaign)."""
+    for game_map in (None, MAP_9_PORTS):
+        info = dict(info_with_map_options(), legends=True)
+        assert COUNTER_LINE not in build_seed_report("Trading Caravan", "", "0000000009", info, "4.3.0", roster=ROSTER,
+                                                     game_map=game_map)

@@ -21,6 +21,10 @@ Criteria follow BB Reroll's model (and its config keys, see --criteria):
             A map takes about 40 s to build, so it is built only for seeds whose roster meets the rest
             (with map conditions only: for every seed, and the roster only for the maps that meet them).
             The Map Options go in --mod-setting (mod_legends:Settlements=24 ...).
+  Deserters  its brothers are made after the map, so every seed needs its whole map (about 45 s) and the roster comes
+            from that one run (the Map Options change the brothers: pass them in --mod-setting). Only on a setup whose
+            maps are verified (Legends 19.4.22 / the base game with all DLCs); start the seed as your first campaign
+            after the game starts (Legends' black-market counter).
 
 The seeds found are plain campaign seeds: typed into the new-campaign screen of a game
 with the same game version, mods and mod settings, they give this roster. They are made
@@ -364,6 +368,13 @@ def seed_text(n, digits=10):
 # game setup (the GUI turns its Map view off for the session when a fatal event starts with it).
 MAP_FATAL = "Map conditions do not work with this game setup: "
 
+# Deserters (scenario script): its brothers are made after the map (engine fact 4), so every seed of its search needs its
+# whole map, run on through the start (onSpawnPlayer): one lab.world_map(stop_at="spawn") gives the map AND the roster.
+# The search tests Deserters only on a verified setup (mapgen.verified_setup) and ends with this text when it cannot
+# (the same text for a setup that is not verified and for a map run that fails twice before one worked).
+DESERTERS_SCRIPT = "deserters_scenario"
+DESERTERS_FATAL = "Deserters cannot be searched with this game setup: "
+
 # Maps built, none of them meeting the map conditions, before the player is told (GUI notice, console hint). Valid
 # conditions can be rare: 6 or more ports are 3.9 % of the maps, so 0 of 20 happens in 45 % of such searches and 0 of
 # 100 in 2 %. The text says the conditions are rare and the search goes on; it does not say that no seed matches.
@@ -417,7 +428,9 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     state, and the map (about 40 s) is built only for a roster that meets them; with map conditions only, the map
     first, and the roster only for a map that meets them. Without map conditions no map is built. A seed that meets
     everything is confirmed: its roster rolled again on a new world state (with the perk trees), its map built
-    again; "stable" says both are what the sift found. Checked seeds (`seeds`) are rolled on a new world state and
+    again; "stable" says both are what the sift found. Deserters (DESERTERS_SCRIPT): the brothers are made on the map, so
+    every seed gets its whole map run on through the start, and the roster comes from that run (and from the confirming
+    run); the map conditions, if any, are checked on the same map. Checked seeds (`seeds`) are rolled on a new world state and
     get everything (a map too, when there are map conditions), whatever fails.
 
     A map run that fails is an "error" event for that seed and the worker goes on (about 3 in 1,000 Legends seeds
@@ -429,7 +442,11 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     from .lab import LabError, big_stack, without_perks
     from .mapgen import MAP_NOT_BUILT, failure as map_failure
 
+    from .mapgen import DESERTERS_UNVERIFIED
+
     want_map = criteria.get("map")
+    deserters = origin == DESERTERS_SCRIPT
+    fatal_text = DESERTERS_FATAL if deserters else MAP_FATAL
     map_first = want_map is not None and not roster_conditions(criteria)
     checking = seeds is not None
     state = {"tested": 0, "last": 0.0, "maps_work": False, "first_map_error": None, "map_error": None, "seed": None}
@@ -446,7 +463,11 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
         except Exception as e:
             out.put(("fatal", index, "%s: %s" % (type(e).__name__, e)))
             return
-        out.put(("ready", index, lab.info()))
+        info = lab.info()
+        if deserters and _setup_note(info):      # the brothers need the map: an unverified map is no roster
+            out.put(("fatal", index, DESERTERS_FATAL + DESERTERS_UNVERIFIED))
+            return
+        out.put(("ready", index, info))
         state["last"] = time.time()
         odds = Odds()
 
@@ -456,26 +477,32 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
 
         def map_code(fn, *args):
             """fn(*args) on the map path. A LabError passes through; any other exception is one MAP_FATAL event
-            and _MapsDoNotWork (the worker stops, search() ends)."""
+            (DESERTERS_FATAL for Deserters) and _MapsDoNotWork (the worker stops, search() ends)."""
             try:
                 return fn(*args)
             except LabError:
                 raise
             except Exception as e:
-                out.put(("fatal", index, MAP_FATAL + "%s: %s (seed %s)" % (type(e).__name__, e, state["seed"])))
+                out.put(("fatal", index, fatal_text + "%s: %s (seed %s)" % (type(e).__name__, e, state["seed"])))
                 raise _MapsDoNotWork() from e
 
+        def map_run(seed, perks=False):
+            """The map run of a seed: the lab's result with "map". Deserters: run on through the start, so the result
+            also has "roster" (with the perk trees when `perks`)."""
+            kwargs = {"stop_at": "spawn", "perks": perks} if deserters else {}
+            return map_code(lambda: checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET, **kwargs))
+
         def world_map(seed):
-            return map_code(lambda: checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET)["map"])
+            return map_run(seed)["map"]
 
         def map_fails(summary):
             return map_code(map_failure, summary, want_map)
 
-        def build_map(seed):
-            """The seed's map summary for the sift; None when its run failed (reported; the reason is in
+        def build_run(seed):
+            """The seed's map run for the sift (map_run); None when it failed (reported; the reason is in
             state["map_error"]). Raises _MapsDoNotWork."""
             try:
-                summary = world_map(seed)
+                found = map_run(seed)
             except LabError as e:
                 state["map_error"] = str(e)
                 if state["maps_work"]:
@@ -483,18 +510,34 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 elif state["first_map_error"] is None:
                     state["first_map_error"] = str(e)       # this seed's own, or every seed's: the next one tells
                 else:
-                    out.put(("fatal", index, MAP_FATAL + state["first_map_error"]))
+                    out.put(("fatal", index, fatal_text + state["first_map_error"]))
                     raise _MapsDoNotWork() from e
                 return None
             if not state["maps_work"]:
                 state["maps_work"] = True
                 if state["first_map_error"] is not None:
                     out.put(("error", index, state["first_map_error"]))
-            return summary
+            return found
+
+        def build_map(seed):
+            """The seed's map summary for the sift; None when its run failed (see build_run)."""
+            found = build_run(seed)
+            return None if found is None else found["map"]
 
         def sift(seed):
             """(roster, map summary or None, why there is no map or None) of a seed to confirm, or None. A checked
-            seed whose map run failed still has its roster: the map is None and the reason is the third part."""
+            seed whose map run failed still has its roster: the map is None and the reason is the third part.
+            Deserters: the roster comes with the map (one run for each seed, whatever the conditions are); a seed whose
+            map run failed has no roster at all, also when it is checked."""
+            if deserters:
+                found = build_run(seed)
+                if found is None:
+                    return None
+                roster, summary = found["roster"], found["map"]
+                ok = first_failure(roster, criteria) is None
+                map_ok = True if want_map is None else map_fails(summary) is None
+                odds.add_roster(roster, criteria, map=map_ok)       # (no map condition: every map counts as met)
+                return (roster, summary, None) if (ok and map_ok) or checking else None
             if map_first:
                 summary = build_map(seed)
                 if summary is None:
@@ -524,13 +567,17 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
         def confirm(seed, roster, summary, map_error=None):
             # the authoritative roll: a newly built world state, as in a new campaign (with the recruits' perk
             # trees, which the sifting roll leaves out); and the map built once more
-            confirmed = lab.roster_with_perks(seed, origin)
             confirmed_map = None
-            if summary is not None:
-                confirmed_map = world_map(seed)
+            if deserters:        # the recruits come from the map run again, with their perk trees
+                again = map_run(seed, perks=True)
+                confirmed, confirmed_map = again["roster"], again["map"]
+            else:
+                confirmed = lab.roster_with_perks(seed, origin)
+                if summary is not None:
+                    confirmed_map = world_map(seed)
             progress()                                   # current count when the match shows
             failure = first_failure(confirmed, criteria)
-            if failure is None and confirmed_map is not None:
+            if failure is None and confirmed_map is not None and want_map is not None:
                 failure = map_fails(confirmed_map)
             if failure is None and map_error is not None:       # a checked seed: the roster is shown without a map
                 failure = MAP_NOT_BUILT + map_error
@@ -538,7 +585,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 stable = without_perks(confirmed) == without_perks(roster) and (
                     summary is None or _towns_key(confirmed_map) == _towns_key(summary))
                 out.put(("match", index, {"seed": seed, "roster": confirmed, "stable": stable, "failure": failure,
-                                          "map": confirmed_map}))
+                                          "map": confirmed_map if want_map is not None else None}))
             elif first_failure(confirmed, criteria) is not None:
                 out.put(("error", index, "seed %s matched only on the reused world state, not on a fresh "
                                          "one — skipped" % seed))
@@ -654,7 +701,7 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
                 running -= 1
                 if kind == "fatal":
                     emit("fatal", payload)
-                    if payload.startswith(MAP_FATAL):      # no worker can build a map: nothing can match
+                    if payload.startswith((MAP_FATAL, DESERTERS_FATAL)):      # no worker can build a map: nothing can match
                         break
     finally:
         for p in procs:
@@ -860,9 +907,10 @@ def main(argv=None):
     print("criteria:", json.dumps(criteria))
 
     from .lab import describe
-    from .mapgen import counts
+    from .mapgen import FIRST_CAMPAIGN, counts
 
     noted = []
+    setup_info = []         # the first worker's "ready" info
 
     def on_event(kind, payload):
         if kind == "preparing":
@@ -871,6 +919,8 @@ def main(argv=None):
                 print("reading the game's scripts (first time only): %s %d of %d" % (name, done, total), flush=True)
         elif kind == "ready":
             print("worker %d of %d has loaded the game scripts" % payload[:2], flush=True)
+            if not setup_info:
+                setup_info.append(payload[2])
             if criteria["map"] is not None and not noted:       # once: every worker reports the same setup
                 noted.append(True)
                 note = _setup_note(payload[2])
@@ -893,6 +943,8 @@ def main(argv=None):
             print("\n*** MATCH: seed %s%s" % (payload["seed"], "" if payload["stable"] else "   (WARNING: not reproducible, do not trust)"))
             for i, bro in enumerate(payload["roster"], 1):
                 print("   %d. %s" % (i, describe(bro)))
+            if args.origin == DESERTERS_SCRIPT and (setup_info[:1] or [{}])[0].get("legends_version"):
+                print("   " + FIRST_CAMPAIGN)       # Legends' black-market counter: the maps are built at 0
             if payload.get("map"):       # (a map is built only when there are map conditions)
                 band = criteria["map"]["north_band"]
                 c = counts(payload["map"], band)

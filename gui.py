@@ -1383,7 +1383,7 @@ class App(ctk.CTk):
             self.after(10, self._ensure_catalog)
 
     def _on_origin_change(self, value: str):
-        if value not in O.SCENARIO or value in O.NOT_SEARCHABLE:
+        if value not in O.SCENARIO or not O.searchable(value, self.setup_var.get()):
             value = O.names_for(self.setup_var.get())[0]
             self.origin_var.set(value)
         count = O.COUNTS.get(value)
@@ -1416,6 +1416,19 @@ class App(ctk.CTk):
             self.origin_info_var.set("The fixed stars of this origin are not known yet.")
         if facts is None and self._catalog_progress:
             self.origin_info_var.set((self.origin_info_var.get() + "\n" + self._catalog_progress).strip())
+        self._add_origin_notes(value)
+
+    def _add_origin_notes(self, origin):
+        """The origin info gets the line about the map when the origin is Deserters (its brothers are made on the map),
+        and a setup that does not offer Deserters says why. Called after every change of that text; it takes its own
+        lines out first."""
+        setup = self.setup_var.get()
+        mine = {map_view.DESERTERS_INFO} | {f"{name} is not in the list. {why}" for name, why in O.NOT_SEARCHABLE.items()}
+        lines = [line for line in self.origin_info_var.get().split("\n") if line not in mine]
+        lines += [f"{name} is not in the list. {why}" for name, why in O.not_offered(setup).items()]
+        if O.is_deserters(origin):
+            lines.append(map_view.DESERTERS_INFO)
+        self.origin_info_var.set("\n".join(lines).strip())
 
     def _locked_for(self, origin, facts):
         """{(slot, stat): stars} the origin fixes: from the game's facts, else (Legends, until the
@@ -1519,6 +1532,7 @@ class App(ctk.CTk):
             self.bro_count_var.set(str(sizes[0]))
         self._rebuild_stars_grid()          # also locks the stars the origin fixes
         self.origin_info_var.set(f"What {origin} gives:\n" + star_limits.describe(facts, sizes))
+        self._add_origin_notes(origin)
 
     def _refresh_origin_info(self):
         try:
@@ -1726,6 +1740,9 @@ class App(ctk.CTk):
         if errors or map_errors:
             messagebox.showerror("Cannot search", "\n".join(errors + map_errors))
             return
+        if O.is_deserters(self.origin_var.get()) and self._deserters_problems():
+            messagebox.showerror("Cannot search", "\n".join(self._deserters_problems()))
+            return
         # Pre-flight: trivially-passing criteria match every seed immediately (a map condition is a condition).
         if is_trivial(criteria) and not criteria.get("map"):
             if not messagebox.askyesno("No conditions", "You set no stars, no stat rolls, no backgrounds and no traits. "
@@ -1765,6 +1782,15 @@ class App(ctk.CTk):
                     return
         self._launch(criteria, numbers, seeds=None)
 
+    def _deserters_problems(self):
+        """Why a Deserters run cannot start (texts for the player); [] when it can. Its brothers are made on the map, so
+        the map must work with this setup and the Map Options must be valid, with or without a map condition."""
+        kind = self._setup_kind()
+        usable, why = map_view.view_state(kind, self._map_off, self._dlc_complete())
+        if not usable:
+            return [map_view.DESERTERS_NEEDS_MAPS + (why or "")]
+        return map_view.run_options({k: v.get() for k, v in self.map_option_vars.items()}, kind)[1]
+
     def _on_check_seed(self):
         if self._searching or not self._have_game():
             return
@@ -1774,6 +1800,8 @@ class App(ctk.CTk):
             return
         numbers, _errors = self._numbers()
         map_errors = self._map_setup()[2]
+        if O.is_deserters(self.origin_var.get()):       # the brothers of Deserters need the map and the Map Options
+            map_errors = map_errors + self._deserters_problems()
         if map_errors:          # a map condition makes the check build the map of the seed too
             messagebox.showerror("Check a seed", "\n".join(map_errors))
             return
@@ -1788,19 +1816,27 @@ class App(ctk.CTk):
         mod_settings = {"mod_legends:GenderEquality": self.sisters_var.get()} if self._legends() else None
         map_criteria = criteria.get("map")
         map_first = False
-        if map_criteria:
+        deserters = O.is_deserters(origin)
+        if map_criteria or deserters:
             # The Map Options change the map and nothing else, so only a run with a map condition sends them
             # (a search for brothers alone must stay as it was). The workers report the values they used.
             # The base game has no Map Options: it gets none, and mod_settings stays None (no mod key at all).
+            # Deserters is the exception: its brothers are made on the map, so it always sends the fields' values.
             kind = self._setup_kind()
-            options = self._map_setup()[1] or (map_view.default_option_values() if kind == "Legends" else {})
+            if deserters:
+                options = map_view.run_options({k: v.get() for k, v in self.map_option_vars.items()}, kind)[0] or {}
+            else:
+                options = self._map_setup()[1] or (map_view.default_option_values() if kind == "Legends" else {})
             mod_settings = {**(mod_settings or {}), **map_view.mod_settings(options, kind)}
             try:        # no brother condition: the map is built for every seed (the estimate waits for maps)
                 map_first = not roster_conditions(normalize(criteria))
             except ValueError:
                 pass
+        if deserters:       # every seed has its whole map, whatever the conditions are
+            map_first = True
         self._run = {"setup": setup, "origin": origin, "checking": bool(seeds), "map": map_criteria,
-                     "map_first": map_first, "north_band": (map_criteria or {}).get("north_band")}
+                     "map_first": map_first, "north_band": (map_criteria or {}).get("north_band"),
+                     "deserters": deserters, "workers": workers}
         self._search_total = len(seeds) if seeds else numbers[SEEDS_TO_TEST]
         self._stop.clear()
         self._searching = True
@@ -1814,7 +1850,9 @@ class App(ctk.CTk):
         self.watch_var.set(f"Loading the game scripts in {workers} worker{'' if workers == 1 else 's'}")
         self.status_var.set((f"Checking seed {seeds[0]}." if seeds else
                              f"Searching {origin} ({setup}): a maximum of {self._search_total:,} seeds.")
-                            + (f" {map_view.wait_text(self._setup_kind())}" if map_criteria else ""))
+                            + (f" {map_view.deserters_note(workers) if not seeds else map_view.DESERTERS_INFO}"
+                               if deserters else
+                               f" {map_view.wait_text(self._setup_kind())}" if map_criteria else ""))
         put = self._events.put
 
         def run():
@@ -1860,9 +1898,10 @@ class App(ctk.CTk):
             "build_name": info.get("legends_build") if legends else None,
             "battle_sisters": info.get("battle_sisters") if legends else "n/a (no Legends)",
             "origin": self._run["origin"],
-            # the Map Options the workers used: they are part of the post only for a run with map conditions
-            # (a roster does not depend on them; a post for a roster alone says "any")
-            "map_options": dict(info.get("map_options") or {}) if self._run.get("map") else {},
+            # the Map Options the workers used: they are part of the post only for a run with map conditions or
+            # for Deserters (other rosters do not depend on them; a post for a roster alone says "any")
+            "map_options": dict(info.get("map_options") or {}) if self._run.get("map") or self._run.get("deserters")
+                           else {},
             "game_version": info.get("game_version"),
             "mods": info.get("mods") or [],
             "legends": bool(legends),       # the base game has no Map Options: the post says so (seed_report)
@@ -1914,18 +1953,20 @@ class App(ctk.CTk):
 
     def _wait_text(self, odds):
         """The note while the first maps are built (a map takes about 40 seconds); "" for other runs."""
+        if self._run.get("deserters"):
+            return map_view.deserters_wait_note(odds, self._run.get("workers") or 1)
         return map_view.wait_note(odds, self._setup_kind()) if self._run.get("map") else ""
 
     def _odds_text(self, odds, rate):
         """'Approximately 1 in 3,400 seeds matches (...). At this speed, that is 1 match in ...' (or nothing).
         With map conditions it waits for maps, not for seeds, and "chance" can be None until a map is built."""
         chance, tested, maps = odds.get("chance"), odds.get("tested", 0), odds.get("maps", 0)
-        map_run = bool(self._run.get("map"))
+        map_run = bool(self._run.get("map") or self._run.get("deserters"))
         if not chance or not map_view.estimate_ready(odds, map_run, self._run.get("map_first", False)):
             # brother and map conditions: until enough maps are built, the rate of the brothers alone
             return map_view.brother_estimate(odds, map_run, self._run.get("map_first", False))
         one_in = 1 / chance
-        basis = f"{tested:,} seeds, {maps:,} maps" if map_run else f"{tested:,} seeds"
+        basis = f"{tested:,} seeds, {maps:,} maps" if map_run and not self._run.get("deserters") else f"{tested:,} seeds"
         text = f"Approximately 1 in {one_in:,.0f} seeds matches (from {basis})."
         if rate > 0:
             text += f" At this speed, that is 1 match in approximately {self._fmt_duration(one_in / rate)}."

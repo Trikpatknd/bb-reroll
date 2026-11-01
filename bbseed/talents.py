@@ -251,10 +251,15 @@ class TalentWatch:
                 self.names.setdefault(tostring(bid), _plain_name(tostring(name)))
         return [self._ids[s] for s in scripts]
 
-    def roll(self, seed, origin):
+    def roll(self, seed, origin, loop=None):
         """(roster, [(rolled, fixed, can_roll) per recruit], [background ids each recruit picked
-        from, or None, per recruit])."""
-        roster, taken = self.lab.roster(seed, origin, fresh=False, probe=self._take)
+        from, or None, per recruit]). loop: for Deserters only, how many times its start loop runs (the roster
+        depends on it: Lab.deserters_start)."""
+        if loop is None:
+            roster, taken = self.lab.roster(seed, origin, fresh=False, probe=self._take)
+        else:
+            found = self.lab.deserters_start(seed, loop, fresh=False, probe=self._take)
+            roster, taken = found["roster"], found["probe"]
         index = self.lab.attr_index
         out, pools = [], []
         for bro, (bro_calls, pick) in zip(roster, taken):
@@ -283,6 +288,15 @@ def survey_seeds():
         n += 1
 
 
+# Deserters' recruits depend on the map through the length N of its start loop (Lab.deserters_start), so a survey of
+# it rolls each seed with an N of its own: the N values of the 400 whole maps of stage 2 C2 Task 1 (200 Legends maps
+# with the player's Map Options, 200 Vanilla maps; bb_seedlab MODLOG "DESERTERS IN THE LAB"): the middle of each
+# twelfth of the sorted values (1, 4, 7, 10, 14, 18, 25, 34, 42, 56, 80, 132) and the two largest tails (181, 197).
+# The recruits' kind of stars does not change with N, only the stream they draw from, so a spread is enough.
+DESERTERS_SCRIPT = "deserters_scenario"
+DESERTERS_LOOPS = (1, 4, 7, 10, 14, 18, 25, 34, 42, 56, 80, 132, 181, 197)
+
+
 def survey(watch, origin, least=12, most=100, calm=8, calm_varied=25):
     """Roll seeds for one origin until `calm` samples in a row taught nothing new (`calm_varied`
     when a slot has shown more than one background: its other backgrounds must get a chance to
@@ -291,7 +305,8 @@ def survey(watch, origin, least=12, most=100, calm=8, calm_varied=25):
     the slots' choices}. Raises LabError if the origin cannot be rolled."""
     slots, sizes, quiet = [], set(), 0
     for n, seed in enumerate(survey_seeds(), 1):
-        roster, split, pools = watch.roll(seed, origin)
+        roster, split, pools = watch.roll(seed, origin, DESERTERS_LOOPS[(n - 1) % len(DESERTERS_LOOPS)]
+                                          if origin == DESERTERS_SCRIPT else None)
         before = (frozenset(sizes), tuple(s.signature() for s in slots))
         sizes.add(len(split))
         while len(slots) < len(split):

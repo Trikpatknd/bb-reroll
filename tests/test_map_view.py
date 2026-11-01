@@ -512,3 +512,40 @@ def test_the_picture_fits_a_screen_1440_pixels_high():
     assert V.canvas_scale(s, 4000) == 1.0
     assert V.canvas_scale(s, 300) == V.MIN_SCALE
     assert V.canvas_scale(summary(10, 10), 1440) == 1.0
+
+
+# ------------------------------------------------------------------ Deserters (stage 2 C2 Task 4)
+def test_the_deserters_note_names_the_map_the_speed_and_the_estimate():
+    note = V.deserters_note(8)
+    assert "Each seed needs its whole map" in note and "about 45 seconds for each worker" in note
+    assert "With 8 workers, the search tests about 10.7 seeds each minute." in note
+    assert "The estimate of the odds shows after 30 seeds." in note
+    assert "With 1 worker, the search tests about 1.3 seeds each minute." in V.deserters_note(1)
+    assert "With 1 worker," in V.deserters_note(0), "no worker count counts as one"
+    assert V.deserters_speed(18) == pytest.approx(24.0) and V.deserters_speed(0) == V.deserters_speed(1)
+    assert note.isascii() and all(len(s.split()) <= 25 for s in note.split(". "))
+
+
+def test_the_deserters_wait_note_counts_the_seeds_until_the_estimate_shows():
+    odds = {"tested": 4, "maps": 4}
+    text = V.deserters_wait_note(odds, 8)
+    assert "Seeds tested: 4." in text and "shows after 30 seeds" in text and "45 seconds" in text
+    assert V.deserters_wait_note({"tested": V.MIN_MAPS}, 8) == ""
+    # a Deserters run is a map run that builds a map for every seed: the usual estimate rules
+    assert not V.estimate_ready({"tested": 29, "maps": 29}, map_run=True, map_first=True)
+    assert V.estimate_ready({"tested": 30, "maps": 30}, map_run=True, map_first=True)
+    assert V.brother_estimate({"tested": 500, "maps": 5, "chance_brothers": 0.01}, map_run=True, map_first=True) == ""
+
+
+def test_a_deserters_run_always_reads_the_map_options_on_legends_only():
+    """The brothers of Deserters depend on the Map Options: a run sends them with no map condition too (build() gives
+    (None, None, []) then). The base game has none."""
+    assert V.build(texts(), option_texts())[1] is None
+    values, errors = V.run_options(option_texts(Settlements=24, StackCitadels="Yes"), "Legends")
+    assert errors == [] and values == dict(V.default_option_values(), Settlements=24, StackCitadels=True)
+    values, errors = V.run_options(option_texts(Settlements=99, Water="x"), "Legends")
+    assert values is None and errors == ["Water must be a whole number from 28 to 42.",
+                                         "Settlements must be a whole number from 19 to 27."]
+    assert V.run_options(option_texts(Settlements=99), "Vanilla") == ({}, [])
+    assert V.run_options(option_texts(Settlements=99), "Modded") == ({}, [])
+    assert V.mod_settings(values or V.default_option_values(), "Vanilla") == {}

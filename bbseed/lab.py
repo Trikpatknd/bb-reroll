@@ -375,15 +375,20 @@ class Lab:
         """roster() on a fresh world state, each recruit also with "perk_groups" ([[category,
         [group names]]]) and "single_perks" ([perk names]) when the game has Legends' perk trees."""
         bros, perks = self.roster(seed, origin, fresh=True, probe=self._perks)
+        self._add_perks(bros, perks)
+        return bros
+
+    @staticmethod
+    def _add_perks(bros, perks):
+        """The perk trees `self._perks` read (one entry per recruit, None without Legends' trees) put on the roster."""
         for bro, found in zip(bros, perks):
             if found is not None:
                 groups, single = found
                 bro["perk_groups"] = [[tostring(cat), [tostring(n) for n in names]] for cat, names in groups]
                 bro["single_perks"] = sorted({tostring(n) for n in single})
-        return bros
 
     # ------------------------------------------------------------------ maps
-    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0):
+    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0, perks=False):
         """The game's own campaign start (world_state.startNewCampaign, every mod hook included) on a
         fresh world state, stopped where the map is wanted (see mapgen.py): stop_at="accepted" right after
         the generator logs "World accepted.", "reseed" at the second Math.seedRandomString(seed).
@@ -400,6 +405,7 @@ class Lab:
         "spawn": mapgen.spawn_summary() ({"tile", "fort", "loop", "draws", "isolated", "size"}; fort / loop / draws for
         Deserters only) and "roster": the recruits as roster() lists them (the origin's own onSpawnPlayer ran, so no
         _POST_SPAWN step is added). A start loop past mapgen.SPAWN_LOOP_CAP iterations raises LabError.
+        perks=True (stop_at="spawn" only): the recruits also have their perk trees, as roster_with_perks() gives them.
 
         Returns {"log": [the logInfo lines of the run], "draws": seeded draws in the run, "seconds",
         "stub_uses": {(kind, name): uses in this run}}, and for stop_at="reseed" (the whole map) also
@@ -427,6 +433,8 @@ class Lab:
                     origin_id = call(R.get(scenario, "getID"), scenario, ())
                     out["spawn"] = mapgen.spawn_summary(self, out.pop("start"), out["map"], origin_id)
                     out["roster"] = self._read_roster()
+                    if perks:
+                        self._add_perks(out["roster"], self._perks.invoke(self.eng.root, ()))
             finally:
                 if stop_at == "spawn":
                     self._clear_roster()
@@ -456,7 +464,7 @@ class Lab:
             del self.eng.vm.stack[:]
 
     # ------------------------------------------------------------------ Deserters without a map
-    def deserters_start(self, seed, n, fort_xy=None, size=None, fresh=True):
+    def deserters_start(self, seed, n, fort_xy=None, size=None, fresh=True, probe=None):
         """Deserters' start without a map: the campaign start's draws from the second seeding on (setCampaignSettings,
         then Deserters' own onSpawnPlayer) with its start loop made to run exactly n times (mapgen.NoMapStart). The
         recruits depend on the map only through the draws of that loop (engine fact 4), so with the n of a map
@@ -467,8 +475,10 @@ class Lab:
         squares or more (mapgen.deserters_loop_draws), so None is wrong only on such tiny maps.
         size: (Const.World.Settings.SizeX, SizeY) for the run; None keeps the lab's values (the scripts' defaults, or
         what the last map run set).
+        probe: a compiled script run while the recruits still exist (as roster() takes it).
         Returns {"roster": as roster() gives it, "tile": the square the n-th iteration drew (on the map: the start
-        tile), "draws": seeded draws from onSpawnPlayer's entry to World.spawnEntity}."""
+        tile), "draws": seeded draws from onSpawnPlayer's entry to World.spawnEntity, "probe": what the probe returned
+        (None without one)}."""
         if not isinstance(n, int) or not 1 <= n <= mapgen.SPAWN_LOOP_CAP:
             raise ValueError("n must be 1 .. %d iterations, not %r" % (mapgen.SPAWN_LOOP_CAP, n))
         eng = self.eng
@@ -500,6 +510,7 @@ class Lab:
             if stand.calls != n or stand.spawned is None:
                 raise LabError("seed %r: the start loop ran %d of %d times" % (seed, stand.calls, n))
             bros = self._read_roster()
+            probed = probe.invoke(eng.root, ()) if probe is not None else None
         except SqError as e:
             eng.vm.note_trace(0)
             trace = " > ".join(eng.vm.last_trace[-6:])
@@ -511,7 +522,7 @@ class Lab:
         finally:
             stand.restore()
             self._clear_roster()
-        return {"roster": bros, "tile": stand.drawn, "draws": stand.spawn_draws}
+        return {"roster": bros, "tile": stand.drawn, "draws": stand.spawn_draws, "probe": probed}
 
     def deserters_roster(self, seed, n, fort_xy=None, size=None, fresh=True):
         """The roster of a Deserters campaign whose start loop ran n times (deserters_start(...)["roster"])."""

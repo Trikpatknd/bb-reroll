@@ -167,3 +167,35 @@ def test_the_start_without_a_map(which, request):
             lab.deserters_start("1234567890", bad)
     assert natives() == before, "the stand-ins are taken away again"
     assert lab.roster("1234567890", "trader_scenario") == lab.roster("1234567890", "trader_scenario", fresh=False)
+
+
+# ---------------------------------------------------------------- the search (stage 2 C2 Task 4)
+@pytest.mark.slow
+@pytest.mark.parametrize("setup", [pytest.param("legends", marks=pytest.mark.xdist_group("deserters_search_legends")),
+                                   pytest.param("vanilla", marks=pytest.mark.xdist_group("deserters_search_vanilla"))])
+def test_a_deserters_search_finds_the_roster_of_the_map_run(setup):
+    """Two real worker processes search the seeds 0000000001 and 0000000002 for Deserters with a map condition most maps
+    meet (1 port): every match is a seed whose map meets it, its roster is the one the lab's own start run gives
+    (with the perk trees), it is confirmed (stable), and the seed post says to start it as the first campaign."""
+    from bbseed import search
+    if setup == "legends" and not HAVE_LEGENDS:
+        pytest.skip("Battle Brothers 1.5.2.3 with Legends 19.4.22 + MSU 1.9.0 is not installed")
+    if not HAVE_GAME:
+        pytest.skip("Battle Brothers 1.5.2.3 is not installed")
+    events = []
+    found = search.search(setup, DESERTERS, {"map": {"ports": 1}}, workers=2, count=2, max_seeds=2, start=1,
+                          mod_settings=USER_OPTIONS if setup == "legends" else None,
+                          on_event=lambda kind, payload: events.append((kind, payload)))
+    assert not [p for k, p in events if k in ("fatal", "error")], events
+    assert found, "at least one of the two maps has a port"
+    lab = _lab(setup)
+    for match in found:
+        assert match["stable"] and match["failure"] is None and match["map"] is not None
+        assert mapgen.counts(match["map"], mapgen.DEFAULT_NORTH_BAND)["ports"] >= 1
+        direct = lab.world_map(match["seed"], DESERTERS, stop_at="spawn", perks=True)
+        searched = [{k: v for k, v in bro.items() if k != "rolls"} for bro in match["roster"]]   # (the search watches the rolls)
+        assert searched == direct["roster"], match["seed"]
+        assert len(match["roster"]) == 3 and all(b["background"] == "background.deserter" for b in match["roster"])
+        assert match["roster"][0].get("perk_groups") is not None or setup == "vanilla"
+    odds = [p[3] for k, p in events if k == "progress"][-1]
+    assert 1 <= odds["tested"] <= 2 and odds["maps"] == odds["tested"]

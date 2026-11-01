@@ -25,7 +25,7 @@ ORIGIN_HARDCODED_STARS: dict[str, list[dict[str, int]]] = {
     "Band of Poachers":          [{"rsk":2,"rdf":1,"init":1}, {"rsk":2,"fat":1,"init":1}, {"rsk":2,"res":1,"init":1}],
     "Beast Slayers":             [{"msk":2,"mdf":2,"init":2}, {"fat":2,"msk":1,"mdf":1}, {"rsk":2,"rdf":1,"fat":1}],
     "Davkul Cultists":           [{}, {}, {}, {}, {}],
-    "Deserters":                 [{}, {}, {}],
+    "Deserters":                 [{"hp":1,"fat":1,"msk":2}, {"res":1,"msk":2,"mdf":1}, {"init":1,"rsk":2,"rdf":1}],  # measured by the catalog survey, any loop length N, both setups
     "Gladiators":                [{"msk":3,"mdf":2,"fat":2}, {"hp":3,"fat":2,"res":2}, {"msk":2,"mdf":2,"init":3}],
     "Lone Wolf":                 [{"msk":3,"mdf":2,"fat":3,"rsk":2}],
     "Manhunters":                [{"msk":1,"res":2,"rdf":1}, {"fat":2,"msk":1,"hp":1}, {}, {}, {}, {}],

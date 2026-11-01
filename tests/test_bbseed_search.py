@@ -202,6 +202,7 @@ class FakeLab:
         self.roster_crash = roster_crash
         self.builds = {}
         self.blackmarket = []
+        self.map_calls = []             # (stop_at, perks) of every world_map call
 
     def info(self):
         return {"profile": "fake"}
@@ -219,9 +220,10 @@ class FakeLab:
         FakeLab.roster_calls += 1
         return [dict(b, perk_groups=[], single_perks=[]) for b in self._bros(seed)]
 
-    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0):
+    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0, perks=False):
         FakeLab.world_map_calls += 1
         self.blackmarket.append(blackmarket)
+        self.map_calls.append((stop_at, perks))
         if self.map_crash is not None:
             raise self.map_crash
         if self.map_errors is True or seed in self.map_errors:
@@ -233,7 +235,11 @@ class FakeLab:
         if self.builds[seed] == 2 and self.second_map is not None:
             summary = self.second_map(summary)
         stubs = self.stubs(seed) if callable(self.stubs) else self.stubs.get(seed, {})
-        return {"map": summary, "seconds": 0.0, "log": [], "stub_uses": stubs}
+        found = {"map": summary, "seconds": 0.0, "log": [], "stub_uses": stubs}
+        if stop_at == "spawn":          # the start run: the recruits too (Deserters)
+            bros = self._bros(seed)
+            found["roster"] = [dict(b, perk_groups=[], single_perks=[]) for b in bros] if perks else bros
+        return found
 
 
 class ListQueue:
@@ -244,11 +250,11 @@ class ListQueue:
         self.items.append(item)
 
 
-def run_worker(monkeypatch, lab, criteria, seeds=None, limit=30):
+def run_worker(monkeypatch, lab, criteria, seeds=None, limit=30, origin="trader_scenario"):
     """One search worker (index 0 of 1, seeds 0, 1, ... limit - 1) on the stand-in lab: its events."""
     monkeypatch.setattr(S, "_make_lab", lambda profile, mod_settings: lab)
     out = ListQueue()
-    S._worker(0, 1, "legends", None, "trader_scenario", normalize(criteria), 0, limit, seeds, out)
+    S._worker(0, 1, "legends", None, origin, normalize(criteria), 0, limit, seeds, out)
     return out.items
 
 
@@ -581,14 +587,13 @@ class ThreadContext:
             pass
 
 
-def run_search(monkeypatch, lab_factory, criteria, **kwargs):
+def run_search(monkeypatch, lab_factory, criteria, origin="trader_scenario", **kwargs):
     import bbseed.profiles
     monkeypatch.setattr(bbseed.profiles, "get", lambda *args, **kw: None)
     monkeypatch.setattr(S, "mp", SimpleNamespace(get_context=lambda kind: ThreadContext))
     monkeypatch.setattr(S, "_make_lab", lambda profile, mod_settings: lab_factory())
     events = []
-    found = S.search("legends", "trader_scenario", criteria, start=0, on_event=lambda k, p: events.append((k, p)),
-                     **kwargs)
+    found = S.search("legends", origin, criteria, start=0, on_event=lambda k, p: events.append((k, p)), **kwargs)
     return found, events
 
 
@@ -708,3 +713,138 @@ def test_the_console_hint_for_a_map_search_that_found_no_map_waits_for_100_maps(
     assert len(lines) == 2 and "map" not in lines[0]
     assert lines[1].endswith(", no map met the map conditions in 100 maps (such maps are rare)")
     assert "no seed matches" not in out.lower() and "possibly" not in out.lower()
+
+
+# ---------------------------------------------------------------------- Deserters (stage 2 C2 Task 4)
+DESERTERS = S.DESERTERS_SCRIPT
+
+
+class DesertersLab(FakeLab):
+    """A stand-in lab on a verified setup (Deserters are searched only there). Seed n: brother 1 has n % 2 HP stars and
+    the map has n % 10 ports, as for FakeLab; the roster comes from the start run (world_map stop_at="spawn")."""
+
+    def info(self):
+        return dict(VERIFIED_INFO, dlc_complete=True)
+
+
+def test_deserters_get_their_roster_from_the_map_run_not_from_a_roster_call(monkeypatch):
+    lab = DesertersLab()
+    events = run_worker(monkeypatch, lab, {"stars_by_slot": {"1": "hp1"}}, limit=10, origin=DESERTERS)
+    matches = matches_of(events)
+    assert [m["seed"] for m in matches] == [seed_text(n) for n in (1, 3, 5, 7, 9)]
+    assert FakeLab.roster_calls == 0
+    assert FakeLab.world_map_calls == 10 + 5            # a map run for every seed, and the confirming run of each match
+    assert lab.map_calls.count(("spawn", False)) == 10 and lab.map_calls.count(("spawn", True)) == 5, (
+        "every run goes on through the start; the confirming ones have the perk trees")
+    assert lab.blackmarket == [0] * 15, "every map is built as a first campaign (ruling AD)"
+    assert all(m["stable"] and m["failure"] is None and m["map"] is None for m in matches), "no map condition: no map"
+    assert all(b.get("perk_groups") == [] for m in matches for b in m["roster"])
+    assert events[-1][0] == "done" and not [e for e in events if e[0] in ("error", "fatal")]
+
+
+def test_deserters_odds_count_every_map_as_one_that_meets_a_condition_that_is_not_there(monkeypatch):
+    events = run_worker(monkeypatch, DesertersLab(), {"stars_by_slot": {"1": "hp1"}}, limit=20, origin=DESERTERS)
+    odds = odds_of(events)
+    assert odds.tested == 20 and odds.passed == [10, 20, 20] and odds.map == [20, 20]
+    assert odds.maps() == 20 and odds.chance() == pytest.approx(0.5) and not odds.map_never()
+
+
+def test_deserters_with_map_conditions_check_the_same_map(monkeypatch):
+    lab = DesertersLab()
+    events = run_worker(monkeypatch, lab, {"stars_by_slot": {"1": "hp1"}, "map": {"ports": 7}}, limit=30,
+                        origin=DESERTERS)
+    matches = matches_of(events)
+    assert [m["seed"] for m in matches] == ["0000000007", "0000000009", "0000000017", "0000000019", "0000000027",
+                                           "0000000029"]
+    assert all(m["map"]["towns"] and m["stable"] and m["failure"] is None for m in matches)
+    assert FakeLab.world_map_calls == 30 + 6            # every seed's map (the roster is in it), and the confirming runs
+    odds = odds_of(events, map_wanted=True)
+    assert odds.map == [30, 9] and odds.passed == [15, 30, 30]      # 3 of 10 maps have 7+ ports; half the seeds the star
+    assert odds.chance() == pytest.approx(0.5 * 0.3)
+
+
+def test_deserters_with_map_conditions_only(monkeypatch):
+    events = run_worker(monkeypatch, DesertersLab(), {"map": {"ports": 9}}, limit=30, origin=DESERTERS)
+    assert [m["seed"] for m in matches_of(events)] == ["0000000009", "0000000019", "0000000029"]
+    assert FakeLab.roster_calls == 0 and FakeLab.world_map_calls == 33
+
+
+def test_deserters_checked_seeds_report_the_roster_and_the_failure(monkeypatch):
+    events = run_worker(monkeypatch, DesertersLab(), {"stars_by_slot": {"1": "hp1"}},
+                        seeds=["0000000002", "0000000003"], origin=DESERTERS)
+    found = {m["seed"]: m for m in matches_of(events)}
+    assert found["0000000003"]["failure"] is None
+    assert found["0000000002"]["failure"] == "bro1 hp*0<1"
+    assert all(m["roster"] and m["map"] is None for m in found.values())
+
+
+def test_a_deserters_map_error_skips_that_seed_and_a_checked_one_has_no_roster(monkeypatch):
+    events = run_worker(monkeypatch, DesertersLab(map_errors={"0000000005"}), {"stars_by_slot": {"1": "hp1"}},
+                        limit=10, origin=DESERTERS)
+    errors = [p for kind, _i, p in events if kind == "error"]
+    assert len(errors) == 1 and "0000000005" in errors[0]
+    assert [m["seed"] for m in matches_of(events)] == [seed_text(n) for n in (1, 3, 7, 9)]
+    assert events[-1][0] == "done" and not [e for e in events if e[0] == "fatal"]
+    events = run_worker(monkeypatch, DesertersLab(map_errors={"0000000005"}), {"stars_by_slot": {"1": "hp1"}},
+                        seeds=["0000000005"], origin=DESERTERS)
+    assert not matches_of(events) and [p for kind, _i, p in events if kind == "error"]
+
+
+def test_a_deserters_map_that_fails_twice_without_one_that_worked_is_a_deserters_fatal(monkeypatch):
+    events = run_worker(monkeypatch, DesertersLab(map_errors=True), {"stars_by_slot": {"1": "hp1"}}, limit=30,
+                        origin=DESERTERS)
+    fatal = [p for kind, _i, p in events if kind == "fatal"]
+    assert len(fatal) == 1 and fatal[0].startswith(S.DESERTERS_FATAL) and "0000000000" in fatal[0]
+    assert not fatal[0].startswith(S.MAP_FATAL) and FakeLab.world_map_calls == 2
+    events = run_worker(monkeypatch, DesertersLab(map_crash=RuntimeError("no tiles")), {"stars_by_slot": {"1": "hp1"}},
+                        limit=30, origin=DESERTERS)
+    fatal = [p for kind, _i, p in events if kind == "fatal"]
+    assert len(fatal) == 1 and fatal[0].startswith(S.DESERTERS_FATAL + "RuntimeError: no tiles")
+
+
+def test_deserters_need_a_verified_setup(monkeypatch):
+    """Their brothers are made on the map: on a setup whose maps nobody checked the search stops with one fatal event
+    and builds no map. Another origin is not held back."""
+    for info in (dict(VERIFIED_INFO, dlc_complete=True, game_version="1.5.3.0"),
+                 dict(VERIFIED_INFO, dlc_complete=True, legends_version="19.5.0"),
+                 dict(VERIFIED_INFO, dlc_complete=True, mods=VERIFIED_INFO["mods"] + [{"file": "mod_other-1.0.zip"}]),
+                 {"game_version": "1.5.2.3", "legends_version": None, "mods": [], "dlc_complete": False},
+                 {"profile": "fake"}):
+        lab = DesertersLab()
+        lab.info = lambda info=info: info
+        events = run_worker(monkeypatch, lab, {"stars_by_slot": {"1": "hp1"}}, limit=10, origin=DESERTERS)
+        assert [kind for kind, _i, _p in events] == ["fatal"], info
+        assert events[0][2].startswith(S.DESERTERS_FATAL) and "maps" in events[0][2]
+        assert FakeLab.world_map_calls == 0 and FakeLab.roster_calls == 0
+    events = run_worker(monkeypatch, FakeLab(), {"stars_by_slot": {"1": "hp1"}}, limit=10)
+    assert events[0][0] == "ready" and len(matches_of(events)) == 5
+
+
+def test_a_deserters_search_ends_at_the_first_deserters_fatal(monkeypatch):
+    found, events = run_search(monkeypatch, lambda: DesertersLab(map_errors=True), {"stars_by_slot": {"1": "hp1"}},
+                               origin=DESERTERS, workers=3, max_seeds=30, count=1)
+    assert found == []
+    fatal = [p for k, p in events if k == "fatal"]
+    assert len(fatal) == 1 and fatal[0].startswith(S.DESERTERS_FATAL)
+    assert events[-1][0] == "finished"
+    found, events = run_search(monkeypatch, DesertersLab, {"stars_by_slot": {"1": "hp1"}}, origin=DESERTERS,
+                               workers=2, max_seeds=20, count=3)
+    assert len(found) == 3 and all(m["roster"] and m["map"] is None for m in found)
+    progress = [p for k, p in events if k == "progress"]
+    assert progress[-1][3]["maps"] == progress[-1][3]["tested"] > 0
+
+
+def test_the_console_says_when_to_start_a_deserters_seed(monkeypatch, capsys):
+    """Legends' black-market counter: every map of a search is built at 0, so the seed is for the first campaign after
+    the game starts. The base game has none; no other origin gets the line."""
+    line = "Start this seed as your first campaign after you start the game."
+    match = ("match", {"seed": "0000000001", "stable": True, "failure": None, "map": None, "roster": [
+        {"name": "Hans", "background": "background.deserter", "background_name": "Deserter", "level": 1, "stars": dict(ZERO),
+         "traits": [], "trait_names": [], "gear": [], "base": dict(ZERO), "shown": dict(ZERO)}]})
+    legends = [("ready", (1, 1, dict(VERIFIED_INFO, dlc_complete=True))), match]
+    out = run_cli_events(monkeypatch, capsys, legends, ["--origin", DESERTERS, "--stars", "1", "hp1"])
+    assert out.count(line) == 1 and out.index("MATCH") < out.index(line)
+    vanilla = [("ready", (1, 1, {"game_version": "1.5.2.3", "legends_version": None, "mods": [], "dlc_complete": True})),
+               match]
+    assert line not in run_cli_events(monkeypatch, capsys, vanilla, ["--origin", DESERTERS, "--stars", "1", "hp1"])
+    assert line not in run_cli_events(monkeypatch, capsys, legends, ["--origin", "trader_scenario", "--stars", "1", "hp1"])

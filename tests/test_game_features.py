@@ -184,3 +184,37 @@ def test_vanilla_a_new_company_has_the_same_stars_on_every_seed(survey_vanilla):
     assert [s["fixed"] for s in slots] == [{"hp": 2, "fat": 1, "res": 1}, {"res": 1, "msk": 2, "mdf": 1},
                                            {"init": 1, "rsk": 2, "rdf": 1}]
     assert all(s["rolled"] == [] for s in slots)
+
+
+# ---------------------------------------------------------------- Deserters in the catalog (stage 2 C2 Task 4)
+def _deserters_survey(lab):
+    s = _survey(lab, "deserters_scenario")
+    assert s["sizes"] == [3] and len(s["slots"]) == 3 and s["samples"] >= 12
+    for slot in s["slots"]:
+        assert list(slot["choices"]) == ["background.deserter"], "every brother is a Deserter"
+    # the origin fixes every star (the same on every loop length), so brother stars are no condition for it
+    assert [slot["fixed"] for slot in s["slots"]] == [{"hp": 1, "fat": 1, "msk": 2}, {"res": 1, "msk": 2, "mdf": 1},
+                                                      {"init": 1, "rsk": 2, "rdf": 1}]
+    assert all(slot["picks"] == 0 for slot in s["slots"])
+    return s
+
+
+@pytest.mark.slow
+@legends_only
+def test_legends_deserters_are_surveyed_with_the_start_loop_lengths(survey_legends):
+    from bbseed.talents import DESERTERS_LOOPS, TalentWatch
+    s = _deserters_survey(survey_legends)
+
+    def same(lab):
+        watch = lab._test_watch
+        roster, _split, _pools = watch.roll("7100000000", "deserters_scenario", 21)
+        return roster, lab.deserters_roster("7100000000", 21, fresh=False)
+    roster, direct = _in_lab(survey_legends, same)
+    assert [b["stars"] for b in roster] == [b["stars"] for b in direct]
+    assert len(DESERTERS_LOOPS) == len(set(DESERTERS_LOOPS)) and DESERTERS_LOOPS[0] == 1
+
+
+@pytest.mark.slow
+@game_only
+def test_vanilla_deserters_are_surveyed_with_the_start_loop_lengths(survey_vanilla):
+    _deserters_survey(survey_vanilla)
