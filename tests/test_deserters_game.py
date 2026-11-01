@@ -113,9 +113,10 @@ def test_an_ordinary_origin_through_the_start_is_its_roster(setup):
 
 @pytest.mark.slow
 @pytest.mark.xdist_group("deserters_vanilla_1")
-def test_the_start_loop_is_capped(monkeypatch):
-    """A map on which no square passes would hang the game in onSpawnPlayer; the lab stops at SPAWN_LOOP_CAP
-    iterations with an error (here every square is made invalid) and is usable after it."""
+def test_the_start_loop_stops_when_every_square_has_failed(monkeypatch):
+    """A map on which no square passes would hang the game in onSpawnPlayer; the lab remembers the squares that failed
+    and stops with an error as soon as all of the fort's squares have (here every square is made invalid: about a
+    thousand iterations, not SPAWN_LOOP_CAP) and is usable after it."""
     from bbseed.lab import LabError
     from bbseed.sq.runtime import NativeFn
     lab = _lab("vanilla")
@@ -125,7 +126,7 @@ def test_the_start_loop_is_capped(monkeypatch):
         self._put(self.eng.World, "isValidTileSquare", NativeFn(lambda this, x, y: False, "isValidTileSquare"))
         return real(self, this, original)
     monkeypatch.setattr(mapgen.MapRun, "_on_spawn_player", never_valid)
-    with pytest.raises(LabError, match="past %d iterations" % mapgen.SPAWN_LOOP_CAP):
+    with pytest.raises(LabError, match=r"all \d+ squares of its ranges failed"):
         lab.world_map(SEEDS[1], DESERTERS, stop_at="spawn")
     monkeypatch.undo()
     assert lab.roster(SEEDS[0], "trader_scenario") == lab.roster(SEEDS[0], "trader_scenario", fresh=False)

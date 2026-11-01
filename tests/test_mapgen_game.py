@@ -49,6 +49,20 @@ def test_a_sift_roster_after_a_map_is_the_fresh_one(legends_lab):
 
 
 @pytest.mark.slow
+def test_a_spawn_run_leaves_the_roster_path_unchanged(legends_lab):
+    """A run on through the start (Deserters: the recruits are made in onSpawnPlayer and read from the player roster)
+    takes its natives and its recruits away again: the next roster of the shared lab is the fresh one, on a new world
+    state and on the reused one."""
+    fresh = legends_lab.roster("0000000001", "trader_scenario", fresh=True)
+    natives, world_keys = _natives(legends_lab.lab.eng), set(legends_lab.lab.eng.World.d)
+    out = legends_lab.world_map("1234567890", "deserters_scenario", stop_at="spawn")
+    assert len(out["roster"]) == 3 and out["spawn"]["loop"] >= 1
+    assert _natives(legends_lab.lab.eng) == natives and set(legends_lab.lab.eng.World.d) == world_keys
+    assert legends_lab.roster("0000000001", "trader_scenario", fresh=False) == fresh
+    assert legends_lab.roster("0000000001", "trader_scenario", fresh=True) == fresh
+
+
+@pytest.mark.slow
 def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
     """The tile world is reused between maps (blanked, not rebuilt): nothing of one map may leak into the
     next. A map in another layout first, so that `first` is made on newly built tiles."""

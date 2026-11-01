@@ -68,3 +68,29 @@ def test_without_a_qualifying_fort_the_loop_ends_on_the_last_settlement():
 def test_spawn_is_a_stop():
     assert mapgen.STOPS == ("accepted", "reseed", "spawn")
     assert mapgen.SPAWN_LOOP_CAP == 100000
+
+
+def test_a_start_loop_that_has_tried_every_square_ends_with_an_error():
+    """The checks of one square never change, so the loop remembers the squares that failed: a map on which none passes
+    raises as soon as the last square of the ranges has failed, not after SPAWN_LOOP_CAP iterations."""
+    loop = mapgen.StartLoop(((10, 11), (20, 21)))          # 2 x 2 squares
+    assert loop.total == 4
+    squares = [(10, 20), (11, 21), (10, 20), (11, 20), (10, 20), (10, 21)]
+    answers = [loop.enter(x, y) for x, y in squares[:5]]
+    assert answers == [False, False, True, False, True], "a square that failed before is answered at once"
+    assert loop.enter(*squares[5]) is False        # the 4th different square (10, 21): it may still pass
+    with pytest.raises(mapgen.MapError, match="all 4 squares"):
+        loop.enter(10, 20)                  # the loop went on: (10, 21) failed too, so all 4 have failed
+
+
+def test_the_start_loop_does_not_count_the_square_it_is_still_on():
+    loop = mapgen.StartLoop(((10, 11), (20, 21)))
+    for square in ((10, 20), (11, 20), (10, 21)):
+        loop.enter(*square)
+    assert loop.enter(11, 21) is False      # the last square may be the one that passes: no error yet
+
+
+def test_a_range_with_one_value_or_none_counts_one_value():
+    assert mapgen.StartLoop(((5, 5), (7, 9))).total == 3
+    assert mapgen.StartLoop(((6, 5), (7, 6))).total == 1       # hi < lo: rand gives lo, nothing is drawn
+    assert mapgen.StartLoop(mapgen.loop_ranges((70, 85), SIZE)).total == 15 * 15

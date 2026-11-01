@@ -90,3 +90,35 @@ def test_vanilla_maps_are_verified_in_the_module():
 def test_verified_setup_legends_is_as_before_and_ignores_the_dlc():
     assert mapgen.verified_setup("1.5.2.3", "19.4.22", [], False) is True
     assert mapgen.verified_setup("1.5.3.0", "19.4.22", [], True) is False
+
+
+# ------------------------------------------------------------------ exact mod versions (Deserters gate)
+def _legends_mods(**versions):
+    base = {"mod_legends": "19.4.22", "mod_legends_assets": "19.4.3", "mod_modern_hooks": "0.6.0", "mod_msu": "1.9.0"}
+    base.update(versions)
+    return [{"file": "%s.zip" % mod_id, "id": mod_id, "name": mod_id, "version": version}
+            for mod_id, version in base.items()]
+
+
+def test_exact_verified_setup_needs_the_checked_mod_versions():
+    assert mapgen.verified_setup("1.5.2.3", "19.4.22", _legends_mods(), True, exact=True) is True
+    for wrong in ({"mod_msu": "1.8.0"}, {"mod_msu": None}, {"mod_modern_hooks": "0.5.0"},
+                  {"mod_legends_assets": "19.4.2"}):
+        mods = _legends_mods(**wrong)
+        assert mapgen.verified_setup("1.5.2.3", "19.4.22", mods, True, exact=True) is False, wrong
+        assert mapgen.verified_setup("1.5.2.3", "19.4.22", mods, True) is True, "the default check is loose"
+    assert mapgen.wrong_mod_versions(_legends_mods(mod_msu="1.8.0")) == ["mod_msu 1.8.0"]
+    assert mapgen.wrong_mod_versions(_legends_mods()) == []
+
+
+def test_exact_verified_setup_needs_every_checked_mod_and_skips_zip_names():
+    without_hooks = [m for m in _legends_mods() if m["id"] != "mod_modern_hooks"]
+    assert mapgen.verified_setup("1.5.2.3", "19.4.22", without_hooks, True, exact=True) is False
+    assert mapgen.wrong_mod_versions(without_hooks) == ["mod_modern_hooks missing"]
+    # zip names carry no registered version: the GUI's check before a search stays loose
+    names = ["mod_legends-19.4.22.zip", "mod_legends-assets-19.4.3.zip", "mod_msu 479 1.8.0 x.zip"]
+    assert mapgen.wrong_mod_versions(names) == []
+    assert mapgen.verified_setup("1.5.2.3", "19.4.22", names, True, exact=True) is True
+    # Vanilla: no mod at all, whatever exact says
+    assert mapgen.verified_setup("1.5.2.3", None, [], True, exact=True) is True
+    assert mapgen.verified_setup("1.5.2.3", None, _legends_mods(), True, exact=True) is False

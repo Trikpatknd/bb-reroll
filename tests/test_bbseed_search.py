@@ -662,10 +662,12 @@ def run_cli_events(monkeypatch, capsys, events, argv):
 
 
 VERIFIED_INFO = {"game_version": "1.5.2.3", "legends_version": "19.4.22",
-                 "mods": [{"file": "mod_legends-19.4.22.zip", "id": "mod_legends"},
-                          {"file": "mod_legends-assets-19.4.3.zip", "id": "mod_legends_assets"},
-                          {"file": "mod_modern_hooks-685-0-6-0-1748620177.zip", "id": "mod_modern_hooks"},
-                          {"file": "mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip", "id": "mod_msu"}]}
+                 "mods": [{"file": "mod_legends-19.4.22.zip", "id": "mod_legends", "version": "19.4.22"},
+                          {"file": "mod_legends-assets-19.4.3.zip", "id": "mod_legends_assets", "version": "19.4.3"},
+                          {"file": "mod_modern_hooks-685-0-6-0-1748620177.zip", "id": "mod_modern_hooks",
+                           "version": "0.6.0"},
+                          {"file": "mod_msu 479 1.9.0 2026-06-23T04-27Z eVJjKbX9c.zip", "id": "mod_msu",
+                           "version": "1.9.0"}]}
 NOTE = "Map results are not verified for this setup."
 
 
@@ -799,7 +801,15 @@ def test_a_deserters_map_that_fails_twice_without_one_that_worked_is_a_deserters
     events = run_worker(monkeypatch, DesertersLab(map_crash=RuntimeError("no tiles")), {"stars_by_slot": {"1": "hp1"}},
                         limit=30, origin=DESERTERS)
     fatal = [p for kind, _i, p in events if kind == "fatal"]
-    assert len(fatal) == 1 and fatal[0].startswith(S.DESERTERS_FATAL + "RuntimeError: no tiles")
+    assert len(fatal) == 1 and fatal[0].startswith(S.DESERTERS_FATAL + S.DESERTERS_MAP_FAILED + "RuntimeError: no tiles")
+    # a fault of the map code does not blame the game setup (the setup text is for an unverified setup only)
+    assert "setup" not in fatal[0].split("(seed")[0]
+    assert S.DESERTERS_FATAL == "BB Reroll cannot search Deserters: "
+
+
+def _with_version(mod_id, version):
+    """VERIFIED_INFO's mods with one mod at another version."""
+    return [dict(m, version=version) if m["id"] == mod_id else dict(m) for m in VERIFIED_INFO["mods"]]
 
 
 def test_deserters_need_a_verified_setup(monkeypatch):
@@ -808,6 +818,9 @@ def test_deserters_need_a_verified_setup(monkeypatch):
     for info in (dict(VERIFIED_INFO, dlc_complete=True, game_version="1.5.3.0"),
                  dict(VERIFIED_INFO, dlc_complete=True, legends_version="19.5.0"),
                  dict(VERIFIED_INFO, dlc_complete=True, mods=VERIFIED_INFO["mods"] + [{"file": "mod_other-1.0.zip"}]),
+                 dict(VERIFIED_INFO, dlc_complete=True, mods=_with_version("mod_msu", "1.8.0")),
+                 dict(VERIFIED_INFO, dlc_complete=True, mods=_with_version("mod_modern_hooks", "0.5.9")),
+                 dict(VERIFIED_INFO, dlc_complete=True, mods=_with_version("mod_legends_assets", "19.4.2")),
                  {"game_version": "1.5.2.3", "legends_version": None, "mods": [], "dlc_complete": False},
                  {"profile": "fake"}):
         lab = DesertersLab()
@@ -848,3 +861,53 @@ def test_the_console_says_when_to_start_a_deserters_seed(monkeypatch, capsys):
                match]
     assert line not in run_cli_events(monkeypatch, capsys, vanilla, ["--origin", DESERTERS, "--stars", "1", "hp1"])
     assert line not in run_cli_events(monkeypatch, capsys, legends, ["--origin", "trader_scenario", "--stars", "1", "hp1"])
+
+
+DESERTER_BRO = {"name": "Hans", "background": "background.deserter", "background_name": "Deserter", "level": 1,
+                "stars": dict(ZERO), "traits": [], "trait_names": [], "gear": [], "base": dict(ZERO), "shown": dict(ZERO)}
+OPTIONS = {"Settlements": 24, "Water": 38}
+
+
+def test_the_console_match_of_a_deserters_search_shows_the_map_options(monkeypatch, capsys):
+    legends = dict(VERIFIED_INFO, dlc_complete=True, map_options=OPTIONS)
+    match = ("match", {"seed": "0000000001", "stable": True, "failure": None, "map": None, "roster": [DESERTER_BRO]})
+    out = run_cli_events(monkeypatch, capsys, [("ready", (1, 1, legends)), match],
+                         ["--origin", DESERTERS, "--stars", "1", "hp1"])
+    assert "   Map Options used: Settlements 24, Water 38" in out
+    vanilla = {"game_version": "1.5.2.3", "legends_version": None, "mods": [], "dlc_complete": True, "map_options": {}}
+    out = run_cli_events(monkeypatch, capsys, [("ready", (1, 1, vanilla)), match],
+                         ["--origin", DESERTERS, "--stars", "1", "hp1"])
+    assert "Map Options used" not in out and "first campaign" not in out, "the base game has no Map Options"
+
+
+def test_show_a_deserters_seed_runs_the_whole_map_for_the_roster(monkeypatch, capsys):
+    """--show SEED --origin deserters_scenario: the brothers are made on the map, so the roster comes from the map run
+    on through the start (with the perk trees, the counter at 0), never from Lab.roster_with_perks."""
+    import bbseed.lab as lab_module
+    calls = []
+
+    class FakeShowLab:
+        def __init__(self, profile, mod_settings=None):
+            pass
+
+        def watch_rolls(self):
+            return self
+
+        def info(self):
+            return dict(VERIFIED_INFO, dlc_complete=True, map_options=OPTIONS)
+
+        def roster_with_perks(self, seed, origin):
+            raise AssertionError("a Deserters roster does not exist without its map")
+
+    def fake_map(lab, seed, origin, **kwargs):
+        calls.append((seed, origin, kwargs))
+        return {"roster": [DESERTER_BRO], "stub_uses": {}}
+    monkeypatch.setattr(lab_module, "Lab", FakeShowLab)
+    monkeypatch.setattr(lab_module, "big_stack", lambda fn: fn())
+    monkeypatch.setattr(S, "checked_world_map", fake_map)
+    S.main(["--show", "1234567890", "--origin", DESERTERS])
+    out = capsys.readouterr().out
+    assert calls == [("1234567890", DESERTERS, {"stop_at": "spawn", "perks": True, "blackmarket": 0})]
+    assert "seed 1234567890, origin deserters_scenario:" in out and "Hans" in out
+    assert out.count("Start this seed as your first campaign after you start the game.") == 1
+    assert "Map Options used: Settlements 24, Water 38" in out and NOTE not in out

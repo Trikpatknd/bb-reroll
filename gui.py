@@ -1423,11 +1423,12 @@ class App(ctk.CTk):
         and a setup that does not offer Deserters says why. Called after every change of that text; it takes its own
         lines out first."""
         setup = self.setup_var.get()
-        mine = {map_view.DESERTERS_INFO} | {f"{name} is not in the list. {why}" for name, why in O.NOT_SEARCHABLE.items()}
+        mine = ({map_view.DESERTERS_INFO, map_view.DESERTERS_INFO_BASE}
+                | {f"The {name} origin is not in the list. {why}" for name, why in O.NOT_SEARCHABLE.items()})
         lines = [line for line in self.origin_info_var.get().split("\n") if line not in mine]
-        lines += [f"{name} is not in the list. {why}" for name, why in O.not_offered(setup).items()]
+        lines += [f"The {name} origin is not in the list. {why}" for name, why in O.not_offered(setup).items()]
         if O.is_deserters(origin):
-            lines.append(map_view.DESERTERS_INFO)
+            lines.append(map_view.deserters_info(self._setup_kind()))
         self.origin_info_var.set("\n".join(lines).strip())
 
     def _locked_for(self, origin, facts):
@@ -1850,7 +1851,7 @@ class App(ctk.CTk):
         self.watch_var.set(f"Loading the game scripts in {workers} worker{'' if workers == 1 else 's'}")
         self.status_var.set((f"Checking seed {seeds[0]}." if seeds else
                              f"Searching {origin} ({setup}): a maximum of {self._search_total:,} seeds.")
-                            + (f" {map_view.deserters_note(workers) if not seeds else map_view.DESERTERS_INFO}"
+                            + (f" {map_view.deserters_note(workers, self._setup_kind()) if not seeds else map_view.deserters_info(self._setup_kind())}"
                                if deserters else
                                f" {map_view.wait_text(self._setup_kind())}" if map_criteria else ""))
         put = self._events.put
@@ -2181,7 +2182,10 @@ class App(ctk.CTk):
             self.match_pane.grid_remove()
             return
         # as tall as its content needs, up to a limit (it scrolls beyond that)
-        wanted = sum(64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1) for m in self._matches)
+        wanted = sum(64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1)
+                     + (20 if map_view.first_campaign_line(O.is_deserters(m["origin"]),
+                                                           (m.get("info") or {}).get("legends")) else 0)
+                     for m in self._matches)
         self.match_list.configure(height=max(90, min(300, wanted)))
         for entry in self._matches:
             ok = entry.get("failure") is None
@@ -2230,6 +2234,11 @@ class App(ctk.CTk):
             ctk.CTkLabel(card, text="\n".join(roster_lines(entry["roster"])), font=("Consolas", 11), justify="left",
                          anchor="w", text_color=PALETTE["text"]).grid(row=2, column=0, columnspan=3, sticky="w",
                                                                       padx=12, pady=(4, 10))
+            first = map_view.first_campaign_line(O.is_deserters(entry["origin"]), (entry.get("info") or {}).get("legends"))
+            if first:       # Deserters on Legends: the map depends on the black-market counter (as the seed post says)
+                ctk.CTkLabel(card, text=first, font=(FONT, 12), justify="left", anchor="w", wraplength=880,
+                             text_color=PALETTE["muted"]).grid(row=4, column=0, columnspan=3, sticky="w",
+                                                               padx=12, pady=(0, 8))
             if has_details and entry.get("show_perks"):
                 lines = []
                 for i, b in enumerate(entry["roster"], 1):

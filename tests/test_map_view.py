@@ -517,19 +517,19 @@ def test_the_picture_fits_a_screen_1440_pixels_high():
 # ------------------------------------------------------------------ Deserters (stage 2 C2 Task 4)
 def test_the_deserters_note_names_the_map_the_speed_and_the_estimate():
     note = V.deserters_note(8)
-    assert "Each seed needs its whole map" in note and "about 45 seconds for each worker" in note
-    assert "With 8 workers, the search tests about 10.7 seeds each minute." in note
+    assert "Each seed needs its whole map" in note and "about 50 seconds for each worker" in note
+    assert "With 8 workers, the search tests about 9.6 seeds each minute." in note
     assert "The estimate of the odds shows after 30 seeds." in note
-    assert "With 1 worker, the search tests about 1.3 seeds each minute." in V.deserters_note(1)
+    assert "With 1 worker, the search tests about 1.2 seeds each minute." in V.deserters_note(1)
     assert "With 1 worker," in V.deserters_note(0), "no worker count counts as one"
-    assert V.deserters_speed(18) == pytest.approx(24.0) and V.deserters_speed(0) == V.deserters_speed(1)
+    assert V.deserters_speed(18) == pytest.approx(21.6) and V.deserters_speed(0) == V.deserters_speed(1)
     assert note.isascii() and all(len(s.split()) <= 25 for s in note.split(". "))
 
 
 def test_the_deserters_wait_note_counts_the_seeds_until_the_estimate_shows():
     odds = {"tested": 4, "maps": 4}
     text = V.deserters_wait_note(odds, 8)
-    assert "Seeds tested: 4." in text and "shows after 30 seeds" in text and "45 seconds" in text
+    assert "Seeds tested: 4." in text and "shows after 30 seeds" in text and "50 seconds" in text
     assert V.deserters_wait_note({"tested": V.MIN_MAPS}, 8) == ""
     # a Deserters run is a map run that builds a map for every seed: the usual estimate rules
     assert not V.estimate_ready({"tested": 29, "maps": 29}, map_run=True, map_first=True)

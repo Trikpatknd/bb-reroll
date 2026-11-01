@@ -1356,7 +1356,7 @@ def test_deserters_are_offered_with_a_note_on_a_verified_setup_only(map_app, mon
     app.origin_var.set("Deserters")
     app._on_origin_change("Deserters")
     assert app.origin_var.get() != "Deserters"
-    assert "Deserters is not in the list. Deserters need the world map." in app.origin_info_var.get()
+    assert "The Deserters origin is not in the list. Deserters need the world map." in app.origin_info_var.get()
     monkeypatch.setitem(O.FOUND, "mods", VERIFIED_LEGENDS_MODS)
     app.origin_var.set("Deserters")
     app._on_origin_change("Deserters")
@@ -1379,7 +1379,7 @@ def test_a_deserters_search_always_sends_the_map_options_and_builds_every_map(de
     app.stars_vars[("1", "res")].set("1")
     app._on_search()
     assert "Deserters make their brothers on the map." in app.status_var.get()
-    assert "With 8 workers, the search tests about 10.7 seeds each minute." in app.status_var.get()
+    assert "With 8 workers, the search tests about 9.6 seeds each minute." in app.status_var.get()
     pump(app, lambda: calls and not app._searching)
     (call,) = calls
     assert call["origin"] == "deserters_scenario" and "map" not in call["criteria"] and call["workers"] == 8
@@ -1443,7 +1443,7 @@ def test_the_progress_of_a_deserters_search_waits_for_30_seeds(deserters_app):
     app._search_total = 1000
     app._ev_progress((6, 90.0, 0, {"chance": None, "never": [], "never_any": False, "never_map": False,
                                    "maps": 6, "tested": 6}))
-    assert app.status_var.get() == ("Each seed needs its whole map. A map takes about 45 seconds for each worker. "
+    assert app.status_var.get() == ("Each seed needs its whole map. A map takes about 50 seconds for each worker. "
                                     "The estimate of the odds shows after 30 seeds. Seeds tested: 6.")
     app._ev_progress((30, 600.0, 0, {"chance": 0.04, "never": [], "never_any": False, "never_map": False,
                                      "maps": 30, "tested": 30}))
@@ -1466,3 +1466,73 @@ def test_a_deserters_seed_post_lists_the_map_options_and_the_counter_line(desert
     assert "Origin: Deserters" in text and "Settlements: 24" in text
     assert text.count("Start this seed as your first campaign after you start the game.") == 1
     assert "Map Options: any" not in text and "\nMap:" not in text
+
+
+def _card_texts(app):
+    """Every label text in the result list."""
+    import gui
+    out = []
+
+    def walk(widget):
+        for child in widget.winfo_children():
+            if isinstance(child, gui.ctk.CTkLabel):         # (a CTkLabel holds a tk label of its own with the same text)
+                out.append(child.cget("text"))
+            else:
+                walk(child)
+    walk(app.match_list)
+    return out
+
+
+def _deserters_match(app, legends):
+    app._run = dict(RUN, origin="Deserters", deserters=True, map_first=True, workers=2)
+    app._report_info = dict(app._report_info, legends=legends)
+    app._ev_match({"seed": "0000000001", "stable": True, "failure": None, "map": None, "roster": [
+        {"name": "A", "background": "background.deserter", "background_name": "Background: Deserter",
+         "stars": {"hp": 1, "msk": 2}, "traits": [], "trait_names": []}]})
+
+
+def test_a_deserters_result_on_legends_shows_the_first_campaign_line(deserters_app):
+    """Not only the seed post: the result card says to start the seed as the first campaign (the maps are built at
+    counter 0), for every Deserters result on Legends."""
+    from bbseed.mapgen import FIRST_CAMPAIGN
+    app = deserters_app
+    try:
+        _deserters_match(app, legends=True)
+        assert _card_texts(app).count(FIRST_CAMPAIGN) == 1
+    finally:
+        app._matches.clear()
+        app._render_match_list()
+
+
+def test_a_vanilla_or_other_result_shows_no_first_campaign_line(deserters_app):
+    from bbseed.mapgen import FIRST_CAMPAIGN
+    app = deserters_app
+    try:
+        _deserters_match(app, legends=False)            # the base game: no black-market counter
+        assert FIRST_CAMPAIGN not in _card_texts(app)
+        app._matches.clear()
+        app._run = dict(RUN, origin="Trading Caravan")
+        app._report_info = dict(app._report_info, legends=True)
+        app._ev_match({"seed": "0000000002", "stable": True, "failure": None, "map": None, "roster": [
+            {"name": "B", "background": "background.fisherman", "background_name": "Background: Fisherman",
+             "stars": {"hp": 1}, "traits": [], "trait_names": []}]})
+        assert FIRST_CAMPAIGN not in _card_texts(app)
+    finally:
+        app._matches.clear()
+        app._render_match_list()
+
+
+def test_the_deserters_info_tells_a_legends_player_to_use_the_same_map_options(deserters_app):
+    from bbreroll import map_view
+    assert map_view.DESERTERS_INFO.endswith(" Use the same Map Options in the game.")
+    assert "Map Options" not in map_view.DESERTERS_INFO_BASE, "the base game has no Map Options"
+    assert map_view.deserters_info("Legends") == map_view.DESERTERS_INFO
+    assert map_view.deserters_info("Vanilla") == map_view.DESERTERS_INFO_BASE
+    assert "about 50 seconds" in map_view.DESERTERS_INFO and "Use the same Map Options" in map_view.deserters_note(4)
+    assert "Map Options" not in map_view.deserters_note(4, "Vanilla")
+    app = deserters_app
+    assert map_view.DESERTERS_INFO in app.origin_info_var.get()
+    app.setup_var.set("Vanilla")
+    app._on_setup_change()
+    assert map_view.DESERTERS_INFO_BASE in app.origin_info_var.get()
+    assert "Map Options" not in app.origin_info_var.get()

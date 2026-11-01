@@ -328,12 +328,41 @@ def deserters_loop_draws(fort_xy, n, size=None):
     return n * sum(1 for lo, hi in loop_ranges(fort_xy, size) if hi > lo)
 
 
+class StartLoop:
+    """What the start loop of one run has tried so far. The checks of one iteration (World.isValidTileSquare, then the
+    tile type, the distance to the fort, the road and the route) read only the map, never the stream, so one square
+    always gives the same answer, and an iteration that went on to the next one has failed on its square. The loop
+    ends as soon as one square passes, so a map on which none passes would draw squares for ever (the game would
+    hang the same way). This counts the squares of the fort's ranges (loop_ranges) and tells when all of them have
+    failed. Draws nothing, reads nothing from the engine."""
+
+    def __init__(self, ranges):
+        (xlo, xhi), (ylo, yhi) = ranges
+        # a range with hi < lo gives lo (one value, nothing drawn, engine fact 1)
+        self.total = max(1, xhi - xlo + 1) * max(1, yhi - ylo + 1)
+        self.failed = set()
+        self._last = None
+
+    def enter(self, x, y):
+        """The loop asks about the square (x, y) (one iteration). Returns True when this square has failed before:
+        the caller can answer "not valid" at once without running the checks. Raises MapError when every square of the
+        ranges has failed."""
+        if self._last is not None:
+            self.failed.add(self._last)           # the loop went on, so that square failed
+            if len(self.failed) >= self.total:
+                raise MapError("no square around the fort passes the start loop's checks: all %d squares of its "
+                               "ranges failed (the game would not get past it either)" % self.total)
+        self._last = (int(x), int(y))
+        return self._last in self.failed
+
+
 # What onSpawnPlayer's settlement loop reads, per settlement in getSettlements() order (isIsolatedFromRoads only
 # when isMilitary, as the script's && does - it is a plain field read either way: ConnectedToByRoads.len() == 0).
+# Each row also has the tile's square (Tile.SquareCoords X, Y): the loop draws around the fort's square.
 _FORT_FLAGS = """
 local out = [];
 foreach (s in ::World.EntityManager.getSettlements())
-    out.push([s.isMilitary(), s.isIsolatedFromRoads(), s.isSouthern()]);
+    out.push([s.isMilitary(), s.isIsolatedFromRoads(), s.isSouthern(), s.getTile().SquareCoords.X, s.getTile().SquareCoords.Y]);
 return [out, ::Const.World.Settings.SizeX, ::Const.World.Settings.SizeY];
 """
 
@@ -368,7 +397,7 @@ def spawn_summary(lab, start, summ, origin_id):
         eng.vm.note_trace(0)
         del eng.vm.stack[:]
         raise
-    flags = [[bool(m), bool(i), bool(s)] for m, i, s in rows]
+    flags = [[bool(m), bool(i), bool(s)] for m, i, s, _x, _y in rows]
     size = [int(sx), int(sy)]
     out = {"tile": start["tile"], "fort": None, "loop": None, "draws": None,
            "isolated": [f[1] for f in flags], "size": size}
@@ -627,9 +656,6 @@ NOT_VERIFIED = "Map results are not verified for this setup."
 # What a seed post and the console say about Legends' black-market counter (every map of a search is built at counter 0):
 FIRST_CAMPAIGN = "Start this seed as your first campaign after you start the game."
 # Deserters make their brothers on the map (engine fact 4), so they can be searched only where the maps are verified.
-DESERTERS_UNVERIFIED = ("Deserters need the world map. BB Reroll checked the maps for only two setups. "
-                        "One is Legends 19.4.22 with no other mods. The other is the base game with all DLCs and no "
-                        "mods. Both use game version 1.5.2.3. This game setup is not one of them.")
 # Vanilla maps (no Legends, no mod, every DLC installed: gamedata.all_dlc) were checked against the game: 40 in-game
 # Trader maps on game 1.5.2.3 with all DLCs and no mod had the same towns, pre-road terrain and rosters as the lab's
 # (bb_seedlab MODLOG "CHECKPOINT V", 2026-10-24; map-search stage 2, Task 9).
@@ -661,9 +687,43 @@ def other_mods(mods):
     return out
 
 
-def verified_setup(game_version, legends_version, mods=None, dlc_complete=True):
+# The exact versions of the mods the checked maps ran with (the Legends version is VERIFIED_LEGENDS). Deserters take
+# their brothers from the map, so for them a mod of another version is not verified, even when its zip name is the
+# right one (verified_setup(exact=True)). The ids are those the mods register (Lab.info()["mods"]).
+VERIFIED_MOD_VERSIONS = {"mod_msu": "1.9.0", "mod_modern_hooks": "0.6.0", "mod_legends_assets": "19.4.3"}
+
+
+DESERTERS_UNVERIFIED = ("Deserters need the world map. BB Reroll checked the maps for only two setups. "
+                        "One is Legends 19.4.22 with its mods: Legends assets %(mod_legends_assets)s, "
+                        "MSU %(mod_msu)s and Modern Hooks %(mod_modern_hooks)s. "
+                        "The other is the base game with all DLCs and no mods. Both use game version 1.5.2.3. "
+                        "This game setup is not one of them." % VERIFIED_MOD_VERSIONS)
+
+
+def wrong_mod_versions(mods):
+    """The mods of this setup that are not the exact verified versions, as "id version" texts. Only mods that tell
+    their version can be checked (Lab.info()["mods"]: {"file", "id", "name", "version"}); a zip file name (a string,
+    the GUI's check before a search) cannot, so it is skipped. A verified mod that is not in the list is listed with
+    "missing" - but only when the list has mod dicts at all."""
+    infos = [m for m in mods or () if not isinstance(m, str)]
+    out = []
+    for mod_id, version in VERIFIED_MOD_VERSIONS.items():
+        found = [m for m in infos if m.get("id") == mod_id]
+        if not found:
+            if infos:
+                out.append("%s missing" % mod_id)
+        elif any(m.get("version") != version for m in found):
+            out.append("%s %s" % (mod_id, ", ".join(str(m.get("version")) for m in found)))
+    return out
+
+
+def verified_setup(game_version, legends_version, mods=None, dlc_complete=True, exact=False):
     """Were maps of this game, this Legends version and this mod set checked against the real game? mods None: not
     asked: for Legends only the versions count; for Vanilla None counts as no mod.
+
+    exact=True (the Deserters gate): with Legends and mods that tell their versions (Lab.info()["mods"]), MSU, Modern
+    Hooks and Legends' assets must be the versions of VERIFIED_MOD_VERSIONS too (wrong_mod_versions). The default
+    keeps the loose check, which looks at the mod names only.
 
     legends_version None is the Vanilla setup: its maps are verified only once VANILLA_MAPS_VERIFIED is set, on the
     verified game version, with no mod at all (the verified Legends mods do not count here: MSU alone is not Vanilla)
@@ -672,7 +732,8 @@ def verified_setup(game_version, legends_version, mods=None, dlc_complete=True):
         return (VANILLA_MAPS_VERIFIED and game_version == VERIFIED_GAME and dlc_complete
                 and (mods is None or not mods))
     return (game_version == VERIFIED_GAME and legends_version == VERIFIED_LEGENDS
-            and (mods is None or not other_mods(mods)))
+            and (mods is None or not other_mods(mods))
+            and not (exact and mods is not None and wrong_mod_versions(mods)))
 
 
 class MapRun:
@@ -714,6 +775,7 @@ class MapRun:
         # takes messages and gives nothing back.
         ui = SqTable()
         ui.newslot("asyncCall", NativeFn(lambda this, *args: None, "asyncCall"))
+        self._fort_script = eng.vm.compile(_FORT_FLAGS, "lab_map_forts")
         self._topbar = eng.vm.compile(_TOPBAR, "lab_map_topbar").invoke(eng.root, (ui,))   # kept alive here:
         world["TopbarDayTimeModule"] = R.call(eng.root.get("WeakTableRef"), None, (self._topbar,))   # weak there
         self._world_slots = world
@@ -789,6 +851,12 @@ class MapRun:
         world = self.eng.World
         valid = world.d["isValidTileSquare"]          # the HexMap's, put there by resizeScene
         sp = self._spawn = {"rng": self.eng.rng, "entry": self.eng.rng.draws, "loop": 0, "tile": None, "draws": None}
+        tried = None
+        if R.call(R.get(this, "getID"), this, ()) == DESERTERS:     # only its loop is known: the fort and its ranges
+            rows, sx, sy = self._fort_script.invoke(self.eng.root, ())
+            fort = fort_index([[bool(m), bool(i), bool(s)] for m, i, s, _x, _y in rows])
+            if fort is not None:
+                tried = StartLoop(loop_ranges((int(rows[fort][3]), int(rows[fort][4])), (int(sx), int(sy))))
 
         def counted(this, x, y):
             if sp["tile"] is None:
@@ -796,6 +864,8 @@ class MapRun:
                 if sp["loop"] > SPAWN_LOOP_CAP:
                     raise MapError("onSpawnPlayer's start loop ran past %d iterations without a square that passes "
                                    "(the game would not get past it either)" % SPAWN_LOOP_CAP)
+                if tried is not None and tried.enter(x, y):
+                    return False            # this square failed before: the same answer, without the checks
             return R.call(valid, this, (x, y))
         self._put(world, "isValidTileSquare", NativeFn(counted, "isValidTileSquare"))
         return R.call(original, this, ())

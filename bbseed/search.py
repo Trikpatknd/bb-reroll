@@ -370,10 +370,13 @@ MAP_FATAL = "Map conditions do not work with this game setup: "
 
 # Deserters (scenario script): its brothers are made after the map (engine fact 4), so every seed of its search needs its
 # whole map, run on through the start (onSpawnPlayer): one lab.world_map(stop_at="spawn") gives the map AND the roster.
-# The search tests Deserters only on a verified setup (mapgen.verified_setup) and ends with this text when it cannot
-# (the same text for a setup that is not verified and for a map run that fails twice before one worked).
+# The search tests Deserters only on a verified setup with the exact mod versions (mapgen.verified_setup(exact=True))
+# and ends with DESERTERS_FATAL when it cannot. It says so in two ways: a setup that is not verified (the reason is
+# mapgen.DESERTERS_UNVERIFIED), and a map run that fails (DESERTERS_FATAL + DESERTERS_MAP_FAILED + the error): that is
+# a fault of the map code, not of the setup, and the text does not blame the setup.
 DESERTERS_SCRIPT = "deserters_scenario"
-DESERTERS_FATAL = "Deserters cannot be searched with this game setup: "
+DESERTERS_FATAL = "BB Reroll cannot search Deserters: "
+DESERTERS_MAP_FAILED = "The map code failed. "
 
 # Maps built, none of them meeting the map conditions, before the player is told (GUI notice, console hint). Valid
 # conditions can be rare: 6 or more ports are 3.9 % of the maps, so 0 of 20 happens in 45 % of such searches and 0 of
@@ -446,7 +449,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
 
     want_map = criteria.get("map")
     deserters = origin == DESERTERS_SCRIPT
-    fatal_text = DESERTERS_FATAL if deserters else MAP_FATAL
+    fatal_text = DESERTERS_FATAL + DESERTERS_MAP_FAILED if deserters else MAP_FATAL
     map_first = want_map is not None and not roster_conditions(criteria)
     checking = seeds is not None
     state = {"tested": 0, "last": 0.0, "maps_work": False, "first_map_error": None, "map_error": None, "seed": None}
@@ -464,7 +467,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             out.put(("fatal", index, "%s: %s" % (type(e).__name__, e)))
             return
         info = lab.info()
-        if deserters and _setup_note(info):      # the brothers need the map: an unverified map is no roster
+        if deserters and _setup_note(info, exact=True):      # the brothers need the map: an unverified map is no roster
             out.put(("fatal", index, DESERTERS_FATAL + DESERTERS_UNVERIFIED))
             return
         out.put(("ready", index, info))
@@ -477,7 +480,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
 
         def map_code(fn, *args):
             """fn(*args) on the map path. A LabError passes through; any other exception is one MAP_FATAL event
-            (DESERTERS_FATAL for Deserters) and _MapsDoNotWork (the worker stops, search() ends)."""
+            (DESERTERS_FATAL + DESERTERS_MAP_FAILED for Deserters) and _MapsDoNotWork (the worker stops, search() ends)."""
             try:
                 return fn(*args)
             except LabError:
@@ -740,11 +743,38 @@ def _print_seed(profile, origin, seeds, mod_settings=None):
 
     def run():
         lab = Lab(profile, mod_settings).watch_rolls()
+        deserters = origin == DESERTERS_SCRIPT
+        info = lab.info()
+        if deserters:
+            from .mapgen import FIRST_CAMPAIGN
+            note = _setup_note(info, exact=True)
+            if note:
+                print(note, flush=True)
         for seed in seeds:
             print("seed %s, origin %s:" % (seed, origin))
-            for i, bro in enumerate(lab.roster_with_perks(seed, origin), 1):
+            if deserters:       # the brothers are made on the map: the whole map run on through the start
+                roster = checked_world_map(lab, seed, origin, stop_at="spawn", perks=True,
+                                           blackmarket=SEARCH_BLACKMARKET)["roster"]
+            else:
+                roster = lab.roster_with_perks(seed, origin)
+            for i, bro in enumerate(roster, 1):
                 print("   %d. %s" % (i, describe(bro)))
+            extra = _deserters_lines(info, FIRST_CAMPAIGN) if deserters else ""
+            if extra:
+                print(extra)
     big_stack(run)
+
+
+def _deserters_lines(info, first_campaign):
+    """The lines after a Deserters roster on the console: the Map Options the roster used (they are part of its
+    input) and, with Legends, the first-campaign line. ASCII only."""
+    lines = []
+    options = info.get("map_options") or {}
+    if options:
+        lines.append("   Map Options used: " + ", ".join("%s %s" % (k, options[k]) for k in sorted(options)))
+    if info.get("legends_version"):
+        lines.append("   " + first_campaign)       # Legends' black-market counter: the maps are built at 0
+    return "\n".join(lines)
 
 
 def _ascii(text):
@@ -784,14 +814,15 @@ def map_report(seed, m, origin=None, profile=None, seconds=None):
     return lines
 
 
-def _setup_note(info):
+def _setup_note(info, exact=False):
     """The console note for a run with maps on a setup whose maps nobody checked against the game (Lab.info() or a
     worker's "ready" info: game 1.5.2.3, Legends 19.4.22 and no mod beyond the ones it needs, or the base game with
     every DLC and no mod, see mapgen.verified_setup); None when the setup is the verified one. An info without
-    "dlc_complete" counts as not verified for the base game. ASCII only."""
+    "dlc_complete" counts as not verified for the base game. exact=True (Deserters): the mods must also have the
+    versions the maps were checked with. ASCII only."""
     from .mapgen import NOT_VERIFIED, verified_setup
     if verified_setup(info.get("game_version"), info.get("legends_version"), info.get("mods") or [],
-                      info.get("dlc_complete", False)):
+                      info.get("dlc_complete", False), exact=exact):
         return None
     return NOT_VERIFIED
 
@@ -923,7 +954,7 @@ def main(argv=None):
                 setup_info.append(payload[2])
             if criteria["map"] is not None and not noted:       # once: every worker reports the same setup
                 noted.append(True)
-                note = _setup_note(payload[2])
+                note = _setup_note(payload[2], exact=args.origin == DESERTERS_SCRIPT)
                 if note:
                     print(note, flush=True)
         elif kind == "progress":
@@ -943,8 +974,9 @@ def main(argv=None):
             print("\n*** MATCH: seed %s%s" % (payload["seed"], "" if payload["stable"] else "   (WARNING: not reproducible, do not trust)"))
             for i, bro in enumerate(payload["roster"], 1):
                 print("   %d. %s" % (i, describe(bro)))
-            if args.origin == DESERTERS_SCRIPT and (setup_info[:1] or [{}])[0].get("legends_version"):
-                print("   " + FIRST_CAMPAIGN)       # Legends' black-market counter: the maps are built at 0
+            extra = _deserters_lines((setup_info[:1] or [{}])[0], FIRST_CAMPAIGN) if args.origin == DESERTERS_SCRIPT else ""
+            if extra:
+                print(extra)
             if payload.get("map"):       # (a map is built only when there are map conditions)
                 band = criteria["map"]["north_band"]
                 c = counts(payload["map"], band)

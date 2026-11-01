@@ -20,7 +20,8 @@ import re
 
 from bbreroll.map_conditions import MAP_OPTION_DEFAULTS, TOWN_TYPES
 from bbseed import mapdraw
-from bbseed.mapgen import DEFAULT_NORTH_BAND, NOT_VERIFIED, VERIFIED_GAME, VERIFIED_LEGENDS, verified_setup  # noqa: F401
+from bbseed.mapgen import (DEFAULT_NORTH_BAND, FIRST_CAMPAIGN, NOT_VERIFIED, VERIFIED_GAME,  # noqa: F401
+                           VERIFIED_LEGENDS, verified_setup)
 
 # One map on one worker with Legends' default Map Options (bb_seedlab MODLOG "MAP SURVEY"); about 40 % more with 8
 # workers. A low Land Mass Ratio with a high Water value makes the generator reject far more land / sea attempts: one
@@ -28,9 +29,9 @@ from bbseed.mapgen import DEFAULT_NORTH_BAND, NOT_VERIFIED, VERIFIED_GAME, VERIF
 # cap; the texts say so.
 MAP_SECONDS = 40
 MIN_MAPS = 30               # maps built before the "about 1 in N" estimate shows
-# Deserters: one whole map run on through the start (onSpawnPlayer) per seed, on one worker: median 47 s with Legends,
-# 43 s with the base game, 18 workers running (bb_seedlab MODLOG "DESERTERS IN THE LAB").
-DESERTERS_SECONDS = 45
+# Deserters: one whole map run on through the start (onSpawnPlayer) per seed, on one worker: mean 52 s with Legends,
+# 50 s with the base game, 18 workers running (bb_seedlab MODLOG "DESERTERS IN THE LAB").
+DESERTERS_SECONDS = 50
 MIN_TESTED = 100            # seeds tested before it shows (as for the brothers alone)
 
 # ------------------------------------------------------------------ the fields
@@ -89,8 +90,9 @@ MAP_FATAL_ADVICE = ("Map conditions are off. Change a Map Option in the Map view
                     "Roster searches still work.")
 MAP_FATAL_ADVICE_BASE = ("Map conditions are off. Start the program again to turn them on. "
                          "Roster searches still work.")
-DESERTERS_INFO = ("Deserters make their brothers on the map. Each seed needs its whole map. "
-                  "A map takes about %d seconds for each worker." % DESERTERS_SECONDS)
+DESERTERS_INFO_BASE = ("Deserters make their brothers on the map. Each seed needs its whole map. "
+                       "A map takes about %d seconds for each worker." % DESERTERS_SECONDS)
+DESERTERS_INFO = DESERTERS_INFO_BASE + " Use the same Map Options in the game."      # Legends has Map Options
 DESERTERS_NEEDS_MAPS = "Deserters need the world map. "
 # The setup kinds the GUI passes (not the menu names): Legends, the base game ("Vanilla"), Modded (mods, no Legends).
 SETUP_KINDS = ("Legends", "Vanilla", "Modded")
@@ -111,12 +113,23 @@ def deserters_speed(workers):
     return max(1, workers) * 60 / DESERTERS_SECONDS
 
 
-def deserters_note(workers):
+def deserters_info(setup):
+    """The Deserters line of the origin info: the base game has no Map Options to use again in the game."""
+    return DESERTERS_INFO if setup == "Legends" else DESERTERS_INFO_BASE
+
+
+def first_campaign_line(origin_is_deserters, legends):
+    """The line under a Deserters result on Legends (the maps are built as in the first campaign after the game
+    starts): the text of the seed post. "" for other origins and for the base game (legends False)."""
+    return FIRST_CAMPAIGN if origin_is_deserters and legends is not False else ""
+
+
+def deserters_note(workers, setup="Legends"):
     """The note before a Deserters search: every seed needs its map, how fast that is with this many workers, and
     when the estimate of the odds shows (the maps are the seeds: MIN_MAPS of them)."""
     workers = max(1, workers)
     return ("%s With %d worker%s, the search tests about %s seeds each minute. The estimate of the odds shows after "
-            "%d seeds." % (DESERTERS_INFO, workers, "" if workers == 1 else "s",
+            "%d seeds." % (deserters_info(setup), workers, "" if workers == 1 else "s",
                            format(round(deserters_speed(workers), 1), "g"), MIN_MAPS))
 
 
