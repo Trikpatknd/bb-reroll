@@ -37,12 +37,13 @@ def _has_nested(node):
 
 
 class FuncState:
-    def __init__(self, parent, cells):
+    def __init__(self, parent, cells, varargs=False):
         self.parent = parent
         self.cells = cells
+        self.varargs = varargs      # `vargv` is a local of this function (frame slot 3), as in Squirrel 3.0
         self.scopes = [{}]
         self.nslots = 0
-        self.freevars = []          # [(from_parent_kind, index)]  kind: 'slot' | 'free'
+        self.freevars = []          # [(from_parent_kind, index)]  kind: 'slot' | 'vargv' | 'free'
         self.free_index = {}
         self.traps = 0              # try-block nesting while compiling
 
@@ -60,10 +61,12 @@ class FuncState:
         return None
 
     def resolve(self, name):
-        """-> ('slot', idx) | ('free', j) | None"""
+        """-> ('slot', idx) | ('vargv', 3) | ('free', j) | None"""
         idx = self.lookup_local(name)
         if idx is not None:
             return ("slot", idx)
+        if name == "vargv" and self.varargs:
+            return ("vargv", 3)
         j = self.free_index.get(name)
         if j is not None:
             return ("free", j)
@@ -91,7 +94,7 @@ class Compiler:
     def _function(self, node, parent_fs):
         _, name, params, varargs, body, line = node
         cells = _has_nested(body)
-        fs = FuncState(parent_fs, cells)
+        fs = FuncState(parent_fs, cells, varargs)
         saved = self.fs
         self.fs = fs
         for pname, _d in params:
@@ -128,7 +131,8 @@ class Compiler:
         def make(f):
             if freevars:
                 own = f[1].fv
-                fv = [f[i] if kind == "slot" else own[i] for kind, i in freevars]
+                # `vargv` of a function with nested functions is held in a cell (f[3], see FuncProto.invoke)
+                fv = [f[i] if kind == "slot" or kind == "vargv" else own[i] for kind, i in freevars]
             else:
                 fv = None
             return SqClosure(proto, fv, [d(f) for d in default_evs], vm)
@@ -513,13 +517,13 @@ class Compiler:
 
     def e_id(self, node):
         name = node[1]
-        if name == "vargv":
-            r = self.fs.resolve(name)
-            if r is None:
-                return lambda f: f[3]
         r = self.fs.resolve(name)
         if r is not None:
             kind, idx = r
+            if kind == "vargv":
+                if self.fs.cells:
+                    return lambda f: f[3][0]
+                return lambda f: f[3]
             if kind == "slot":
                 if self.fs.cells:
                     return lambda f: f[idx][0]
@@ -791,7 +795,14 @@ class Compiler:
             r = self.fs.resolve(name)
             if r is not None:
                 k, idx = r
-                if k == "slot":
+                if k == "vargv":
+                    if self.fs.cells:
+                        def st(f, v):
+                            f[3][0] = v
+                    else:
+                        def st(f, v):
+                            f[3] = v
+                elif k == "slot":
                     if self.fs.cells:
                         def st(f, v):
                             f[idx][0] = v

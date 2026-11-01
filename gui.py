@@ -535,6 +535,10 @@ class App(ctk.CTk):
         # What each origin can roll, per game setup (profile -> catalog, None = could not be made).
         # Worked out from the game's scripts once per installed game, in the background.
         self._catalogs: dict = {}
+        # A build that failed is NOT kept in _catalogs: profile -> what the install looked like then (`_catalog_signature`).
+        # It is tried again as soon as the mods or the game folder are not the same (B-3: the player removed the mod
+        # that broke the build and the "Cannot read..." line stayed for the whole session).
+        self._catalog_failed: dict = {}
         self._catalog_job = None          # profile being loaded / built
         self._catalog_progress = ""
         self._catalog_stop = threading.Event()
@@ -1395,11 +1399,13 @@ class App(ctk.CTk):
         self.sisters_menu.configure(state="normal" if self._legends() else "disabled")
         self._lift_map_lockout()        # (also the game folder: it ends here)
         self._apply_map_state()
-        self._on_origin_change(self.origin_var.get())
+        self._on_origin_change(self.origin_var.get(), retry_catalog=False)
         if hasattr(self, "_catalog_stop"):     # also called while the window is being built
             self.after(10, self._ensure_catalog)
 
-    def _on_origin_change(self, value: str):
+    def _on_origin_change(self, value: str, retry_catalog=True):
+        if retry_catalog and hasattr(self, "_catalog_stop"):    # a failed catalog build: the mods may be other ones now
+            self.after(10, self._ensure_catalog)
         if value not in O.SCENARIO or not O.searchable(value, self.setup_var.get()):
             value = O.names_for(self.setup_var.get())[0]
             self.origin_var.set(value)
@@ -1472,12 +1478,28 @@ class App(ctk.CTk):
         """Per brother slot: the stars the origin can give at all (None until known)."""
         return star_limits.slots_for(self._catalog(), O.SCENARIO.get(origin))
 
+    @staticmethod
+    def _catalog_signature(profile):
+        """What the installed game and mods look like for a catalog (the key of its cache file: game version, mod zips
+        with size and date), or None when that cannot be read."""
+        try:
+            from bbseed import catalog
+            return str(catalog.path(profile))
+        except Exception:
+            return None
+
     def _ensure_catalog(self):
         """Load the current setup's catalog, or work it out (once per installed game, ~1-2
-        minutes in worker processes) when there is none yet."""
+        minutes in worker processes) when there is none yet. A failed build is tried again
+        when the installed mods are not the same as at that time."""
         profile = self._profile()
         if profile is None or profile in self._catalogs or self._catalog_job is not None:
             return
+        if profile in self._catalog_failed:
+            signature = self._catalog_signature(profile)
+            if signature is not None and signature == self._catalog_failed[profile]:
+                return                  # the same mods and game: it would fail the same way
+            del self._catalog_failed[profile]
         self._catalog_job = profile
         may_build = not self._selftest or bool(self._selftest.get("catalog"))
         workers = to_int(self.workers_var.get()) or default_workers()
@@ -1488,24 +1510,26 @@ class App(ctk.CTk):
         def run():
             from bbseed import catalog
             found = None
+            failed = False
             try:
                 found = catalog.load(profile)
                 if found is None and may_build:
                     put(("catalog_progress", "Reading what each origin can roll. This occurs one time only."))
                     found = catalog.build(profile, workers=workers, should_stop=stop.is_set,
                                           on_event=lambda kind, payload: put(("catalog_event", (kind, payload))))
+                    failed = found is None and not stop.is_set()
             except Exception as e:      # the search works without it: only the extra checks are missing
+                failed = True
                 put(("catalog_progress", f"Cannot read what the origins can roll: {type(e).__name__}: {e}"))
-            put(("catalog_done", (profile, found)))
+            put(("catalog_done", (profile, found, failed)))
 
         threading.Thread(target=run, daemon=True).start()
 
     def _ev_catalog_progress(self, text):
         self._catalog_progress = text
         if self._slot_facts(self.origin_var.get()) is None:
-            base = self.origin_info_var.get().split("\n")
-            kept = [line for line in base if not line.startswith(("Reading what", "Cannot read what"))]
-            self.origin_info_var.set("\n".join(kept + [text]).strip())
+            self._drop_catalog_lines()
+            self.origin_info_var.set((self.origin_info_var.get() + "\n" + text).strip())
 
     def _ev_catalog_event(self, payload):
         kind, data = payload
@@ -1523,11 +1547,15 @@ class App(ctk.CTk):
             self._ev_catalog_progress(f"Cannot read what the origins can roll: {str(data)[:200]}")
 
     def _ev_catalog_done(self, payload):
-        profile, found = payload
-        self._catalogs[profile] = found
+        profile, found, failed = (tuple(payload) + (False,))[:3]
         self._catalog_job = None
+        if failed:
+            self._catalog_failed[profile] = self._catalog_signature(profile)
+        else:
+            self._catalogs[profile] = found
         if found is not None:
             self._catalog_progress = ""
+            self._drop_catalog_lines()          # an old "Cannot read ..." line is not true any more
             extras = O.add_extras(profile, found)
             if extras and profile == self._profile():      # origins other mods add
                 self.origin_menu.configure(values=O.names_for(self.setup_var.get()))
@@ -1536,7 +1564,14 @@ class App(ctk.CTk):
                     self._on_origin_change(self._saved["last_origin"])
         if profile == self._profile() and found is not None:
             self._apply_catalog()
-        self._ensure_catalog()          # the setup may have changed meanwhile
+        if profile != self._profile():
+            self._ensure_catalog()          # the setup changed meanwhile (a failed build is not tried again here)
+
+    def _drop_catalog_lines(self):
+        base = self.origin_info_var.get().split("\n")
+        kept = [line for line in base if not line.startswith(("Reading what", "Cannot read what"))]
+        if len(kept) != len(base):
+            self.origin_info_var.set("\n".join(kept).strip())
 
     def _apply_catalog(self):
         """The facts arrived: limit the grid cells and show them, without touching the player's
@@ -1598,6 +1633,7 @@ class App(ctk.CTk):
             return
         self._game_folder = chosen
         os.environ["BBSEED_GAME_DATA"] = chosen
+        self._catalog_failed.clear()            # another game folder: a failed catalog build is tried again
         O.refresh()
         self._map_versions = (None, None)       # another game: the versions of the last search do not count
         self._map_mods = None
@@ -2056,10 +2092,12 @@ class App(ctk.CTk):
                                 "The seed check stopped.")
         else:
             errors = self._run.get("errors", 0)
+            done = max(tested - errors, 0)      # a seed that could not be tested is in `tested` too (search.py)
+            failed_seeds = f", {errors:,} seed{'' if errors == 1 else 's'} could not be tested" if errors else ""
             self.status_var.set(
-                f"{verb}: {tested:,} seed{'' if tested == 1 else 's'} tested "
+                f"{verb}: {done:,} seed{'' if done == 1 else 's'} tested "
                 f"in {self._fmt_duration(secs)}, {found} match{'' if found == 1 else 'es'}"
-                f"{f', {errors} could not be tested' if errors else ''}."
+                f"{failed_seeds}."
                 + (f" {self._run['odds_text']}" if not found and self._run.get("odds_text") else ""))
             if not found and not stopped and not failed and tested:
                 never = self._run.get("never") or []
@@ -2433,7 +2471,7 @@ class App(ctk.CTk):
             self.setup_var.set(spec.get("setup", O.DEFAULT_SETUP))
             self._on_setup_change()
             # "catalog": true — load (or build) what the origins can roll first, and wait for it
-            if spec.get("catalog") and self._profile() not in self._catalogs:
+            if spec.get("catalog") and self._profile() not in self._catalogs and self._profile() not in self._catalog_failed:
                 self._ensure_catalog()
                 self.after(500, go)
                 return

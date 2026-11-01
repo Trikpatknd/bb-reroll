@@ -489,10 +489,12 @@ class Parser:
             elif typ == "(":
                 self.i += 1
                 args = []
+                # Squirrel 3.0 FunctionCallArgs: the comma between arguments is optional (`cset(a b)`, stdlib/packer.nut),
+                # but a comma has to be followed by an expression (`f(a,)` is an error, unlike an array literal)
                 while self.toks[self.i][0] != ")":
                     args.append(self.expr())
-                    if not self.accept(","):
-                        break
+                    if self.accept(",") and self.toks[self.i][0] == ")":
+                        self.err("expression expected, found ')'")
                 self.expect(")")
                 node = ("call", node, args, t[2])
             elif typ in ("++", "--"):

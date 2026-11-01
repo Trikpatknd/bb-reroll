@@ -23,6 +23,7 @@ def app(tmp_path_factory):
     mp = pytest.MonkeyPatch()
     mp.setattr(profiles, "installed_summary", lambda game_data=None: found)
     mp.setattr(gui, "SETTINGS_PATH", tmp_path_factory.mktemp("gui") / "settings.json")
+    real_ensure_catalog = gui.App._ensure_catalog
     mp.setattr(gui.App, "_ensure_catalog", lambda self: None)       # no game, no catalog
     mp.setattr(gui.msu_settings, "read_map_options", lambda path=None: None)   # no test reads the player's file
     mp.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
@@ -40,6 +41,7 @@ def app(tmp_path_factory):
         raise
     window.withdraw()
     window.errors = errors
+    window.real_ensure_catalog = real_ensure_catalog      # for the tests of the catalog build itself
     yield window
     window.destroy()
     mp.undo()
@@ -1610,3 +1612,78 @@ def test_the_deserters_info_tells_a_legends_player_to_use_the_same_map_options(d
     app._on_setup_change()
     assert map_view.DESERTERS_INFO_BASE in app.origin_info_var.get()
     assert "Map Options" not in app.origin_info_var.get()
+
+
+def test_a_failed_catalog_build_is_tried_again_when_the_mods_change(app, monkeypatch):
+    # B-3 (a player's 4.2.0 report): a build that failed (a broken mod) was kept for the whole session, so after the
+    # player removed the mod the origin info still said "Cannot read what the origins can roll"
+    from bbseed import catalog
+    signature = {"mods": "with-the-broken-mod"}
+    monkeypatch.setattr(catalog, "path", lambda profile=None, mod_settings=None: Path(signature["mods"]))
+    monkeypatch.setattr(catalog, "load", lambda *a, **k: None)
+    builds = []
+    good = {"talents": {}, "origins": []}
+
+    def fake_build(profile, **kw):
+        builds.append(profile)
+        if len(builds) == 1:
+            kw["on_event"]("fatal", "3 script files failed to load, first: stdlib/packer")
+            return None
+        return good
+    monkeypatch.setattr(catalog, "build", fake_build)
+    monkeypatch.setattr(gui_module().App, "_ensure_catalog", app.real_ensure_catalog)
+    app.setup_var.set("Legends")
+    app._on_setup_change()
+    app._catalogs.pop("legends", None)
+    app._catalog_failed.clear()
+    app._catalog_job = None
+    try:
+        app._ensure_catalog()
+        pump(app, lambda: builds and app._catalog_job is None and "legends" in app._catalog_failed)
+        assert builds == ["legends"]
+        assert "legends" in app._catalog_failed and "legends" not in app._catalogs, "a failure is not kept as the answer"
+        assert "Cannot read what the origins can roll" in app.origin_info_var.get()
+        # nothing changed: no new attempt, however often an origin is picked
+        app._on_origin_change(app.origin_var.get())
+        pump(app, lambda: False, 0.4)
+        app._ensure_catalog()
+        pump(app, lambda: False, 0.2)
+        assert builds == ["legends"]
+        # the mods changed: the next origin pick builds again, the build works, the old line goes
+        signature["mods"] = "without-the-broken-mod"
+        app._on_origin_change(app.origin_var.get())
+        pump(app, lambda: "legends" in app._catalogs)
+        assert builds == ["legends", "legends"]
+        assert app._catalogs["legends"] == good and "legends" not in app._catalog_failed
+        assert "Cannot read what" not in app.origin_info_var.get()
+        assert "Reading what" not in app.origin_info_var.get()
+    finally:
+        app._catalogs.pop("legends", None)
+        app._catalog_failed.clear()
+        app._catalog_job = None
+        app._refresh_origin_info()
+
+
+def gui_module():
+    import gui
+    return gui
+
+
+def test_the_status_does_not_count_seeds_that_could_not_be_tested_as_tested(map_app):
+    # B-4: "4,890 seeds tested ... 4912 could not be tested" read as if half of the seeds failed. The failed seeds
+    # are part of the search's count: the status shows the seeds that were tested, and the failed ones apart.
+    app = map_app
+    app._run = dict(RUN, errors=22)
+    app._searching = True
+    app._ev_finished((4912, 3.0, 0, False))
+    assert app.status_var.get().startswith("Search complete: 4,890 seeds tested in 3s, 0 matches, "
+                                           "22 seeds could not be tested.")
+    app._run = dict(RUN, errors=1)
+    app._ev_finished((5, 3.0, 1, False))
+    assert app.status_var.get().startswith("Search complete: 4 seeds tested in 3s, 1 match, 1 seed could not be tested.")
+    app._run = dict(RUN, errors=7)
+    app._ev_finished((7, 3.0, 0, False))
+    assert app.status_var.get().startswith("Search complete: 0 seeds tested in 3s, 0 matches, 7 seeds could not be tested.")
+    app._run = dict(RUN)
+    app._ev_finished((1, 3.0, 0, False))
+    assert app.status_var.get().startswith("Search complete: 1 seed tested in 3s, 0 matches.")

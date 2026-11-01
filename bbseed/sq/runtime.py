@@ -344,6 +344,8 @@ class SqClosure:
             vargv = []
         f = [this, self, None, vargv]
         if p.cells:
+            if p.varargs:
+                f[3] = [vargv]      # a cell: nested functions share `vargv` as an outer variable
             f.extend([a] for a in args)
         else:
             f.extend(args)

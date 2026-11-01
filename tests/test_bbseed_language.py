@@ -119,3 +119,63 @@ def test_errors_are_catchable():
 def test_weird_assignment_in_condition_is_accepted():
     # Legends' hunter_building.nut has `else if (typeof _m = "integer")`.
     assert run('local m = 5; if (typeof m = "integer") print("ok");') == ["ok"]
+
+
+# --- bug fixes after stage 2 (a player's 4.2.0 report) -------------------------------------------------------
+
+def test_call_arguments_may_omit_the_comma():
+    # B-1: stdlib/packer.nut:103 calls `cset(op.mint op.integer)`; Squirrel 3.0 FunctionCallArgs takes the comma as optional.
+    src = '''
+    local function f(...) { local s = ""; foreach (v in vargv) s += v + ";"; return s; }
+    local op = { mint = 1, integer = 2 };
+    print(f(op.mint op.integer));
+    print(f(op.mint, op.integer));
+    print(f(1 2 3)); print(f(1, 2 3, 4)); print(f("a" "b")); print(f());
+    local t = { g = function (a, b) { return a - b; } };
+    print(t.g(10 3));
+    '''
+    assert run(src) == ["1;2;", "1;2;", "1;2;3;", "1;2;3;4;", "a;b;", "", "7"]
+
+
+def test_call_arguments_with_a_trailing_comma_stay_an_error():
+    # Squirrel: "expression expected, found ')'" for `f(1,)` (the array literals accept a trailing comma, calls do not)
+    import pytest
+    from bbseed.sq.lexer import SqSyntaxError
+    for src in ("local f = function (...) {}; f(1,);", "local f = function (...) {}; f(1 2,);"):
+        with pytest.raises(SqSyntaxError):
+            run(src)
+    assert run("local a = [1, 2,]; print(a.len());") == ["2"]
+
+
+def test_vargv_in_nested_functions():
+    # B-2: Clever Recruiter does `vargv.insert(0, this)` and then `@() __original.acall(vargv)`; vargv is a local of the
+    # vararg function in Squirrel 3.0, so a nested function sees it as an outer variable (the same list object).
+    src = '''
+    local function outer(...) {
+        vargv.insert(0, "first");
+        local lam = @() vargv.len();
+        local fn = function () { return vargv[0] + vargv.len(); };
+        vargv.append("later");
+        return lam() + ";" + fn() + ";" + (function () { return (@() vargv.len())(); })();
+    }
+    print(outer(1, 2));
+    local function acall_it(...) { vargv.insert(0, this); return (@() ::sum_all.acall(vargv))(); }
+    ::sum_all <- function (a, b) { return a + b; };
+    print(acall_it(3, 4));
+    '''
+    assert run(src) == ["4;first4;4", "7"]
+
+
+def test_vargv_assignment_and_scope():
+    src = '''
+    local function a(...) { vargv = [5, 6]; return vargv.len(); }
+    local function b(...) { local g = function () { vargv = [9]; }; g(); return vargv[0]; }
+    local function c(...) { local vargv = 3; return (@() vargv)(); }
+    local function d(...) { local inner = function (...) { return vargv.len(); }; return inner(1, 2, 3); }
+    local function e(x) { return (@() typeof vargv)(); }
+    print(a(1)); print(b(1)); print(c(1)); print(d(1)); print(e(1));
+    '''
+    # a: assigning rebinds the local; b: a nested function assigns the outer local; c: a user local shadows;
+    # d: a nested vararg function has its own vargv; e: a function without `...` has none,
+    # so the name is the one of the script's main function (a vararg function too: an empty array)
+    assert run(src) == ["2", "9", "3", "3", "array"]
