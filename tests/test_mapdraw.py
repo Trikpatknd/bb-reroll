@@ -451,3 +451,160 @@ def test_svg_and_canvas_share_the_stars_corners():
         assert top[0] == pytest.approx(cx) and top[1] == pytest.approx(cy - r), "one point straight up"
     s = started([3, 2])
     assert mapdraw.start_mark(s, True, 2)[:3] == tuple(2 * v for v in mapdraw.start_mark(s, True)[:3])
+
+
+# ---------------------------------------------------------------- the roads (summary["roads"])
+# Direction bits (Const.DirectionBit: 1 2 4 8 16 32 for N NE SE S SW NW). The 4x3 map's tiles, y-major from the south row:
+#   row 2 (north)   (0,2) (1,2) (2,2) (3,2)
+#   row 1           (0,1) (1,1) (2,1) (3,1)
+#   row 0 (south)   (0,0) (1,0) (2,0) (3,0)
+# ROAD_CHARS index = the bit sum: "." 0, "1" N, "2" NE, "4" SE, "8" S, "g" = 16 SW, "w" = 32 NW, "/" = all six.
+ROADS_OFF = "." * 12
+
+
+def roaded(roads):
+    return dict(tiny_summary("LLLL" "LLLL" "LLLL", [town(0, 0)]), roads=roads)
+
+
+def roads_at(*tiles):
+    """A roads string of the 4x3 map from ((x, y), character) pairs."""
+    chars = ["."] * 12
+    for (x, y), ch in tiles:
+        chars[y * 4 + x] = ch
+    return "".join(chars)
+
+
+def test_the_road_characters_are_the_labs_and_mapgens_64_values():
+    from bbseed import mapgen
+    assert mapdraw.ROAD_CHARS == mapgen.ROAD_CHARS
+    assert len(mapdraw.ROAD_CHARS) == 64 == len(set(mapdraw.ROAD_CHARS)) and mapdraw.ROAD_CHARS[0] == "."
+    assert [mapdraw.ROAD_CHARS.index(c) for c in "12489"] == [1, 2, 4, 8, 9] and mapdraw.ROAD_CHARS[16] == "g"
+    assert mapdraw.ROAD_CHARS[32] == "w" and mapdraw.ROAD_CHARS[63] == "/"
+    # the lab's copy (bb_seedlab tools/map_compare.py ROAD_CHARS) is this string: it is what its gate 2 compared
+    assert mapdraw.ROAD_CHARS == ".123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
+
+
+def test_the_road_direction_offsets_are_what_hexmap_links_its_tiles_by():
+    """N NE SE S SW NW (the game's Const.Direction order, bit d = 1 << d): the table equals hexmap's for the layout, and
+    the neighbours of every tile of a built HexMap are the tiles the offsets name."""
+    from bbseed import hexmap
+    assert mapdraw.ROAD_DIRECTIONS == hexmap._OFFSETS["even-q-up"]
+    assert [d for d in range(6) if mapdraw.ROAD_DIRECTIONS[1][d] == (0, 1)] == [0], "N is y + 1: up the picture"
+    hm = hexmap.HexMap(None, 5, 6, "even-q-up")
+    for col in hm.cols:
+        for t in col:
+            for d, (dx, dy) in enumerate(mapdraw.ROAD_DIRECTIONS[t.x & 1]):
+                assert t.nb[d] is hm.tile(t.x + dx, t.y + dy), (t.x, t.y, d)
+
+
+def test_road_string_is_y_major_from_y_zero_and_refuses_a_value_it_has_no_character_for():
+    from types import SimpleNamespace as NS
+    from bbseed import mapgen
+    values = {(0, 0): 0, (1, 0): 1, (2, 0): 63, (0, 1): 16, (1, 1): 2, (2, 1): 9}
+    cols = [[NS(RoadDirections=values[(x, y)]) for y in range(2)] for x in range(3)]
+    hm = NS(cols=cols, size_x=3, size_y=2)
+    assert mapgen.road_string(hm) == ".1/g29"
+    cols[1][1].RoadDirections = 64
+    with pytest.raises(mapgen.MapError, match="RoadDirections"):
+        mapgen.road_string(hm)
+    cols[1][1].RoadDirections = 1.5
+    with pytest.raises(mapgen.MapError, match="RoadDirections"):
+        mapgen.road_string(hm)
+    cols[1][1].RoadDirections = 2.0                 # a float that is a whole number is the same value
+    assert mapgen.road_string(hm) == ".1/g29"
+
+
+def test_two_neighbouring_road_tiles_draw_two_half_steps_that_meet_in_the_middle():
+    """(2, 1) is an even column, so its NE neighbour is (3, 1), which sits half a row higher; the way back is SW."""
+    s = roaded(roads_at(((2, 1), "2"), ((3, 1), "g")))              # NE = bit 2 = "2"; SW = bit 16 = "g"
+    first, second = mapdraw.road_segments(s, True)
+    c21 = (2 * CELL_W + CELL_W / 2, (3 - 1 - 1) * CELL_H + CELL_H // 2 + CELL_H / 2)
+    c31 = (3 * CELL_W + CELL_W / 2, (3 - 1 - 1) * CELL_H + CELL_H / 2)
+    middle = ((c21[0] + c31[0]) / 2, (c21[1] + c31[1]) / 2)
+    assert first == pytest.approx(c21 + middle) and second == pytest.approx(c31 + middle)
+    assert c31[1] < c21[1], "the odd column's tile is higher up the picture"
+    # a tile's own bits decide: the half step is drawn even where the neighbour has no bit back
+    assert mapdraw.road_segments(roaded(roads_at(((2, 1), "2"))), True) == [first]
+    # a scale multiplies the numbers
+    assert mapdraw.road_segments(s, True, 3) == pytest.approx([tuple(3 * v for v in seg) for seg in (first, second)])
+
+
+def test_a_straight_road_of_three_tiles_is_one_continuous_vertical_line():
+    s = roaded(roads_at(((1, 0), "1"), ((1, 1), "9"), ((1, 2), "8")))      # N / N + S / S in the odd column 1
+    segments = mapdraw.road_segments(s, True)
+    x = 1 * CELL_W + CELL_W / 2
+    centre = {y: (3 - 1 - y) * CELL_H + CELL_H / 2 for y in range(3)}       # picture y of each tile's centre
+    assert all(seg[0] == seg[2] == x for seg in segments), "straight up and down"
+    pieces = sorted(tuple(sorted((seg[1], seg[3]))) for seg in segments)
+    # (1,0) N reaches the middle of the step to (1,1); (1,1) S meets it; (1,1) N and (1,2) S meet half way between them
+    assert pieces == sorted([(centre[0] - CELL_H / 2, centre[0]),           # (1,0) N
+                             (centre[1], centre[1] + CELL_H / 2),           # (1,1) S
+                             (centre[1] - CELL_H / 2, centre[1]),           # (1,1) N
+                             (centre[2], centre[2] + CELL_H / 2)])          # (1,2) S
+    # as one line: the pieces overlap end to end from the north tile's centre down to the south tile's
+    merged = []
+    for lo, hi in pieces:
+        if merged and lo <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    assert merged == [[centre[2], centre[0]]]
+
+
+def test_each_direction_bit_goes_the_way_its_name_says_in_the_picture():
+    """N up, NE up-right, SE down-right, S down, SW down-left, NW up-left, from an odd and from an even column."""
+    for x in (1, 2):
+        got = {}
+        for d in range(6):
+            roads = roads_at(((x, 1), mapdraw.ROAD_CHARS[1 << d]))
+            (x0, y0, x1, y1), = mapdraw.road_segments(roaded(roads), True)
+            got[d] = ((x1 > x0) - (x1 < x0), (y1 > y0) - (y1 < y0))        # sign of the move; y grows DOWN the picture
+        assert got == {0: (0, -1), 1: (1, -1), 2: (1, 1), 3: (0, 1), 4: (-1, 1), 5: (-1, -1)}, x
+
+
+def test_a_tile_with_all_six_bits_has_six_half_steps_from_its_centre():
+    segments = mapdraw.road_segments(roaded(roads_at(((1, 1), "/"))), True)
+    assert len(segments) == 6
+    assert all(seg[:2] == segments[0][:2] for seg in segments), "all start at the tile's centre"
+    assert len({seg[2:] for seg in segments}) == 6
+
+
+def test_no_roads_without_a_verified_setup_or_a_roads_string_and_then_no_key_entry():
+    s = roaded(roads_at(((2, 1), "2"), ((3, 1), "g")))
+    assert mapdraw.road_segments(s) == [] and mapdraw.road_segments(s, False) == [], "fail closed"
+    assert mapdraw.has_roads(s, True) and not mapdraw.has_roads(s) and not mapdraw.has_roads(s, False)
+    old = tiny_summary("LLLL" "LLLL" "LLLL", [town(0, 0)])           # a cached summary from before the roads
+    assert "roads" not in old and mapdraw.road_segments(old, True) == [] and not mapdraw.has_roads(old, True)
+    assert not mapdraw.has_roads(roaded(ROADS_OFF), True) and mapdraw.road_segments(roaded(ROADS_OFF), True) == []
+    assert mapdraw.road_segments(dict(old, roads=""), True) == []
+    for plain in (svg(s), svg(s, verified=False), svg(old, verified=True), svg(roaded(ROADS_OFF), verified=True)):
+        assert 'class="roads"' not in plain and "road" not in plain.lower()
+    with pytest.raises(ValueError, match="roads"):
+        mapdraw.road_segments(roaded("." * 11), True)
+    with pytest.raises(ValueError, match="roads"):
+        mapdraw.road_segments(roaded("." * 11 + "?"), True)
+
+
+def test_the_svg_draws_the_roads_as_one_path_between_the_terrain_and_the_towns_and_the_key_names_it():
+    s = roaded(roads_at(((2, 1), "2"), ((3, 1), "g")))
+    for scale in (1, 2):
+        text = svg(s, scale=scale, verified=True)
+        path, = [e for e in _parse(text).iter(SVG_NS + "path") if e.get("class") == "roads"]
+        assert path.get("stroke") == mapdraw.ROAD_COLOUR and path.get("fill") == "none"
+        assert float(path.get("stroke-width")) == pytest.approx(mapdraw.ROAD_WIDTH * scale)
+        numbers = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?", path.get("d"))]
+        want = [round(v, 2) for seg in mapdraw.road_segments(s, True, scale) for v in seg]
+        assert numbers == pytest.approx(want) and len(numbers) == 8
+        assert re.fullmatch(r"(M[\d.,-]+L[\d.,-]+)+", path.get("d"))
+        assert text.index('class="terrain-L"') < text.index('class="roads"') < text.index('class="towns"')
+        assert "brown line = road" in text
+    assert "star = start" not in svg(s, verified=True)
+    both = svg(dict(s, start=[2, 1]), verified=True)
+    assert both.index('class="roads"') < both.index('class="start"') and "brown line = road; star = start" in both
+
+
+def test_the_svg_with_roads_is_well_formed_and_one_without_any_is_what_it_was():
+    s = roaded(roads_at(((2, 1), "2"), ((3, 1), "g")))
+    _parse(svg(s, verified=True, north_band=33))
+    plain = tiny_summary("LLLL" "LLLL" "LLLL", [town(0, 0)])
+    assert svg(dict(plain, roads=ROADS_OFF), verified=True) == svg(plain, verified=True)

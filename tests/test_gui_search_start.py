@@ -1317,6 +1317,63 @@ def test_the_map_window_draws_no_star_when_the_setup_is_not_verified_or_the_star
         assert [canvas.type(i) for i in canvas.find_all()].count("polygon") == 2, "only the north arrow's two plates"
 
 
+def roads_window(app, info, roads=True, seed="2222222222"):
+    """The map window of small_map() (30 x 40) with a road: (10,5) - (11,5) east, (11,5) - (11,6) north, and (11,6) NE."""
+    from bbseed.mapdraw import ROAD_CHARS
+    chars = ["."] * (30 * 40)
+    chars[5 * 30 + 10] = ROAD_CHARS[2]              # (10,5) is an even column: NE is (11,5)
+    chars[5 * 30 + 11] = ROAD_CHARS[16 | 1]         # (11,5): SW back to (10,5) and N to (11,6)
+    chars[6 * 30 + 11] = ROAD_CHARS[8]              # (11,6): S back to (11,5)
+    summary = dict(small_map(), roads="".join(chars)) if roads else small_map()
+    app._run = dict(RUN, north_band=33)
+    entry = result(app, seed, summary)
+    entry["info"] = dict(info)
+    app._show_map(entry)
+    pump(app, lambda: False, 0.2)
+    return next(iter(app._map_windows.values())), summary
+
+
+def test_the_map_window_draws_the_roads_like_the_svg_and_names_them_in_the_legend(map_app):
+    """The roads: one canvas line per segment of mapdraw.road_segments (the SVG's path has the same numbers), brown,
+    above the terrain and below the band, the towns and the star; the legend has "Road"."""
+    from bbseed import mapdraw
+    window, summary = roads_window(map_app, LEGENDS_VERIFIED)
+    canvas, scale = canvas_of(window), window.scale
+    items = canvas.find_all()
+    road = [i for i in items if canvas.type(i) == "line" and canvas.itemcget(i, "fill") == mapdraw.ROAD_COLOUR]
+    segments = mapdraw.road_segments(summary, True, scale)
+    assert len(segments) == 4 and len(road) == 4
+    assert [v for i in road for v in canvas.coords(i)] == pytest.approx([v for seg in segments for v in seg])
+    assert all(int(float(canvas.itemcget(i, "width"))) == max(1, round(mapdraw.ROAD_WIDTH * scale)) for i in road)
+    assert all(canvas.itemcget(i, "capstyle") == "round" for i in road)
+    # the SVG's numbers at scale 1 are the canvas' at scale 1 (one function gives both)
+    svg_text = mapdraw.svg(summary, verified=True)
+    assert "brown line = road" in svg_text and svg_text.count('class="roads"') == 1
+    assert [v for seg in segments for v in seg] == pytest.approx(
+        [scale * v for seg in mapdraw.road_segments(summary, True) for v in seg])
+    # layers: above every terrain rectangle, below the band's dashed line, the towns' circles and the north arrow
+    index = {i: n for n, i in enumerate(items)}
+    rects = [index[i] for i in items if canvas.type(i) == "rectangle"]
+    above = [index[i] for i in items if canvas.type(i) != "rectangle" and i not in road]
+    assert above and max(rects) < min(index[i] for i in road) and max(index[i] for i in road) < min(above)
+    texts = labels_of(window)
+    assert mapdraw.ROAD_LABEL in texts and "Road" in texts
+
+
+def test_the_map_window_has_no_roads_without_a_verified_setup_or_without_roads_in_the_summary(map_app):
+    from bbseed import mapdraw
+    unverified = dict(LEGENDS_VERIFIED, game_version="1.5.2.4")
+    for info, roads in ((unverified, True), ({}, True), (LEGENDS_VERIFIED, False)):      # False: a summary cached before
+        for window in list(map_app._map_windows.values()):
+            window.destroy()
+        map_app._map_windows.clear()
+        window, _summary = roads_window(map_app, info, roads)
+        canvas = canvas_of(window)
+        assert not [i for i in canvas.find_all() if canvas.itemcget(i, "fill") == mapdraw.ROAD_COLOUR]
+        assert [canvas.type(i) for i in canvas.find_all()].count("line") == 1, "only the band's line"
+        assert "Road" not in labels_of(window)
+
+
 def test_a_checked_seed_whose_map_could_not_be_built_shows_its_roster_and_the_reason(map_app):
     """Final review M3: the search reports the roster of a checked seed with the failure "map could not be built"
     and no map; the window shows that card, not "See the results" over nothing."""

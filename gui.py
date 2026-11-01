@@ -341,7 +341,8 @@ class _TraitEditDialog(ctk.CTkToplevel):
 
 class _MapWindow(ctk.CTkToplevel):
     """The map of one result on a canvas: one rectangle per tile, a circle per town, a ring round each port and
-    the north band's line, north at the top. The geometry and the colours are the ones of bbseed/mapdraw.svg().
+    the north band's line, north at the top (and, on a verified setup, the roads and the start star). The geometry and
+    the colours are the ones of bbseed/mapdraw.svg().
     It is not modal and lives until it is closed; App._map_windows keeps it by (setup, origin, seed)."""
 
     def __init__(self, app, key, entry, screen_height=None):
@@ -396,6 +397,10 @@ class _MapWindow(ctk.CTkToplevel):
         for x0, y0, x1, y1, colour in mapdraw.cells(summary, 1):
             canvas.create_rectangle(round(x0 * scale), round(y0 * scale), round(x1 * scale), round(y1 * scale),
                                     fill=colour, outline="")
+        # the roads: the same segments as the SVG's path, above the terrain and below the band, towns and star
+        for x0, y0, x1, y1 in mapdraw.road_segments(summary, self.verified, scale):
+            canvas.create_line(x0, y0, x1, y1, fill=mapdraw.ROAD_COLOUR, width=max(1, round(mapdraw.ROAD_WIDTH * scale)),
+                               capstyle="round")
         if band is not None:
             y = mapdraw.band_y(summary, band, scale)
             canvas.create_line(0, y, width, y, fill=mapdraw.BAND_COLOUR, width=max(1, round(1.5 * scale)),
@@ -423,7 +428,7 @@ class _MapWindow(ctk.CTkToplevel):
         canvas.create_text(18, 35, text="N", fill="#ffffff", font=(FONT, 11, "bold"))
 
     def _legend(self, band):
-        """One line under the map: what the circles, the ring and the dashed line mean."""
+        """One line under the map: what the circles, the ring, the road line, the star and the dashed line mean."""
         import tkinter as tk
         legend = ctk.CTkFrame(self, fg_color="transparent")
         legend.pack(fill="x", padx=12, pady=(4, 8))
@@ -443,6 +448,9 @@ class _MapWindow(ctk.CTkToplevel):
         chip(lambda c: (c.create_oval(5, 4, 13, 12, fill=mapdraw.TOWN_FILL["town"], outline="#111111"),
                         c.create_oval(2, 1, 16, 15, outline=mapdraw.PORT_RING, width=2)), bg="#cfd8dc")
         text("Port")
+        if mapdraw.has_roads(self.summary, self.verified):
+            chip(lambda c: c.create_line(1, 8, 17, 8, fill=mapdraw.ROAD_COLOUR, width=2, capstyle="round"), bg="#b59f5a")
+            text(mapdraw.ROAD_LABEL)
         if mapdraw.start_mark(self.summary, self.verified) is not None:
             chip(lambda c: c.create_polygon(*[v for p in mapdraw.star_points(9, 8, 7) for v in p], fill=mapdraw.START_FILL,
                                             outline=mapdraw.START_OUTLINE))
@@ -2553,6 +2561,7 @@ class App(ctk.CTk):
                                         "items": len(window.canvas.find_all()),
                                         "start": window.summary.get("start"),       # the star: only when verified
                                         "start_drawn": mapdraw.start_mark(window.summary, window.verified) is not None,
+                                        "roads_drawn": len(mapdraw.road_segments(window.summary, window.verified)),
                                         "start_note": window.start_note}
                 Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
                 if spec.get("screenshot"):

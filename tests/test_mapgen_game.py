@@ -135,6 +135,8 @@ def town_maps(legends_lab):
     for seed in TOWN_SEEDS:
         before = {origin: legends_lab.roster(seed, origin, fresh=True) for origin in ORIGINS}
         out = legends_lab.world_map(seed)
+        hm = legends_lab.lab._maps.hexmap           # the finished map's own RoadDirections, read apart from summary()
+        out["road_values"] = [[int(hm.cols[x][y].RoadDirections) for x in range(hm.size_x)] for y in range(hm.size_y)]
         counts = big_stack(lambda: eng.vm.compile(_ENTITIES, "test_full_map_entities").invoke(eng.root, ()))
         out["entities"] = {k: counts.get(k) for k in ("settlements", "placed", "occupied", "locations")}
         after = {origin: legends_lab.roster(seed, origin, fresh=True) for origin in ORIGINS}
@@ -167,6 +169,41 @@ def test_legends_map_completes_with_towns(town_maps):
         n = int(towns[0].split()[1])
         assert out["entities"]["settlements"] == out["entities"]["placed"] == out["entities"]["occupied"] == n >= 19
         assert out["entities"]["locations"] > n           # attached locations and the abandoned fortresses
+
+
+@pytest.mark.slow
+def test_summary_roads_are_the_hexmaps_road_directions(town_maps):
+    """A real Legends whole map: summary["roads"] decodes to the hexmap's RoadDirections of every tile (y-major, row 0 =
+    the south edge), every value is a valid direction mask, there are roads, and the roads are two-sided: a tile with the
+    bit of direction d has the bit of the opposite direction (d + 3) % 6 on that neighbour (bit order N NE SE S SW NW, which
+    is also the order mapdraw draws them in). That pins the direction order and the offsets against the game's data. The
+    one exception is the N bit: every town's tile has it, and so do some tiles beside it, with no S bit on the tile to the
+    north (seed 1234567890: 57 of 271 N bits; the other five directions are two-sided on every tile) - it is the game's
+    own data, and mapdraw draws it as a short stub."""
+    from bbseed import mapdraw
+    from bbseed.mapgen import ROAD_CHARS
+    for seed in TOWN_SEEDS:
+        out = town_maps.maps[seed]
+        m, grid = out["map"], out["road_values"]
+        w, h = m["size"]
+        assert len(m["roads"]) == w * h and set(m["roads"]) <= set(ROAD_CHARS)
+        assert [ROAD_CHARS.index(c) for c in m["roads"]] == [v for row in grid for v in row]
+        assert all(0 <= v < 64 for row in grid for v in row)
+        road_tiles = sum(1 for row in grid for v in row if v)
+        assert road_tiles > 50, "a whole map has roads between its towns"
+        assert any(grid[t["y"]][t["x"]] for t in m["towns"]), "a town stands on a road tile"
+        for y in range(h):
+            for x in range(w):
+                for d, (dx, dy) in enumerate(mapdraw.ROAD_DIRECTIONS[x & 1]):
+                    if grid[y][x] >> d & 1 and d:
+                        nx, ny = x + dx, y + dy
+                        assert 0 <= nx < w and 0 <= ny < h, (x, y, d)
+                        assert grid[ny][nx] >> ((d + 3) % 6) & 1, (seed, x, y, d)
+        # the picture: one half step per direction bit, all inside the picture
+        segments = mapdraw.road_segments(m, True)
+        assert len(segments) == sum(bin(v).count("1") for row in grid for v in row)
+        width, height = mapdraw.picture_size(m)
+        assert all(0 <= x <= width and 0 <= y <= height for seg in segments for x, y in (seg[:2], seg[2:]))
 
 
 @pytest.mark.slow

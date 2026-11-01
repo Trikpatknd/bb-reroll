@@ -125,6 +125,31 @@ def terrain_string(hm):
     return "".join(out)
 
 
+# The roads of a finished map: one character per tile for its RoadDirections, the sum of Const.DirectionBit[d] over the
+# directions d the road leaves the tile in (bit d = direction d: N 1, NE 2, SE 4, S 8, SW 16, NW 32; the table is
+# 1, 2, 4, 8, 16, 32 in the base game's config/global.nut), so a value is 0..63. Index = the value; "." = no road. This
+# is the lab's ROAD_CHARS (bb_seedlab tools/map_compare.py), whose RoadDirections grid equals the game's on 40 of 40
+# maps of both setups (stage 2 B1, "gate 2"). mapdraw has a copy (it imports nothing); a test keeps the two equal.
+ROAD_CHARS = ".123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
+
+
+def road_string(hm):
+    """The roads of a tile world as one string of ROAD_CHARS, in the order of terrain_string (y-major, row 0 = the south
+    edge first). A plain read of each tile's RoadDirections: nothing is drawn or changed. A value that is not a whole
+    number 0..63 is an error."""
+    chars = ROAD_CHARS
+    cols = hm.cols
+    out = []
+    for y in range(hm.size_y):
+        for x in range(hm.size_x):
+            v = cols[x][y].RoadDirections
+            i = int(v)
+            if i != v or not 0 <= i < len(chars):
+                raise MapError("tile (%d, %d) has RoadDirections %r, which ROAD_CHARS has no character for" % (x, y, v))
+            out.append(chars[i])
+    return "".join(out)
+
+
 # The settlements the scripts registered (settlement.onInit: EntityManager.addSettlement), in creation order.
 _TOWNS = """
 local out = [];
@@ -152,6 +177,9 @@ def summary(lab, log=()):
       "layout":  the hex layout the run used (LAYOUT), see hexmap.py
       "terrain": width * height characters of TERRAIN_CHARS, y-major: row y = 0 first (the SOUTH edge: high y is
                  north), x = 0.. within a row; index = y * width + x (see terrain_string)
+      "roads":   width * height characters of ROAD_CHARS in the same order: each tile's RoadDirections (a bit per
+                 direction N NE SE S SW NW = 1 2 4 8 16 32; "." = no road), as the finished map has it (see road_string).
+                 A summary cached before this key existed has none: mapdraw then draws no roads
       "towns":   one dict per settlement, in the order the scripts created them:
                    name, script (the settlement's script class name, e.g. "small_farming_village", "city_state"),
                    size (getSize(): 1, 2 or 3), x and y (its tile's square coordinates), southern (isSouthern()),
@@ -191,8 +219,8 @@ def summary(lab, log=()):
         for k in ("southern", "military", "port"):
             town[k] = bool(town[k])
         towns.append(town)
-    return {"size": [hm.size_x, hm.size_y], "layout": hm.layout, "terrain": terrain_string(hm), "towns": towns,
-            "attempts": sum(1 for line in log if line == LAND_AND_SEA)}
+    return {"size": [hm.size_x, hm.size_y], "layout": hm.layout, "terrain": terrain_string(hm),
+            "roads": road_string(hm), "towns": towns, "attempts": sum(1 for line in log if line == LAND_AND_SEA)}
 
 
 # ------------------------------------------------------------------------------------------- map conditions

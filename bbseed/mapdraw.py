@@ -5,6 +5,9 @@ SVG and the canvas show one picture:
 
     cells(summary)                 -> [(x0, y0, x1, y1, colour)]   one rectangle per tile, in the order of the terrain
     town_marks(summary, scale=1, verified=False)  -> [(cx, cy, radius, fill, port, label)]
+    road_segments(summary, verified=False, scale=1)  -> [(x0, y0, x1, y1)] the roads: from a road tile's centre half way
+                                   to the neighbour in each direction its RoadDirections has (two neighbours' halves meet)
+    has_roads(summary, verified)   -> whether road_segments has anything to draw (the key entry is shown only then)
     start_mark(summary, verified)  -> (cx, cy, radius, fill, label) of the start star, or None
     star_points(cx, cy, radius)    -> the star's ten corners [(x, y)]
     band_y(summary, north_band)    -> y of the north band's line
@@ -65,6 +68,22 @@ START_FILL = "#ffd400"
 START_OUTLINE = "#111111"
 START_LABEL = "Start"
 START_TIP = "Your company starts here."
+# The roads (summary["roads"], the finished map's RoadDirections): a thin line above the terrain and below the towns,
+# drawn only on a setup whose maps were checked against the game (`verified`, as the start star).
+ROAD_COLOUR = "#6b4423"
+ROAD_WIDTH = 1.8            # pixels at scale 1
+ROAD_LABEL = "Road"
+# One character per tile, the lab's / mapgen's ROAD_CHARS (a test keeps the copies equal): the index is the tile's
+# RoadDirections, bit d set = the road leaves the tile in direction d of the game's Const.Direction.
+ROAD_CHARS = ".123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
+_ROAD_VALUE = {ch: i for i, ch in enumerate(ROAD_CHARS)}
+# The square offset (dx, dy) of the neighbour in each direction N NE SE S SW NW (bit 1 2 4 8 16 32), by the PARITY of the
+# tile's column x, in the measured layout even-q-up (N is y + 1; the even columns sit half a row lower). It is
+# hexmap's table for that layout (HexMap neighbours, `Tile.nb`); a test compares the two.
+ROAD_DIRECTIONS = (
+    ((0, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0)),      # even x
+    ((0, 1), (1, 1), (1, 0), (0, -1), (-1, 0), (-1, 1)),        # odd x
+)
 BAND_COLOUR = "#e11d48"
 _BACKGROUND = "#f4f1ea"
 
@@ -165,6 +184,58 @@ def start_mark(summary, verified=False, scale=1):
     return cx, cy, START_RADIUS * scale, START_FILL, START_TIP
 
 
+def _road_values(summary):
+    """The summary's roads as one number (RoadDirections, 0..63) per tile, or None when it has none (a summary cached
+    before the roads were kept, or a run that did not read them). ValueError when the string does not fit the map or
+    holds a character that is not a road."""
+    roads = summary.get("roads")
+    if not roads:
+        return None
+    w, h = summary["size"]
+    if len(roads) != w * h:
+        raise ValueError("the roads string has %d characters, the map is %d x %d tiles" % (len(roads), w, h))
+    unknown = sorted(set(roads) - set(_ROAD_VALUE))
+    if unknown:
+        raise ValueError("the roads string has characters that are no road: %s" % " ".join(map(repr, unknown)))
+    return roads
+
+
+def has_roads(summary, verified=False):
+    """Whether the picture has roads: `verified`, and a roads string with at least one road tile."""
+    roads = summary.get("roads")
+    return bool(verified and roads and set(roads) != {"."})
+
+
+def road_segments(summary, verified=False, scale=1):
+    """The roads as line segments (x0, y0, x1, y1) in pixels (scale 1 = the cells' pixels): for every road tile, one
+    segment per direction bit of its RoadDirections, from the tile's centre to the middle of the step to the neighbour
+    in that direction (the same centres as the towns' circles). The neighbour's own bit for the way back ends at the
+    same point, so a road of several tiles is one continuous line. Tile order is the roads string's (south row first),
+    the directions N NE SE S SW NW within a tile. [] when `verified` is false (the setup's maps are not checked
+    against the game) or the summary has no roads (an old cached one): no roads, no error."""
+    if not verified:
+        return []
+    w, h, _ = _checked(summary)
+    roads = _road_values(summary)
+    if roads is None:
+        return []
+    out = []
+    for i, ch in enumerate(roads):
+        if ch == ".":
+            continue
+        bits = _ROAD_VALUE[ch]
+        y, x = divmod(i, w)
+        cx = x * CELL_W + CELL_W / 2
+        cy = _top(y, h) + _lower(x) + CELL_H / 2
+        for d, (dx, dy) in enumerate(ROAD_DIRECTIONS[x & 1]):
+            if bits >> d & 1:
+                nx, ny = x + dx, y + dy
+                ex = (cx + (nx * CELL_W + CELL_W / 2)) / 2
+                ey = (cy + (_top(ny, h) + _lower(nx) + CELL_H / 2)) / 2
+                out.append((cx * scale, cy * scale, ex * scale, ey * scale))
+    return out
+
+
 def star_points(cx, cy, radius):
     """The ten corners of a five-pointed star with one point straight up: outer corners at `radius`, inner ones at
     0.4 of it. The SVG polygon and the Tk canvas polygon use these numbers."""
@@ -191,8 +262,9 @@ def _num(v):
 def svg(summary, north_band=None, scale=1, verified=False):
     """The map as SVG text: one <rect> per tile, a circle (class "town") per town, a ring (class "port") round the
     ports, and with `north_band` (percent of the rows from the top) a dashed line (class "north-band"). With `verified`
-    (the setup's maps are checked against the game) the city states' names have no "(name not verified)" mark, and
-    with a start tile in the summary a star (class "start") is drawn."""
+    (the setup's maps are checked against the game) the city states' names have no "(name not verified)" mark, the
+    roads of the summary are one <path> (class "roads", above the terrain, below the towns), and with a start tile in
+    the summary a star (class "start") is drawn."""
     w, h, terrain = _checked(summary)
     width, height = picture_size(summary, scale)
     foot = FOOTER * scale
@@ -208,6 +280,11 @@ def svg(summary, north_band=None, scale=1, verified=False):
     for ch in sorted(by_char):
         out.append('<g class="terrain-%s" fill="%s" shape-rendering="crispEdges">%s</g>'
                    % (ch, TERRAIN_COLOURS[ch], "".join(by_char[ch])))
+    segments = road_segments(summary, verified, scale)
+    if segments:
+        out.append('<path class="roads" d="%s" fill="none" stroke="%s" stroke-width="%s" stroke-linecap="round"/>'
+                   % ("".join("M%s,%sL%s,%s" % (_num(x0), _num(y0), _num(x1), _num(y1)) for x0, y0, x1, y1 in segments),
+                      ROAD_COLOUR, _num(ROAD_WIDTH * scale)))
     if north_band is not None:
         y = _num(band_y(summary, north_band, scale))
         out.append('<line class="north-band" x1="0" y1="%s" x2="%s" y2="%s" stroke="%s" stroke-width="%s" '
@@ -232,6 +309,8 @@ def svg(summary, north_band=None, scale=1, verified=False):
                    '<title>%s</title></polygon>' % (points, fill, START_OUTLINE, _num(max(1, scale)), escape(label)))
     key = "circle = %s (white), %s (red), %s (purple); ring = port" % (
         KIND_LABELS["town"].lower(), KIND_LABELS["military"].lower(), KIND_LABELS["southern"].lower())
+    if segments:
+        key += "; brown line = %s" % ROAD_LABEL.lower()
     if start is not None:
         key += "; star = %s" % START_LABEL.lower()
     if north_band is not None:
