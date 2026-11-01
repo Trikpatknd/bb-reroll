@@ -1687,3 +1687,21 @@ def test_the_status_does_not_count_seeds_that_could_not_be_tested_as_tested(map_
     app._run = dict(RUN)
     app._ev_finished((1, 3.0, 0, False))
     assert app.status_var.get().startswith("Search complete: 1 seed tested in 3s, 0 matches.")
+
+
+def test_the_map_window_marks_city_state_names_only_off_a_verified_setup(map_app):
+    """Stage 2 B2 checked the city states' names against the game: on a verified setup (the one that gets the start
+    star) the tooltip of a city state is the plain name; on any other setup it says "(name not verified)"."""
+    from bbseed import mapdraw
+    for info, marked in ((LEGENDS_VERIFIED, False), (dict(LEGENDS_VERIFIED, game_version="1.5.2.4"), True)):
+        window, summary = start_window(map_app, info, seed="4444444444" if marked else "5555555555")
+        canvas, scale = canvas_of(window), window.scale
+        cx, cy, *_ = mapdraw.town_marks(summary, scale, not marked)[0]       # the southern port, a city state
+        window.update()
+        canvas.event_generate("<Enter>", x=round(cx), y=round(cy))
+        canvas.event_generate("<Motion>", x=round(cx), y=round(cy))
+        pump(map_app, lambda: window.info_var.get().startswith("Town 3/2"), 1.0)
+        assert window.info_var.get().startswith("Town 3/2"), window.info_var.get()
+        assert ("(name not verified)" in window.info_var.get()) is marked
+        window.destroy()
+        map_app._map_windows.clear()

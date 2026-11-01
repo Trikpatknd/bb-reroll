@@ -191,9 +191,9 @@ def test_text_in_the_svg_is_escaped():
     assert 'A & B <"x">' in [e.find(SVG_NS + "title").text for e in _circles(root, "town")][0]
 
 
-def test_a_city_states_name_is_marked_unverified_in_the_tooltip_and_the_svg():
-    """Final review M4 / Ruling AO: the names of the city states come after the lab's own road tiles and are not
-    checked against the game; the picture says so. Every other name is verified and has no mark."""
+def test_a_city_states_name_is_marked_unverified_off_a_verified_setup_in_the_tooltip_and_the_svg():
+    """Final review M4 / Ruling AO: off a verified setup the names of the city states are not checked against the
+    game; the picture says so. Every other name has no mark. (On a verified setup no name has one: see the next test.)"""
     s = tiny_summary("LLLL" "LLLL" "LLLL", [town(1, 1, name="City State of Tiber", southern=True, script="city_state",
                                                 size=3, port=True), town(2, 2, name="Hafen")])
     labels = {label.split(" (")[0]: label for *_rest, label in mapdraw.town_marks(s)}
@@ -203,6 +203,21 @@ def test_a_city_states_name_is_marked_unverified_in_the_tooltip_and_the_svg():
     assert titles == list(labels.values())
     assert mapdraw.town_name(town(0, 0, name="Burg", southern=True)) == "Burg (name not verified)"
     assert mapdraw.town_name(town(0, 0, name="Burg", military=True)) == "Burg"
+
+
+def test_a_city_states_name_has_no_mark_on_a_verified_setup():
+    """Stage 2 B2 checked the city states' names against the game (40/40 on four batches, both setups): where the
+    start star is drawn (`verified`), the tooltip, the SVG and the console report show the plain name."""
+    s = tiny_summary("LLLL" "LLLL" "LLLL", [town(1, 1, name="City State of Tiber", southern=True, script="city_state",
+                                                size=3, port=True), town(2, 2, name="Hafen")])
+    labels = [label for *_rest, label in mapdraw.town_marks(s, verified=True)]
+    assert labels == ["City State of Tiber (size 3, city_state, port, southern)", "Hafen (size 2, small_farming_village)"]
+    assert [e.find(SVG_NS + "title").text for e in _circles(_parse(svg(s, verified=True)), "town")] == labels
+    assert "name not verified" not in svg(s, verified=True) and "name not verified" in svg(s)
+    assert mapdraw.town_name(town(0, 0, name="Burg", southern=True), verified=True) == "Burg"
+    assert mapdraw.town_name(town(0, 0, name="Burg", southern=True), False) == "Burg (name not verified)"
+    assert mapdraw.town_label(town(0, 0, name="Burg", southern=True, script="city_state", size=3), True) == (
+        "Burg (size 3, city_state, southern)")
 
 
 def test_the_svg_key_and_the_gui_legend_use_the_words_of_the_map_view_fields():
@@ -251,6 +266,12 @@ def test_map_report_lists_towns_and_counts_ports_in_ascii():
     assert text.count("(name not verified)") == 2 and "Hafen (name" not in text
     assert "ports: 2 (southern 1, other 1)" in lines
     assert "towns: 2 southern, 1 military, size 1/2/3: 1/1/1" in lines
+    # a verified setup: the same report without the marks
+    verified = map_report("1234567890", _sample(), origin="trader_scenario", profile="legends", seconds=36.6,
+                          verified=True)
+    assert "name not verified" not in chr(10).join(verified)
+    assert [l for l in verified if "Burg" in l][0].split() == ["Burg", "small_farming_village", "2", "yes", "yes", "yes"]
+    assert [l for l in verified if "rich" in l][0].split()[0] == "Z?rich"
 
 
 def test_map_option_runs_a_map_and_writes_the_picture(monkeypatch, tmp_path, capsys):
@@ -277,10 +298,10 @@ def test_map_option_runs_a_map_and_writes_the_picture(monkeypatch, tmp_path, cap
     search.main(["--profile", "legends", "--map", "1234567890", "--svg", str(path),
                  "--mod-setting", "mod_legends:LandRatio=55"])
     assert calls == [("lab", "legends", {"mod_legends:LandRatio": 55}), ("map", "1234567890", "trader_scenario")]
-    assert path.read_text(encoding="utf-8") == svg(_sample())
+    assert path.read_text(encoding="utf-8") == svg(_sample(), verified=True)      # game 1.5.2.3 + Legends 19.4.22
     out = capsys.readouterr().out
     assert "ports: 2" in out and "picture written to %s" % path in out
-    assert "not verified" not in out.replace("(name not verified)", ""), "game 1.5.2.3 + Legends 19.4.22: no note"
+    assert "not verified" not in out, "game 1.5.2.3 + Legends 19.4.22: no note, no name mark"
     calls.clear()
     search.main(["--map", "42", "--origin", "legends_noble_scenario"])
     assert calls == [("lab", None, {}), ("map", "42", "legends_noble_scenario")]

@@ -400,7 +400,7 @@ class _MapWindow(ctk.CTkToplevel):
             y = mapdraw.band_y(summary, band, scale)
             canvas.create_line(0, y, width, y, fill=mapdraw.BAND_COLOUR, width=max(1, round(1.5 * scale)),
                                dash=(max(2, round(8 * scale)), max(2, round(5 * scale))))
-        for cx, cy, r, fill, port, label in mapdraw.town_marks(summary, scale):
+        for cx, cy, r, fill, port, label in mapdraw.town_marks(summary, scale, self.verified):
             items = [canvas.create_oval(cx - r, cy - r, cx + r, cy + r, fill=fill, outline="#111111",
                                         width=max(1, round(scale)))]
             if port:

@@ -4,7 +4,7 @@ Standard library only, and no tkinter: the GUI draws the same numbers on a Tk ca
 SVG and the canvas show one picture:
 
     cells(summary)                 -> [(x0, y0, x1, y1, colour)]   one rectangle per tile, in the order of the terrain
-    town_marks(summary)            -> [(cx, cy, radius, fill, port, label)]
+    town_marks(summary, scale=1, verified=False)  -> [(cx, cy, radius, fill, port, label)]
     start_mark(summary, verified)  -> (cx, cy, radius, fill, label) of the start star, or None
     star_points(cx, cy, radius)    -> the star's ten corners [(x, y)]
     band_y(summary, north_band)    -> y of the north band's line
@@ -119,30 +119,33 @@ def picture_size(summary, scale=1):
     return w * CELL_W * scale, (h * CELL_H + CELL_H // 2) * scale
 
 
-def town_name(town):
-    """The name of a town as the picture and the console report show it. The names of the city states are not
-    checked against the game (CLAUDE.md engine fact 16: they come after the lab's own road tiles), so they say so."""
-    return town["name"] + " " + NAME_NOT_VERIFIED if town["southern"] else town["name"]
+def town_name(town, verified=False):
+    """The name of a town as the picture and the console report show it. The names of the city states are checked
+    against the game since stage 2 B2 (CLAUDE.md engine fact 16) on a verified setup (`verified`, as the start mark
+    has it: mapgen.verified_setup). On any other setup they are not checked, so they say so."""
+    if town["southern"] and not verified:
+        return town["name"] + " " + NAME_NOT_VERIFIED
+    return town["name"]
 
 
-def town_label(town):
-    """"Name (size 2, small_farming_village, port, southern)" - the text of a town's tooltip. A city state's name
-    is followed by "(name not verified)"."""
+def town_label(town, verified=False):
+    """"Name (size 2, small_farming_village, port, southern)" - the text of a town's tooltip. Off a verified setup a
+    city state's name is followed by "(name not verified)"."""
     parts = ["size %d" % town["size"], town["script"]]
     parts += [word for word in ("port", "southern", "military") if town[word]]
-    return "%s (%s)" % (town_name(town), ", ".join(parts))
+    return "%s (%s)" % (town_name(town, verified), ", ".join(parts))
 
 
-def town_marks(summary, scale=1):
+def town_marks(summary, scale=1, verified=False):
     """One (cx, cy, radius, fill, port, label) per town: the circle on the middle of its tile (radius by size, colour
-    by town_kind), and whether it gets a port ring."""
+    by town_kind), and whether it gets a port ring. `verified`: see town_name."""
     w, h, _ = _checked(summary)
     out = []
     for t in summary["towns"]:
         cx = (t["x"] * CELL_W + CELL_W / 2) * scale
         cy = (_top(t["y"], h) + _lower(t["x"]) + CELL_H / 2) * scale
         radius = TOWN_RADIUS.get(t["size"], max(TOWN_RADIUS.values()))      # (a mod's size 4 is drawn as the biggest)
-        out.append((cx, cy, radius * scale, TOWN_FILL[town_kind(t)], bool(t["port"]), town_label(t)))
+        out.append((cx, cy, radius * scale, TOWN_FILL[town_kind(t)], bool(t["port"]), town_label(t, verified)))
     return out
 
 
@@ -188,7 +191,8 @@ def _num(v):
 def svg(summary, north_band=None, scale=1, verified=False):
     """The map as SVG text: one <rect> per tile, a circle (class "town") per town, a ring (class "port") round the
     ports, and with `north_band` (percent of the rows from the top) a dashed line (class "north-band"). With `verified`
-    (the setup's maps are checked against the game) and a start tile in the summary, a star (class "start")."""
+    (the setup's maps are checked against the game) the city states' names have no "(name not verified)" mark, and
+    with a start tile in the summary a star (class "start") is drawn."""
     w, h, terrain = _checked(summary)
     width, height = picture_size(summary, scale)
     foot = FOOTER * scale
@@ -209,7 +213,7 @@ def svg(summary, north_band=None, scale=1, verified=False):
         out.append('<line class="north-band" x1="0" y1="%s" x2="%s" y2="%s" stroke="%s" stroke-width="%s" '
                    'stroke-dasharray="%s %s"/>' % (y, _num(width), y, BAND_COLOUR, _num(1.5 * scale),
                                                     _num(8 * scale), _num(5 * scale)))
-    marks = town_marks(summary, scale)
+    marks = town_marks(summary, scale, verified)
     out.append('<g class="towns" stroke="#111111" stroke-width="%s">' % _num(max(1, scale)))
     for cx, cy, r, fill, _port, label in marks:
         out.append('<circle class="town" cx="%s" cy="%s" r="%s" fill="%s"><title>%s</title></circle>'

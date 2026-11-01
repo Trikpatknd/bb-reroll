@@ -792,8 +792,8 @@ def _ascii(text):
 def map_report(seed, m, origin=None, profile=None, seconds=None, verified=False, legends=False):
     """A map summary (mapgen.summary) as text lines for the console: the towns (name, kind = the settlement's script,
     size, port, southern, military) and the port counts. With `verified` (the setup's maps are checked against the
-    game) and a start in the summary, the line "Start: x, y" (square coordinates) and, with `legends`, the
-    first-campaign line. ASCII only."""
+    game) the city states' names have no "(name not verified)" mark, and with a start in the summary the line
+    "Start: x, y" (square coordinates) and, with `legends`, the first-campaign line. ASCII only."""
     from .mapdraw import town_name
     towns = m["towns"]
     ports = [t for t in towns if t["port"]]
@@ -814,12 +814,12 @@ def map_report(seed, m, origin=None, profile=None, seconds=None, verified=False,
         if legends:         # Legends' black-market counter: the maps are built at 0, the start comes after the roads
             lines.append("   " + FIRST_CAMPAIGN)
     lines.append("")
-    width = max([len(town_name(t)) for t in towns] + [4])
+    width = max([len(town_name(t, verified)) for t in towns] + [4])
     kind = max([len(t["script"]) for t in towns] + [4])
     lines.append("   %-*s  %-*s  size  port  southern  military" % (width, "name", kind, "kind"))
     for t in towns:
         lines.append("   %-*s  %-*s  %-4d  %-4s  %-8s  %s" % (
-            width, _ascii(town_name(t)), kind, _ascii(t["script"]), t["size"], "yes" if t["port"] else "no",
+            width, _ascii(town_name(t, verified)), kind, _ascii(t["script"]), t["size"], "yes" if t["port"] else "no",
             "yes" if t["southern"] else "no", "yes" if t["military"] else "no"))
     lines.append("")
     lines.append("ports: %d (southern %d, other %d)" % (len(ports), sum(1 for t in ports if t["southern"]),
