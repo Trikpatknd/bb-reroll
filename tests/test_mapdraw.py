@@ -33,6 +33,7 @@ def tiny_summary(terrain, towns, size=(4, 3)):
 
 
 # ---------------------------------------------------------------- the brief's test
+@pytest.mark.core
 def test_svg_has_one_cell_per_tile_and_marks_ports():
     s = tiny_summary(terrain="OOLL" "OLLL" "LLLL", towns=[town(2, 1, port=True), town(3, 2, port=False)])
     text = svg(s, north_band=33)
@@ -42,6 +43,7 @@ def test_svg_has_one_cell_per_tile_and_marks_ports():
 
 
 # ---------------------------------------------------------------- the terrain table
+@pytest.mark.core
 def test_terrain_chars_are_one_distinct_printable_character_per_terrain_value():
     assert len(TERRAIN_CHARS) == len(TERRAIN_NAMES) == 21      # the game's TerrainType.COUNT with Legends' 2 extra
     assert len(set(TERRAIN_CHARS)) == len(TERRAIN_CHARS)
@@ -50,12 +52,14 @@ def test_terrain_chars_are_one_distinct_printable_character_per_terrain_value():
     assert TERRAIN_CHARS[1] == "O" and TERRAIN_CHARS[2] == "L"           # the letters the tiny summaries use
 
 
+@pytest.mark.core
 def test_every_terrain_char_has_a_colour():
     assert set(TERRAIN_COLOURS) == set(TERRAIN_CHARS)
     assert all(re.fullmatch(r"#[0-9a-f]{6}", c) for c in TERRAIN_COLOURS.values())
     assert len(set(TERRAIN_COLOURS.values())) == len(TERRAIN_COLOURS), "two terrains share a colour"
 
 
+@pytest.mark.core
 def test_terrain_string_is_y_major_from_y_zero():
     """terrain_string(hexmap): row y = 0 first, x within a row — the order the summary documents."""
     from bbseed.hexmap import HexMap
@@ -69,6 +73,7 @@ def test_terrain_string_is_y_major_from_y_zero():
     assert terrain_string(hm) == "O" "LL" "C" "LLLL" "LD" "LL"
 
 
+@pytest.mark.dirty
 def test_terrain_string_refuses_a_terrain_type_it_has_no_character_for():
     from bbseed.hexmap import HexMap
     from bbseed.mapgen import MapError, terrain_string
@@ -80,6 +85,7 @@ def test_terrain_string_refuses_a_terrain_type_it_has_no_character_for():
 
 
 # ---------------------------------------------------------------- the cells
+@pytest.mark.core
 def test_cells_follow_the_terrain_string_with_north_at_the_top():
     s = tiny_summary("OOLL" "OLLL" "LLLL", [])
     c = cells(s)
@@ -96,6 +102,7 @@ def test_cells_follow_the_terrain_string_with_north_at_the_top():
     assert [at(x, 0)[4] for x in range(4)] == [TERRAIN_COLOURS[ch] for ch in "OOLL"]
 
 
+@pytest.mark.core
 def test_even_columns_sit_half_a_row_lower_than_odd_ones():
     """The measured layout even-q-up: the even columns (0, 2, ...) are half a row further south."""
     c = cells(tiny_summary("LLLL" "LLLL" "LLLL", []))
@@ -106,6 +113,7 @@ def test_even_columns_sit_half_a_row_lower_than_odd_ones():
     assert CELL_H % 2 == 0, "half a row must be a whole pixel"
 
 
+@pytest.mark.core
 def test_cells_cover_the_picture_without_overlap():
     c = cells(tiny_summary("LLLLL" "LLLLL" "LLLLL" "LLLLL", [], size=(5, 4)))
     boxes = {(x0, y0, x1, y1) for x0, y0, x1, y1, _ in c}
@@ -116,12 +124,14 @@ def test_cells_cover_the_picture_without_overlap():
                 assert a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1], (a, b)
 
 
+@pytest.mark.core
 def test_cells_scale():
     s = tiny_summary("OOLL" "OLLL" "LLLL", [])
     base, big = cells(s), cells(s, scale=2)
     assert [tuple(2 * v for v in b[:4]) + b[4:] for b in base] == big
 
 
+@pytest.mark.dirty
 def test_a_summary_with_a_wrong_terrain_string_is_refused():
     with pytest.raises(ValueError, match="terrain"):
         cells(tiny_summary("OOLL" "OLLL", [], size=(4, 3)))
@@ -138,6 +148,7 @@ def _circles(root, cls):
     return [e for e in root.iter(SVG_NS + "circle") if e.get("class") == cls]
 
 
+@pytest.mark.core
 def test_svg_is_well_formed_and_sized_to_the_cells():
     s = tiny_summary("OOLL" "OLLL" "LLLL", [town(2, 1, port=True)])
     root = _parse(svg(s))
@@ -149,6 +160,7 @@ def test_svg_is_well_formed_and_sized_to_the_cells():
     assert len(list(root.iter(SVG_NS + "rect"))) == 12
 
 
+@pytest.mark.core
 def test_towns_are_circles_on_the_centre_of_their_tile_with_north_up():
     s = tiny_summary("LLLL" "LLLL" "LLLL", [town(1, 0, name="South"), town(2, 2, name="North")])
     c = cells(s)
@@ -159,6 +171,7 @@ def test_towns_are_circles_on_the_centre_of_their_tile_with_north_up():
     assert float(circles["North"].get("cy")) < float(circles["South"].get("cy"))
 
 
+@pytest.mark.core
 def test_a_bigger_town_is_a_bigger_circle():
     s = tiny_summary("LLLL" "LLLL" "LLLL", [town(0, 0, size=1, name="S"), town(1, 1, size=2, name="M"),
                                             town(2, 2, size=3, name="L")])
@@ -166,6 +179,7 @@ def test_a_bigger_town_is_a_bigger_circle():
     assert 0 < radius["S"] < radius["M"] < radius["L"]
 
 
+@pytest.mark.core
 def test_a_port_has_a_ring_round_its_town():
     s = tiny_summary("OOLL" "OLLL" "LLLL", [town(2, 1, port=True, name="Harbour"), town(3, 2, name="Inland")])
     root = _parse(svg(s))
@@ -176,6 +190,7 @@ def test_a_port_has_a_ring_round_its_town():
     assert ring.get("fill") == "none"
 
 
+@pytest.mark.core
 def test_the_north_band_is_a_dashed_line_that_many_percent_of_the_rows_down_from_the_top():
     s = tiny_summary("LLLL" "LLLL" "LLLL" "LLLL", [], size=(4, 4))
     line, = [e for e in _parse(svg(s, north_band=50)).iter(SVG_NS + "line") if e.get("class") == "north-band"]
@@ -185,12 +200,14 @@ def test_the_north_band_is_a_dashed_line_that_many_percent_of_the_rows_down_from
     assert 'class="north-band"' not in svg(s) and 'class="north-band"' not in svg(s, north_band=None)
 
 
+@pytest.mark.dirty
 def test_text_in_the_svg_is_escaped():
     s = tiny_summary("LLLL" "LLLL" "LLLL", [town(1, 1, name='A & B <"x">')])
     root = _parse(svg(s))                                    # would raise on bad XML
     assert 'A & B <"x">' in [e.find(SVG_NS + "title").text for e in _circles(root, "town")][0]
 
 
+@pytest.mark.edge
 def test_a_city_states_name_is_marked_unverified_off_a_verified_setup_in_the_tooltip_and_the_svg():
     """Final review M4 / Ruling AO: off a verified setup the names of the city states are not checked against the
     game; the picture says so. Every other name has no mark. (On a verified setup no name has one: see the next test.)"""
@@ -205,6 +222,7 @@ def test_a_city_states_name_is_marked_unverified_off_a_verified_setup_in_the_too
     assert mapdraw.town_name(town(0, 0, name="Burg", military=True)) == "Burg"
 
 
+@pytest.mark.core
 def test_a_city_states_name_has_no_mark_on_a_verified_setup():
     """Stage 2 B2 checked the city states' names against the game (40/40 on four batches, both setups): where the
     start star is drawn (`verified`), the tooltip, the SVG and the console report show the plain name."""
@@ -220,6 +238,7 @@ def test_a_city_states_name_has_no_mark_on_a_verified_setup():
         "Burg (size 3, city_state, southern)")
 
 
+@pytest.mark.core
 def test_the_svg_key_and_the_gui_legend_use_the_words_of_the_map_view_fields():
     """Final review M8: the white circle is a village, town or city (the field "Towns" is size 2 only) and the forts
     are "Strongholds" in the field. The GUI's legend reads mapdraw.KIND_LABELS, so both say the same."""
@@ -229,11 +248,13 @@ def test_the_svg_key_and_the_gui_legend_use_the_words_of_the_map_view_fields():
     assert "fort" not in text
 
 
+@pytest.mark.edge
 def test_the_svg_of_an_empty_map_has_only_cells():
     text = svg(tiny_summary("OOLL" "OLLL" "LLLL", []))
     assert text.count('class="town"') == text.count('class="port"') == 0 and text.count("<rect") == 12
 
 
+@pytest.mark.core
 def test_svg_scale():
     s = tiny_summary("OOLL" "OLLL" "LLLL", [town(2, 1, port=True)])
     one, two = _parse(svg(s)), _parse(svg(s, scale=2))
@@ -249,6 +270,7 @@ def _sample():
         town(1, 1, military=True, port=True, southern=True, size=2, name="Burg")])
 
 
+@pytest.mark.core
 def test_map_report_lists_towns_and_counts_ports_in_ascii():
     from bbseed.search import map_report
     lines = map_report("1234567890", _sample(), origin="trader_scenario", profile="legends", seconds=36.6)
@@ -274,6 +296,7 @@ def test_map_report_lists_towns_and_counts_ports_in_ascii():
     assert [l for l in verified if "rich" in l][0].split()[0] == "Z?rich"
 
 
+@pytest.mark.core
 def test_map_option_runs_a_map_and_writes_the_picture(monkeypatch, tmp_path, capsys):
     import bbseed.lab
     import bbseed.search as search
@@ -337,6 +360,7 @@ VERIFIED_INFO = {"game_version": "1.5.2.3", "legends_version": "19.4.22",
                            "name": "MSU", "version": "1.9.0"}]}
 
 
+@pytest.mark.edge
 def test_map_option_notes_a_setup_whose_maps_are_not_verified(monkeypatch, capsys):
     """Final review M10: --map builds a map on any setup; the console says when nobody checked it."""
     import bbseed.search as search
@@ -354,6 +378,7 @@ def test_map_option_notes_a_setup_whose_maps_are_not_verified(monkeypatch, capsy
     assert note not in capsys.readouterr().out
 
 
+@pytest.mark.dirty
 def test_map_option_refuses_a_map_that_used_engine_functions_nobody_reviewed(monkeypatch, capsys):
     """Final review I1: a counted stand-in that HARMLESS_STUBS does not explain may mean a wrong map: no map is
     printed, the error names the seed and the functions."""
@@ -371,6 +396,7 @@ def test_map_option_refuses_a_map_that_used_engine_functions_nobody_reviewed(mon
     assert "ports: 2" in capsys.readouterr().out
 
 
+@pytest.mark.dirty
 def test_svg_option_needs_map(capsys):
     from bbseed import search
     with pytest.raises(SystemExit):
@@ -379,6 +405,7 @@ def test_svg_option_needs_map(capsys):
 
 
 # ---------------------------------------------------------------- rules of the module
+@pytest.mark.core
 def test_mapdraw_is_standard_library_only_and_never_imports_tkinter():
     tree = ast.parse(Path(mapdraw.__file__).read_text(encoding="utf-8"))
     for node in ast.walk(tree):
@@ -402,6 +429,7 @@ def started(start, **kw):
 _MISSING = object()
 
 
+@pytest.mark.dirty
 def test_the_start_star_is_drawn_only_for_a_verified_setup_with_a_known_tile():
     s = started([2, 1])
     assert mapdraw.start_mark(s, verified=True) is not None
@@ -416,6 +444,7 @@ def test_the_start_star_is_drawn_only_for_a_verified_setup_with_a_known_tile():
         assert 'class="start"' not in plain and "star =" not in plain
 
 
+@pytest.mark.core
 def test_the_start_star_is_on_the_middle_of_its_tile_with_north_up_and_the_key_names_it():
     s = started([2, 1])
     c = cells(s)
@@ -437,6 +466,7 @@ def test_the_start_star_is_on_the_middle_of_its_tile_with_north_up_and_the_key_n
     assert mapdraw.START_LABEL == "Start"
 
 
+@pytest.mark.core
 def test_svg_and_canvas_share_the_stars_corners():
     """The SVG polygon's points are mapdraw.star_points of the mark, at any scale (the Tk canvas draws the same list)."""
     for scale in (1, 2.5):
@@ -445,8 +475,8 @@ def test_svg_and_canvas_share_the_stars_corners():
         corners = mapdraw.star_points(cx, cy, r)
         assert len(corners) == 10
         poly, = [e for e in _parse(svg(s, scale=scale, verified=True)).iter(SVG_NS + "polygon")]
-        got = [tuple(float(v) for v in pair.split(",")) for pair in poly.get("points").split()]
-        assert got == pytest.approx([(round(x, 2), round(y, 2)) for x, y in corners])
+        got = [float(v) for pair in poly.get("points").split() for v in pair.split(",")]
+        assert got == pytest.approx([round(v, 2) for corner in corners for v in corner])
         top = min(corners, key=lambda p: p[1])
         assert top[0] == pytest.approx(cx) and top[1] == pytest.approx(cy - r), "one point straight up"
     s = started([3, 2])
@@ -474,6 +504,7 @@ def roads_at(*tiles):
     return "".join(chars)
 
 
+@pytest.mark.core
 def test_the_road_characters_are_the_labs_and_mapgens_64_values():
     from bbseed import mapgen
     assert mapdraw.ROAD_CHARS == mapgen.ROAD_CHARS
@@ -484,6 +515,7 @@ def test_the_road_characters_are_the_labs_and_mapgens_64_values():
     assert mapdraw.ROAD_CHARS == ".123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/"
 
 
+@pytest.mark.core
 def test_the_road_direction_offsets_are_what_hexmap_links_its_tiles_by():
     """N NE SE S SW NW (the game's Const.Direction order, bit d = 1 << d): the table equals hexmap's for the layout, and
     the neighbours of every tile of a built HexMap are the tiles the offsets name."""
@@ -497,6 +529,7 @@ def test_the_road_direction_offsets_are_what_hexmap_links_its_tiles_by():
                 assert t.nb[d] is hm.tile(t.x + dx, t.y + dy), (t.x, t.y, d)
 
 
+@pytest.mark.dirty
 def test_road_string_is_y_major_from_y_zero_and_refuses_a_value_it_has_no_character_for():
     from types import SimpleNamespace as NS
     from bbseed import mapgen
@@ -514,6 +547,7 @@ def test_road_string_is_y_major_from_y_zero_and_refuses_a_value_it_has_no_charac
     assert mapgen.road_string(hm) == ".1/g29"
 
 
+@pytest.mark.core
 def test_two_neighbouring_road_tiles_draw_two_half_steps_that_meet_in_the_middle():
     """(2, 1) is an even column, so its NE neighbour is (3, 1), which sits half a row higher; the way back is SW."""
     s = roaded(roads_at(((2, 1), "2"), ((3, 1), "g")))              # NE = bit 2 = "2"; SW = bit 16 = "g"
@@ -526,9 +560,11 @@ def test_two_neighbouring_road_tiles_draw_two_half_steps_that_meet_in_the_middle
     # a tile's own bits decide: the half step is drawn even where the neighbour has no bit back
     assert mapdraw.road_segments(roaded(roads_at(((2, 1), "2"))), True) == [first]
     # a scale multiplies the numbers
-    assert mapdraw.road_segments(s, True, 3) == pytest.approx([tuple(3 * v for v in seg) for seg in (first, second)])
+    third, fourth = mapdraw.road_segments(s, True, 3)
+    assert third == pytest.approx(tuple(3 * v for v in first)) and fourth == pytest.approx(tuple(3 * v for v in second))
 
 
+@pytest.mark.core
 def test_a_straight_road_of_three_tiles_is_one_continuous_vertical_line():
     s = roaded(roads_at(((1, 0), "1"), ((1, 1), "9"), ((1, 2), "8")))      # N / N + S / S in the odd column 1
     segments = mapdraw.road_segments(s, True)
@@ -551,6 +587,7 @@ def test_a_straight_road_of_three_tiles_is_one_continuous_vertical_line():
     assert merged == [[centre[2], centre[0]]]
 
 
+@pytest.mark.core
 def test_each_direction_bit_goes_the_way_its_name_says_in_the_picture():
     """N up, NE up-right, SE down-right, S down, SW down-left, NW up-left, from an odd and from an even column."""
     for x in (1, 2):
@@ -562,6 +599,7 @@ def test_each_direction_bit_goes_the_way_its_name_says_in_the_picture():
         assert got == {0: (0, -1), 1: (1, -1), 2: (1, 1), 3: (0, 1), 4: (-1, 1), 5: (-1, -1)}, x
 
 
+@pytest.mark.edge
 def test_a_tile_with_all_six_bits_has_six_half_steps_from_its_centre():
     segments = mapdraw.road_segments(roaded(roads_at(((1, 1), "/"))), True)
     assert len(segments) == 6
@@ -569,6 +607,7 @@ def test_a_tile_with_all_six_bits_has_six_half_steps_from_its_centre():
     assert len({seg[2:] for seg in segments}) == 6
 
 
+@pytest.mark.dirty
 def test_no_roads_without_a_verified_setup_or_a_roads_string_and_then_no_key_entry():
     s = roaded(roads_at(((2, 1), "2"), ((3, 1), "g")))
     assert mapdraw.road_segments(s) == [] and mapdraw.road_segments(s, False) == [], "fail closed"
@@ -585,6 +624,7 @@ def test_no_roads_without_a_verified_setup_or_a_roads_string_and_then_no_key_ent
         mapdraw.road_segments(roaded("." * 11 + "?"), True)
 
 
+@pytest.mark.core
 def test_the_svg_draws_the_roads_as_one_path_between_the_terrain_and_the_towns_and_the_key_names_it():
     s = roaded(roads_at(((2, 1), "2"), ((3, 1), "g")))
     for scale in (1, 2):
@@ -603,6 +643,7 @@ def test_the_svg_draws_the_roads_as_one_path_between_the_terrain_and_the_towns_a
     assert both.index('class="roads"') < both.index('class="start"') and "brown line = road; star = start" in both
 
 
+@pytest.mark.core
 def test_the_svg_with_roads_is_well_formed_and_one_without_any_is_what_it_was():
     s = roaded(roads_at(((2, 1), "2"), ((3, 1), "g")))
     _parse(svg(s, verified=True, north_band=33))

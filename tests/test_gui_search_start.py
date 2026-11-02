@@ -68,6 +68,7 @@ def pump(app, until, seconds=5.0):
         time.sleep(0.02)
 
 
+@pytest.mark.core
 def test_search_starts_with_the_numbers_in_the_fields(app, calls):
     app.errors.clear()
     app.origin_var.set("Trading Caravan")
@@ -86,6 +87,7 @@ def test_search_starts_with_the_numbers_in_the_fields(app, calls):
     assert call["criteria"]["stars_by_slot"]["1"] == {"res": 2}
 
 
+@pytest.mark.core
 def test_show_roster_checks_one_seed(app, calls):
     app.check_seed_var.set("1234567890")
     app._on_check_seed()
@@ -93,6 +95,7 @@ def test_show_roster_checks_one_seed(app, calls):
     assert len(calls) == 1 and calls[0]["seeds"] == ["1234567890"] and calls[0]["max_seeds"] is None
 
 
+@pytest.mark.edge
 def test_cells_turn_grey_when_a_brothers_random_stars_are_all_asked_for(app):
     # Berserker: HP 3 and MSK 3 fixed, then the roll stars 2 more stats (catalog facts of Legends 19.4.22)
     every = {s: 3 for s in ("hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf")}
@@ -123,6 +126,7 @@ def test_cells_turn_grey_when_a_brothers_random_stars_are_all_asked_for(app):
     assert app.stars_widgets[("*", "rdf")].cget("state") == "normal"
 
 
+@pytest.mark.core
 def test_a_fixed_star_is_locked_and_no_condition(app, calls):
     # Trading Caravan's brother 2 has HP 1, MSK 2, MDF 1 on every seed (built-in table until the catalog)
     app.origin_var.set("Trading Caravan")
@@ -134,6 +138,7 @@ def test_a_fixed_star_is_locked_and_no_condition(app, calls):
     assert "2" not in criteria["stars_by_slot"], "a locked row must not replace row All"
 
 
+@pytest.mark.edge
 def test_the_last_result_can_be_scrolled_into_view(app):
     # 2026-10-15: in a 980x940 window the result list ran past the bottom of the window, so
     # scrolling to its end showed nothing; the last of three seeds could not be seen
@@ -245,6 +250,7 @@ MAP_OPTION_KEYS = ["LandRatio", "Water", "Snowline", "Settlements", "Factions", 
 RUN = {"origin": "Trading Caravan", "setup": "Legends", "checking": False}
 
 
+@pytest.mark.core
 def test_map_view_builds_map_criteria(map_app, calls):
     app = map_app
     app.grid_mode_var.set("Map")
@@ -258,6 +264,7 @@ def test_map_view_builds_map_criteria(map_app, calls):
     assert "stars_by_slot" in call["criteria"], "the conditions of the other views are still there"
 
 
+@pytest.mark.core
 def test_the_map_view_replaces_the_stars_grid_and_has_its_own_title(map_app):
     app = map_app
     assert "Map" in app.grid_switch.cget("values")
@@ -273,6 +280,7 @@ def test_the_map_view_replaces_the_stars_grid_and_has_its_own_title(map_app):
     assert shown(app.stars_frame) and not shown(app.map_frame)
 
 
+@pytest.mark.core
 def test_the_map_view_has_a_field_for_everything(map_app):
     from bbreroll import map_view
     app = map_app
@@ -282,6 +290,7 @@ def test_the_map_view_has_a_field_for_everything(map_app):
     assert list(map_view.TOWN_LABELS.values()) == ["City states", "Strongholds", "Villages", "Towns", "Cities"]
 
 
+@pytest.mark.core
 def test_map_options_reach_the_search_as_exactly_seven_keys_only_with_a_map_condition(map_app, calls):
     app = map_app
     app.map_option_vars["Settlements"].set("24")
@@ -301,6 +310,7 @@ def test_map_options_reach_the_search_as_exactly_seven_keys_only_with_a_map_cond
     assert settings["mod_legends:LandRatio"] == 50 and settings["mod_legends:AllTradeLocations"] is False
 
 
+@pytest.mark.core
 def test_show_roster_with_a_map_condition_builds_the_map_with_the_same_options(map_app, calls):
     app = map_app
     app.map_vars["ports"].set("2")
@@ -311,6 +321,7 @@ def test_show_roster_with_a_map_condition_builds_the_map_with_the_same_options(m
     assert calls[0]["criteria"]["map"]["ports"] == 2 and calls[0]["mod_settings"]["mod_legends:Factions"] == 5
 
 
+@pytest.mark.edge
 def test_a_map_condition_alone_is_not_a_search_without_conditions(map_app, calls, monkeypatch):
     app = map_app
     app._bulk_check("banned", False)
@@ -324,6 +335,7 @@ def test_a_map_condition_alone_is_not_a_search_without_conditions(map_app, calls
     assert [t for t, _m in seen] == [], "a map condition is a condition"
 
 
+@pytest.mark.dirty
 def test_impossible_map_conditions_block_the_search(map_app, calls, monkeypatch):
     app = map_app
     app.map_vars["ports"].set("6")
@@ -339,6 +351,7 @@ def test_impossible_map_conditions_block_the_search(map_app, calls, monkeypatch)
     assert len(search_now(app, calls)) == 1
 
 
+@pytest.mark.dirty
 def test_the_map_options_decide_what_is_impossible(map_app, calls, monkeypatch):
     app = map_app
     app.map_vars["military"].set("8")           # Strongholds: at most 6 with Settlements 19, 9 with 27
@@ -350,6 +363,7 @@ def test_the_map_options_decide_what_is_impossible(map_app, calls, monkeypatch):
     assert len(search_now(app, calls)) == 1 and seen == []
 
 
+@pytest.mark.dirty
 def test_numbers_that_are_not_numbers_stop_the_search_with_a_message(map_app, calls):
     app = map_app
     app.map_vars["ports"].set("many")
@@ -365,6 +379,7 @@ def test_numbers_that_are_not_numbers_stop_the_search_with_a_message(map_app, ca
     assert len(search_now(app, calls)) == 1 and app.errors == []
 
 
+@pytest.mark.dirty
 def test_a_map_option_that_is_wrong_does_not_stop_a_search_for_brothers_alone(map_app, calls):
     app = map_app
     app.map_option_vars["Water"].set("99")
@@ -372,6 +387,7 @@ def test_a_map_option_that_is_wrong_does_not_stop_a_search_for_brothers_alone(ma
 
 
 # ---- the game version and the setups
+@pytest.mark.dirty
 def test_unverified_version_shows_the_note(map_app, monkeypatch):
     from bbreroll import map_view
     from bbreroll import offline_origins as O
@@ -388,6 +404,7 @@ def test_unverified_version_shows_the_note(map_app, monkeypatch):
     assert map_view.NOT_VERIFIED in app.map_note_var.get()
 
 
+@pytest.mark.dirty
 def test_the_versions_the_workers_report_decide_the_note(map_app, monkeypatch):
     from bbreroll import map_view
     from bbreroll import offline_origins as O
@@ -400,6 +417,7 @@ def test_the_versions_the_workers_report_decide_the_note(map_app, monkeypatch):
     assert app.map_note_var.get() == ""
 
 
+@pytest.mark.edge
 def test_map_view_opens_for_vanilla_with_all_dlc(map_app, calls):
     # the base game (all DLCs, no mod) has the condition fields; it has no Map Options, so they are not shown
     app = map_app
@@ -421,6 +439,7 @@ def test_map_view_opens_for_vanilla_with_all_dlc(map_app, calls):
     assert app.map_vars["ports"].get() == "3", "the values stay"
 
 
+@pytest.mark.dirty
 def test_vanilla_without_all_dlc_closes_the_map_view(map_app, calls, monkeypatch):
     # Review Focus 4: a base game without every DLC has maps that the checks do not cover
     from bbreroll import map_view
@@ -437,6 +456,7 @@ def test_vanilla_without_all_dlc_closes_the_map_view(map_app, calls, monkeypatch
     assert call["mod_settings"] is None
 
 
+@pytest.mark.dirty
 def test_modded_closes_the_map_view(map_app, calls, monkeypatch):
     # Review Focus 4: mods without Legends have no map view (their maps are not checked)
     from bbreroll import map_view
@@ -455,6 +475,7 @@ def test_modded_closes_the_map_view(map_app, calls, monkeypatch):
     assert call["mod_settings"] is None
 
 
+@pytest.mark.edge
 def test_vanilla_ignores_the_mods_and_legends_versions(map_app, monkeypatch):
     # the base game loads no mod zip: the mods on disk and the Legends versions of an earlier run do not count
     from bbreroll import map_view
@@ -474,6 +495,7 @@ def test_vanilla_ignores_the_mods_and_legends_versions(map_app, monkeypatch):
     assert map_view.NOT_VERIFIED in app.map_note_var.get()
 
 
+@pytest.mark.dirty
 def test_a_vanilla_map_fatal_says_start_the_program_again(map_app, calls):
     # the base game has no Map Option to change: the map fatal says to start the program again
     from bbreroll import map_view
@@ -495,6 +517,7 @@ def test_a_vanilla_map_fatal_says_start_the_program_again(map_app, calls):
 
 
 # ---- the settings file
+@pytest.mark.core
 def test_the_map_values_are_saved_and_restored(map_app):
     import json
     import gui
@@ -519,6 +542,7 @@ def test_the_map_values_are_saved_and_restored(map_app):
     assert app.map_option_vars["AllTradeLocations"].get() == "Yes" and app.map_option_vars["StackCitadels"].get() == "No"
 
 
+@pytest.mark.edge
 def test_a_settings_file_from_before_the_map_view_loads_with_the_defaults(map_app):
     app = map_app
     app.map_vars["ports"].set("5")
@@ -529,6 +553,7 @@ def test_a_settings_file_from_before_the_map_view_loads_with_the_defaults(map_ap
 
 
 # ---- the saved Mod Options (the Map Options the player saved in the game's Mod Options, read from MSU's file)
+@pytest.mark.core
 def test_read_my_mod_options_fills_the_fields(map_app, monkeypatch):
     import gui
     from bbreroll import map_view
@@ -551,6 +576,7 @@ def test_read_my_mod_options_fills_the_fields(map_app, monkeypatch):
     assert app._options_note is None
 
 
+@pytest.mark.dirty
 def test_read_my_mod_options_without_file(map_app, monkeypatch):
     import gui
     from bbreroll import map_view
@@ -563,6 +589,7 @@ def test_read_my_mod_options_without_file(map_app, monkeypatch):
     assert app._options_read is None
 
 
+@pytest.mark.core
 def test_saved_settings_keep_the_read_values(map_app, monkeypatch):
     import json
     import gui
@@ -576,6 +603,7 @@ def test_saved_settings_keep_the_read_values(map_app, monkeypatch):
     assert set(data["map_options_read"]) == set(map_view.default_options())
 
 
+@pytest.mark.core
 def test_start_up_fills_untouched_map_options(map_app, monkeypatch):
     import gui
     from bbreroll import map_view
@@ -589,6 +617,7 @@ def test_start_up_fills_untouched_map_options(map_app, monkeypatch):
     assert app._options_read == map_view.saved_option_texts({"Settlements": 24})
 
 
+@pytest.mark.edge
 def test_start_up_keeps_typed_map_options(map_app, monkeypatch):
     # the player typed 21 after the program last read the file (which held the defaults): the typed value stays
     import gui
@@ -605,6 +634,7 @@ def test_start_up_keeps_typed_map_options(map_app, monkeypatch):
     assert map_view.OPTIONS_DIFFER in app.map_note_var.get()
 
 
+@pytest.mark.dirty
 def test_start_up_without_a_readable_file_keeps_the_fields(map_app, monkeypatch):
     import gui
     from bbreroll import map_view
@@ -618,6 +648,7 @@ def test_start_up_without_a_readable_file_keeps_the_fields(map_app, monkeypatch)
     assert map_view.NO_SAVED_OPTIONS in app.map_note_var.get()
 
 
+@pytest.mark.dirty
 def test_start_up_when_the_read_raises_keeps_the_fields(map_app, monkeypatch):
     # Review Focus 2: the exe has no console; a failed read must not stop the start
     import gui
@@ -635,6 +666,7 @@ def test_start_up_when_the_read_raises_keeps_the_fields(map_app, monkeypatch):
     assert map_view.NO_SAVED_OPTIONS in app.map_note_var.get()
 
 
+@pytest.mark.edge
 def test_start_up_remembers_saved_values_the_fields_already_have(map_app, monkeypatch):
     # the fields hold the saved values, but the settings file's marker is older: the marker is updated, so the next
     # start sees the fields as untouched and fills them again (the saved file wins while nothing was typed)
@@ -652,6 +684,7 @@ def test_start_up_remembers_saved_values_the_fields_already_have(map_app, monkey
     assert map_view.OPTIONS_DIFFER not in app.map_note_var.get()
 
 
+@pytest.mark.edge
 def test_the_start_up_read_also_runs_on_vanilla(map_app, monkeypatch):
     # final review F1: the program reads the saved Mod Options at start-up on every setup, so a player who starts on
     # the base game and switches to Legends sees the saved values (the note of a difference stays Legends-only)
@@ -672,6 +705,7 @@ def test_the_start_up_read_also_runs_on_vanilla(map_app, monkeypatch):
     assert map_view.OPTIONS_DIFFER not in app.map_note_var.get()
 
 
+@pytest.mark.edge
 def test_a_self_test_never_reads_the_saved_options(map_app, monkeypatch):
     import gui
     app = map_app
@@ -701,6 +735,7 @@ VANILLA_INFO = {"legends_version": None, "legends_build": None, "battle_sisters"
                 "game_version": "1.5.2.3", "mods": [], "map_options": {}}
 
 
+@pytest.mark.core
 def test_a_roster_only_post_is_what_it_was_before_the_map_view(map_app, calls):
     import gui
     from bbreroll.seed_report import build_seed_report
@@ -719,6 +754,7 @@ def test_a_roster_only_post_is_what_it_was_before_the_map_view(map_app, calls):
     assert "Map Options: any." in expected and "Map:" not in expected
 
 
+@pytest.mark.edge
 def test_a_vanilla_map_post_has_no_map_options(map_app, calls):
     app = map_app
     app.setup_var.set("Vanilla")
@@ -734,6 +770,7 @@ def test_a_vanilla_map_post_has_no_map_options(map_app, calls):
     assert "Mods: none\nDLCs: all\n" in text, "a base-game map depends on the DLCs: the post names them"
 
 
+@pytest.mark.core
 def test_the_post_call_gets_the_map_and_the_band_of_the_run(map_app, calls, monkeypatch):
     import gui
     app = map_app
@@ -759,6 +796,7 @@ def test_the_post_call_gets_the_map_and_the_band_of_the_run(map_app, calls, monk
     assert "Settlements: 24" in text and "All trade buildings available: Yes" in text
 
 
+@pytest.mark.core
 def test_a_result_with_a_map_has_a_show_map_button(map_app):
     app = map_app
     app._run = dict(RUN, north_band=33)
@@ -781,13 +819,14 @@ def canvas_of(window):
 
     def walk(widget):
         for child in widget.winfo_children():
-            if isinstance(child, tk.Canvas) and int(child.cget("height")) > 100:
+            if isinstance(child, tk.Canvas) and float(child.cget("height")) > 100:      # Tk 9: customtkinter's read '42.0'
                 found.append(child)
             walk(child)
     walk(window)
     return found[0]
 
 
+@pytest.mark.core
 def test_show_map_opens_a_window(map_app):
     import tkinter as tk
     from bbseed import mapdraw
@@ -810,6 +849,7 @@ def test_show_map_opens_a_window(map_app):
     assert abs(int(canvas.cget("width")) - width) <= 1 and abs(int(canvas.cget("height")) - height) <= 1
 
 
+@pytest.mark.core
 def test_the_map_window_has_north_at_the_top_and_the_band_line_where_mapdraw_puts_it(map_app):
     from bbseed import mapdraw
     app = map_app
@@ -837,6 +877,7 @@ def test_the_map_window_has_north_at_the_top_and_the_band_line_where_mapdraw_put
     assert len(rings) == 2 and {canvas.itemcget(i, "outline") for i in rings} == {mapdraw.PORT_RING}
 
 
+@pytest.mark.core
 def test_the_map_window_opens_on_top_of_the_main_window(map_app):
     # 2026-10-24: Show map opened the window behind the main window. CTkToplevel hides and shows itself again to
     # colour its title bar, and gives the focus back to the main window.
@@ -871,6 +912,7 @@ def test_the_map_window_opens_on_top_of_the_main_window(map_app):
         pump(app, lambda: False, 0.2)
 
 
+@pytest.mark.edge
 def test_a_second_click_brings_the_window_forward_and_closing_leaves_nothing(map_app):
     app = map_app
     app._run = dict(RUN, north_band=33)
@@ -891,6 +933,7 @@ def test_a_second_click_brings_the_window_forward_and_closing_leaves_nothing(map
     assert [w for w in app.winfo_children() if isinstance(w, ctk.CTkToplevel)] == []
 
 
+@pytest.mark.edge
 def test_the_same_seed_with_a_new_map_gets_a_fresh_window(map_app):
     # The map depends on the Map Options: a seed that is found again after a change of Settlements has another map.
     # The result replaces the old one; its Show map must not bring the old window forward.
@@ -918,6 +961,7 @@ def test_the_same_seed_with_a_new_map_gets_a_fresh_window(map_app):
     assert again is not window and again.band == 60 and not window.winfo_exists()
 
 
+@pytest.mark.edge
 def test_the_whole_legends_map_fits_a_screen_1440_pixels_high(map_app):
     app = map_app
     app._run = dict(RUN, north_band=33)
@@ -931,6 +975,7 @@ def test_the_whole_legends_map_fits_a_screen_1440_pixels_high(map_app):
 
 
 # ---- events
+@pytest.mark.dirty
 def test_a_fatal_before_the_workers_are_ready_cannot_start_and_after_it_stopped(map_app, monkeypatch):
     app = map_app
     shown = []
@@ -946,6 +991,7 @@ def test_a_fatal_before_the_workers_are_ready_cannot_start_and_after_it_stopped(
     assert shown == [("A search process stopped: KeyError: 'x' (seed 123)", "error")]
 
 
+@pytest.mark.dirty
 def test_several_identical_fatals_show_one_notice(map_app, monkeypatch):
     app = map_app
     shown = []
@@ -957,6 +1003,7 @@ def test_several_identical_fatals_show_one_notice(map_app, monkeypatch):
     assert len(shown) == 1
 
 
+@pytest.mark.dirty
 def test_fatal_then_finished_keeps_the_red_banner(map_app):
     app = map_app
     app._run = dict(RUN)
@@ -973,6 +1020,7 @@ def test_fatal_then_finished_keeps_the_red_banner(map_app):
     assert "No seed matched" not in app.notice_var.get()
 
 
+@pytest.mark.dirty
 def test_a_map_fatal_after_a_different_fatal_still_turns_the_map_view_off(map_app, calls):
     from bbreroll import map_view
     from bbseed.search import MAP_FATAL
@@ -994,6 +1042,7 @@ def test_a_map_fatal_after_a_different_fatal_still_turns_the_map_view_off(map_ap
     assert "map" not in search_now(app, calls)[0]["criteria"]
 
 
+@pytest.mark.dirty
 def test_a_map_fatal_turns_the_map_view_off_and_leaves_roster_searches_alone(map_app, calls):
     from bbreroll import map_view
     from bbseed.search import MAP_FATAL
@@ -1028,6 +1077,7 @@ def lockout(app):
     assert app._map_off and app.notice_var.get()
 
 
+@pytest.mark.dirty
 def test_changing_a_map_option_turns_map_conditions_on_again(map_app, calls):
     app = map_app
     lockout(app)
@@ -1053,6 +1103,7 @@ def test_changing_a_map_option_turns_map_conditions_on_again(map_app, calls):
     assert not app._map_off and app.notice_var.get() == "Another notice."
 
 
+@pytest.mark.dirty
 def test_changing_the_setup_turns_map_conditions_on_again(map_app, calls):
     app = map_app
     lockout(app)
@@ -1065,6 +1116,7 @@ def test_changing_the_setup_turns_map_conditions_on_again(map_app, calls):
     assert search_now(app, calls)[0]["criteria"]["map"]["ports"] == 3
 
 
+@pytest.mark.dirty
 def test_a_new_game_folder_turns_map_conditions_on_again(map_app, calls, monkeypatch):
     import gui
     from tkinter import filedialog
@@ -1085,6 +1137,7 @@ def test_a_new_game_folder_turns_map_conditions_on_again(map_app, calls, monkeyp
         app._game_folder = folder
 
 
+@pytest.mark.edge
 def test_the_estimate_waits_for_the_first_maps_and_a_missing_chance_shows_nothing(map_app):
     app = map_app
     app._run = dict(RUN, map={"ports": 3}, map_first=True)
@@ -1107,6 +1160,7 @@ def test_the_estimate_waits_for_the_first_maps_and_a_missing_chance_shows_nothin
         "Approximately 1 in 25 seeds matches (from 100 seeds). At this speed, that is 1 match in approximately 12s.")
 
 
+@pytest.mark.edge
 def test_the_progress_of_a_map_search_shows_the_wait_note_and_the_never_notice(map_app):
     app = map_app
     app._run = dict(RUN, map={"ports": 9}, map_first=True)
@@ -1129,6 +1183,7 @@ def test_the_progress_of_a_map_search_shows_the_wait_note_and_the_never_notice(m
     assert app.notice_var.get().startswith("No seed matched in 100 seeds. No map met the map conditions.")
 
 
+@pytest.mark.core
 def test_a_self_test_spec_sets_the_map_fields(map_app):
     app = map_app
     app._set_map_fields({"ports": 3, "towns": {"city_state": 2}}, {"Settlements": 24, "StackCitadels": True})
@@ -1153,6 +1208,7 @@ def worker_mods(*extra):
         {"file": f, "id": None, "name": f[:-4], "version": None} for f in extra]
 
 
+@pytest.mark.dirty
 def test_a_mod_beyond_legends_msu_and_modern_hooks_shows_the_not_verified_note(map_app, monkeypatch):
     """Final review I1 (b): another mod can hook the map generator, so its maps are not verified. The mods of the
     installed game decide before a search; the mods the workers report win once a search has started."""
@@ -1179,6 +1235,7 @@ def test_a_mod_beyond_legends_msu_and_modern_hooks_shows_the_not_verified_note(m
     assert app.map_note_var.get() == ""
 
 
+@pytest.mark.edge
 def test_the_watch_line_shows_a_decimal_below_ten_seeds_a_second(map_app):
     """Final review M2: a search with maps tests about 0.14 seeds a second; "0/s" looked stuck."""
     app = map_app
@@ -1192,6 +1249,7 @@ def test_the_watch_line_shows_a_decimal_below_ten_seeds_a_second(map_app):
     assert app.watch_var.get().startswith("Searching: 50 of 1,000 seeds, 5.0/s, ")
 
 
+@pytest.mark.edge
 def test_brother_and_map_conditions_show_the_brothers_rate_until_30_maps_are_built(map_app):
     """Final review M7: rare brother conditions need hours for 30 maps; meanwhile the status line shows the brothers'
     rate with the number of maps built. Before 100 seeds and from 30 maps the old texts speak."""
@@ -1225,6 +1283,7 @@ def labels_of(widget, kind=ctk.CTkLabel):
     return out
 
 
+@pytest.mark.core
 def test_the_map_window_legend_and_the_tooltips_use_the_words_of_the_map_view_fields(map_app):
     """Final review M8 and 163. The white circle is a village, town or city (the field "Towns" is size 2 only) and
     the forts are strongholds; tooltips say "minimum"."""
@@ -1261,6 +1320,7 @@ def start_window(app, info, start=(10, 25), seed="2222222222"):
     return window, summary
 
 
+@pytest.mark.core
 def test_the_map_window_draws_the_start_star_on_a_verified_setup(map_app):
     """Stage 2 C1: a star on the company's start tile, the same polygon as the SVG's, a legend entry "Start", the
     tooltip "Your company starts here." and, with Legends, the first-campaign note."""
@@ -1292,6 +1352,7 @@ def test_the_map_window_draws_the_start_star_on_a_verified_setup(map_app):
                                                    if canvas.type(i) == "oval")
 
 
+@pytest.mark.edge
 def test_the_map_window_has_no_first_campaign_note_on_the_base_game(map_app):
     from bbreroll import map_view
     window, _summary = start_window(map_app, VANILLA_VERIFIED)
@@ -1301,6 +1362,7 @@ def test_the_map_window_has_no_first_campaign_note_on_the_base_game(map_app):
     assert "Start" in texts and map_view.FIRST_CAMPAIGN not in texts
 
 
+@pytest.mark.dirty
 def test_the_map_window_draws_no_star_when_the_setup_is_not_verified_or_the_start_is_not_known(map_app):
     from bbreroll import map_view
     from bbseed import mapdraw
@@ -1333,6 +1395,7 @@ def roads_window(app, info, roads=True, seed="2222222222"):
     return next(iter(app._map_windows.values())), summary
 
 
+@pytest.mark.core
 def test_the_map_window_draws_the_roads_like_the_svg_and_names_them_in_the_legend(map_app):
     """The roads: one canvas line per segment of mapdraw.road_segments (the SVG's path has the same numbers), brown,
     above the terrain and below the band, the towns and the star; the legend has "Road"."""
@@ -1360,6 +1423,7 @@ def test_the_map_window_draws_the_roads_like_the_svg_and_names_them_in_the_legen
     assert mapdraw.ROAD_LABEL in texts and "Road" in texts
 
 
+@pytest.mark.dirty
 def test_the_map_window_has_no_roads_without_a_verified_setup_or_without_roads_in_the_summary(map_app):
     from bbseed import mapdraw
     unverified = dict(LEGENDS_VERIFIED, game_version="1.5.2.4")
@@ -1374,6 +1438,7 @@ def test_the_map_window_has_no_roads_without_a_verified_setup_or_without_roads_i
         assert "Road" not in labels_of(window)
 
 
+@pytest.mark.dirty
 def test_a_checked_seed_whose_map_could_not_be_built_shows_its_roster_and_the_reason(map_app):
     """Final review M3: the search reports the roster of a checked seed with the failure "map could not be built"
     and no map; the window shows that card, not "See the results" over nothing."""
@@ -1398,6 +1463,7 @@ def test_a_checked_seed_whose_map_could_not_be_built_shows_its_roster_and_the_re
 
 
 # ---- the final fix wave (final review of 4.2.0): the base game's texts, its checks and the options note
+@pytest.mark.edge
 def test_the_base_game_map_texts_name_the_dlcs_and_no_map_options(map_app, calls):
     """Final review F3: the base game has no Map Options and no Land Mass Ratio. Its Map view help, its start line
     and the progress line of its map search say so; the help follows a setup change while the Map mode is shown."""
@@ -1428,6 +1494,7 @@ def test_the_base_game_map_texts_name_the_dlcs_and_no_map_options(map_app, calls
     assert "Land Mass" not in app.grid_help.cget("text") and "default Map Options" not in app.status_var.get()
 
 
+@pytest.mark.dirty
 def test_vanilla_impossible_conditions_use_the_base_game_maximum(map_app, calls, monkeypatch):
     """Final review F4 (task 9): the base game checks its own maxima, and its message names the base game."""
     app = map_app
@@ -1442,6 +1509,7 @@ def test_vanilla_impossible_conditions_use_the_base_game_maximum(map_app, calls,
     assert "City states: a map of the base game has a maximum of 3. Your condition is 4." in message
 
 
+@pytest.mark.edge
 def test_the_saved_options_note_shows_only_on_legends(map_app):
     """Final review F4 (task 9): the note about the saved Map Options belongs to the Map Options, which the base game
     does not show; it is back on Legends."""
@@ -1480,6 +1548,7 @@ def deserters_app(map_app, monkeypatch):
     map_app._on_origin_change("Trading Caravan")
 
 
+@pytest.mark.dirty
 def test_deserters_are_offered_with_a_note_on_a_verified_setup_only(map_app, monkeypatch):
     from bbreroll import map_view
     from bbreroll import offline_origins as O
@@ -1503,6 +1572,7 @@ def test_deserters_are_offered_with_a_note_on_a_verified_setup_only(map_app, mon
     assert map_view.DESERTERS_INFO not in app.origin_info_var.get()
 
 
+@pytest.mark.core
 def test_a_deserters_search_always_sends_the_map_options_and_builds_every_map(deserters_app, calls):
     from bbreroll import map_view
     app = deserters_app
@@ -1524,6 +1594,7 @@ def test_a_deserters_search_always_sends_the_map_options_and_builds_every_map(de
     assert app.errors == []
 
 
+@pytest.mark.core
 def test_a_deserters_check_builds_the_map_too(deserters_app, calls):
     app = deserters_app
     app.map_option_vars["Factions"].set("5")
@@ -1535,6 +1606,7 @@ def test_a_deserters_check_builds_the_map_too(deserters_app, calls):
     assert calls[0]["seeds"] == ["1234567890"] and calls[0]["mod_settings"]["mod_legends:Factions"] == 5
 
 
+@pytest.mark.dirty
 def test_a_wrong_map_option_stops_a_deserters_search_but_not_other_origins(deserters_app, calls):
     app = deserters_app
     app.map_option_vars["Water"].set("abc")
@@ -1549,6 +1621,7 @@ def test_a_wrong_map_option_stops_a_deserters_search_but_not_other_origins(deser
     assert len(search_now(app, calls)) == 1 and app.errors == []
 
 
+@pytest.mark.dirty
 def test_deserters_need_working_maps(deserters_app, calls):
     from bbreroll import map_view
     app = deserters_app
@@ -1560,6 +1633,7 @@ def test_deserters_need_working_maps(deserters_app, calls):
         app._map_off = False
 
 
+@pytest.mark.edge
 def test_a_vanilla_deserters_search_has_no_map_options(deserters_app, calls):
     app = deserters_app
     app.setup_var.set("Vanilla")
@@ -1570,6 +1644,7 @@ def test_a_vanilla_deserters_search_has_no_map_options(deserters_app, calls):
     assert app._run["deserters"] is True
 
 
+@pytest.mark.edge
 def test_the_progress_of_a_deserters_search_waits_for_30_seeds(deserters_app):
     app = deserters_app
     app._run = dict(RUN, origin="Deserters", deserters=True, map_first=True, workers=4)
@@ -1584,6 +1659,7 @@ def test_the_progress_of_a_deserters_search_waits_for_30_seeds(deserters_app):
     assert "maps" not in app.status_var.get()
 
 
+@pytest.mark.core
 def test_a_deserters_seed_post_lists_the_map_options_and_the_counter_line(deserters_app, calls):
     app = deserters_app
     app.map_option_vars["Settlements"].set("24")
@@ -1624,6 +1700,7 @@ def _deserters_match(app, legends):
          "stars": {"hp": 1, "msk": 2}, "traits": [], "trait_names": []}]})
 
 
+@pytest.mark.core
 def test_a_deserters_result_on_legends_shows_the_first_campaign_line(deserters_app):
     """Not only the seed post: the result card says to start the seed as the first campaign (the maps are built at
     counter 0), for every Deserters result on Legends."""
@@ -1637,6 +1714,7 @@ def test_a_deserters_result_on_legends_shows_the_first_campaign_line(deserters_a
         app._render_match_list()
 
 
+@pytest.mark.edge
 def test_a_vanilla_or_other_result_shows_no_first_campaign_line(deserters_app):
     from bbseed.mapgen import FIRST_CAMPAIGN
     app = deserters_app
@@ -1655,6 +1733,7 @@ def test_a_vanilla_or_other_result_shows_no_first_campaign_line(deserters_app):
         app._render_match_list()
 
 
+@pytest.mark.core
 def test_the_deserters_info_tells_a_legends_player_to_use_the_same_map_options(deserters_app):
     from bbreroll import map_view
     assert map_view.DESERTERS_INFO.endswith(" Use the same Map Options in the game.")
@@ -1671,6 +1750,7 @@ def test_the_deserters_info_tells_a_legends_player_to_use_the_same_map_options(d
     assert "Map Options" not in app.origin_info_var.get()
 
 
+@pytest.mark.dirty
 def test_a_failed_catalog_build_is_tried_again_when_the_mods_change(app, monkeypatch):
     # B-3 (a player's 4.2.0 report): a build that failed (a broken mod) was kept for the whole session, so after the
     # player removed the mod the origin info still said "Cannot read what the origins can roll"
@@ -1726,6 +1806,7 @@ def gui_module():
     return gui
 
 
+@pytest.mark.dirty
 def test_the_status_does_not_count_seeds_that_could_not_be_tested_as_tested(map_app):
     # B-4: "4,890 seeds tested ... 4912 could not be tested" read as if half of the seeds failed. The failed seeds
     # are part of the search's count: the status shows the seeds that were tested, and the failed ones apart.
@@ -1746,6 +1827,7 @@ def test_the_status_does_not_count_seeds_that_could_not_be_tested_as_tested(map_
     assert app.status_var.get().startswith("Search complete: 1 seed tested in 3s, 0 matches.")
 
 
+@pytest.mark.edge
 def test_the_map_window_marks_city_state_names_only_off_a_verified_setup(map_app):
     """Stage 2 B2 checked the city states' names against the game: on a verified setup (the one that gets the start
     star) the tooltip of a city state is the plain name; on any other setup it says "(name not verified)"."""

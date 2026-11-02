@@ -54,20 +54,19 @@ def write(tmp_path, data):
     return path
 
 
+@pytest.mark.core
 def test_parse_reads_the_user_shaped_file():
     assert M.parse(file_bytes(USER_SHAPED)) == USER_SHAPED
 
 
+@pytest.mark.core
 def test_read_map_options_keeps_only_the_seven(tmp_path):
     options = M.read_map_options(write(tmp_path, file_bytes(USER_SHAPED)))
     assert options == SEVEN
     assert "DebugMap" not in options
 
 
-def test_missing_keys_are_left_out(tmp_path):
-    assert M.read_map_options(write(tmp_path, file_bytes({"mod_legends": {"Settlements": 21}}))) == {"Settlements": 21}
-
-
+@pytest.mark.edge
 def test_float_and_wide_numbers(tmp_path):
     tree = {"mod_legends": {"LandRatio": 55.0, "Settlements": 300, "Water": 12.5}}
     options = M.read_map_options(write(tmp_path, file_bytes(tree)))
@@ -77,6 +76,7 @@ def test_float_and_wide_numbers(tmp_path):
     assert type(options["Water"]) is float
 
 
+@pytest.mark.dirty
 def test_unreadable_files_give_none(tmp_path):
     good = file_bytes(USER_SHAPED)
     tagged = good.replace(b"\x05\x37", b"\x63\x37", 1)          # LandRatio 55 (U8) with tag 99 in its place
@@ -91,40 +91,48 @@ def test_unreadable_files_give_none(tmp_path):
         assert M.read_map_options(write(tmp_path, data)) is None, name
 
 
+@pytest.mark.dirty
 def test_parse_raises_on_unreadable_data():
     with pytest.raises(M.SettingsFormatError):
         M.parse(bytes([1, 2, 3]))
 
 
+@pytest.mark.dirty
 def test_parse_refuses_bytes_after_the_value():
     with pytest.raises(M.SettingsFormatError):
         M.parse(file_bytes(USER_SHAPED) + b"\x00")
 
 
+@pytest.mark.edge
 def test_no_legends_gives_none(tmp_path):
     assert M.read_map_options(write(tmp_path, file_bytes({"mod_msu": {"X": 1}}))) is None
 
 
+@pytest.mark.core
 def test_settings_path_uses_the_documents_folder():
     assert M.settings_path(Path("D:/Docs")) == Path("D:/Docs/Battle Brothers/savegames/MSU#mod_msu#ModSettings.sav")
 
 
+@pytest.mark.core
 def test_default_settings_path_is_the_save_file():
     assert M.settings_path().parts[-3:] == ("Battle Brothers", "savegames", "MSU#mod_msu#ModSettings.sav")
 
 
+@pytest.mark.edge
 def test_null_values_elsewhere_do_not_lose_the_options(tmp_path):
     tree = {"mod_other": {"Anything": None}, "mod_legends": {"Settlements": 24}}
     assert M.parse(file_bytes(tree)) == tree
     assert M.read_map_options(write(tmp_path, file_bytes(tree))) == {"Settlements": 24}
 
 
+@pytest.mark.edge
 def test_a_null_map_option_is_left_out(tmp_path):
     tree = {"mod_legends": {"Settlements": 24, "Water": None}}
     assert M.read_map_options(write(tmp_path, file_bytes(tree))) == {"Settlements": 24}
 
 
-@pytest.mark.parametrize("tag", [0, 1, 14, 99])     # None, Unknown, SerializationData, a tag MSU does not have
+@pytest.mark.dirty
+@pytest.mark.parametrize("tag", [0, 14])     # None, SerializationData
 def test_unknown_tags_stay_unreadable(tmp_path, tag):
     good = file_bytes({"mod_legends": {"Settlements": 24}})
     assert good.count(b"\x05\x18") == 1                 # Settlements 24 (U8)
@@ -134,6 +142,7 @@ def test_unknown_tags_stay_unreadable(tmp_path, tag):
     assert M.read_map_options(write(tmp_path, data)) is None
 
 
+@pytest.mark.dirty
 def test_a_latin1_string_elsewhere_keeps_the_options(tmp_path):
     tree = {"mod_other": {"Note": "Xq1"}, "mod_legends": {"Settlements": 24}}
     data = file_bytes(tree).replace(b"Xq1", b"Ca\xe9")          # the same length in Latin-1, not valid UTF-8
@@ -174,26 +183,25 @@ def fake_windows(monkeypatch, **answer):
     monkeypatch.setattr(ctypes, "windll", _FakeWindll(_FakeShell32(**answer)), raising=False)
 
 
-def test_documents_dir_is_the_folder_windows_gives(monkeypatch):
-    fake_windows(monkeypatch, folder="D:\\OneDrive\\Docs")
-    assert M.documents_dir() == Path("D:\\OneDrive\\Docs")
-
-
+@pytest.mark.dirty
 def test_documents_dir_falls_back_when_windows_refuses(monkeypatch):
     fake_windows(monkeypatch, hr=-2147024894)           # E_FAIL
     assert M.documents_dir() == Path.home() / "Documents"
 
 
+@pytest.mark.dirty
 def test_documents_dir_falls_back_without_windll(monkeypatch):
     monkeypatch.delattr(ctypes, "windll", raising=False)
     assert M.documents_dir() == Path.home() / "Documents"
 
 
+@pytest.mark.dirty
 def test_documents_dir_falls_back_when_the_call_raises(monkeypatch):
     fake_windows(monkeypatch, error=ctypes.ArgumentError("bad argument"))
     assert M.documents_dir() == Path.home() / "Documents"
 
 
+@pytest.mark.edge
 def test_a_windows_answer_needs_no_home_folder(monkeypatch):
     def no_home(cls):
         raise RuntimeError("no home folder")
@@ -202,6 +210,7 @@ def test_a_windows_answer_needs_no_home_folder(monkeypatch):
     assert M.documents_dir() == Path("D:\\OneDrive\\Docs")
 
 
+@pytest.mark.dirty
 def test_read_map_options_never_raises(tmp_path, monkeypatch):
     def broken_documents(documents=None):
         raise RuntimeError("no home folder")

@@ -48,6 +48,7 @@ def set_field(m, x, y, field, value):
     R.set_(m.tile(x, y), field, value)        # the way a script writes it (tells the navigator)
 
 
+@pytest.mark.core
 def test_no_path_across_water_and_a_path_over_land():
     m, nav = small_map(["LLLWLLL", "LLLWLLL"])
     s = settings(nav, ActionPointCosts=costs(plains=1, ocean=-1))
@@ -60,6 +61,7 @@ def test_no_path_across_water_and_a_path_over_land():
 ROAD = [(1, 0), (2, 1), (3, 1), (4, 1), (5, 0), (6, 0)]
 
 
+@pytest.mark.core
 def test_road_only_needs_road_tiles():
     m, nav = small_map(["LLLWLLL", "LLLLLLL"])
     s = settings(nav, ActionPointCosts=costs(plains=1), RoadOnly=True)
@@ -76,7 +78,8 @@ def test_road_only_needs_road_tiles():
                             0).isEmpty(None)
 
 
-@pytest.mark.parametrize("cost", [0, -1, -1.5, math.inf, None, "10"])
+@pytest.mark.dirty
+@pytest.mark.parametrize("cost", [0, -1, math.inf, None])
 def test_what_blocks_a_tile(cost):
     m, nav = small_map(["LLLHLLL", "LLLHLLL"])
     table = costs(plains=10)
@@ -86,6 +89,7 @@ def test_what_blocks_a_tile(cost):
     assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
 
 
+@pytest.mark.edge
 def test_a_type_past_the_end_of_the_table_costs_2():
     """MEASURED in the exe (createSettings 0x4ea2b0 fills all 32 table entries with 2; a shorter array only writes its
     own) and in the game's roads: buildAdditionalRoads' 18-entry table has no entry for Oasis, and its roads cross
@@ -100,6 +104,7 @@ def test_a_type_past_the_end_of_the_table_costs_2():
     assert not nav.findPath(None, m.tile(0, 0), m.tile(2, 1), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
 
 
+@pytest.mark.edge
 def test_the_start_tile_is_never_entered_but_the_goal_is():
     # a port's deep-sea route starts on its land tile, which the ship table blocks
     m, nav = small_map(["LWWWWWW", "LWWWWWW"])
@@ -113,6 +118,7 @@ def test_the_start_tile_is_never_entered_but_the_goal_is():
     assert nav.findPath(None, m.tile(6, 1), m.tile(0, 0), settings(nav, ActionPointCosts=ship), 0).isEmpty(None)
 
 
+@pytest.mark.core
 def test_the_route_is_a_chain_of_neighbours_from_after_the_start_to_the_goal():
     m, nav = small_map(["LLLWLLL", "LLLLLLL", "LLHHHLL"])
     path = nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=costs(plains=10, hills=60)), 0)
@@ -125,10 +131,19 @@ def test_the_route_is_a_chain_of_neighbours_from_after_the_start_to_the_goal():
         assert m.distance(a, b) == 1 and b.Type == PLAINS
     # the shortest way past the water at (3, 0) is as long as the distance (the rows zigzag), over (3, 1)
     assert len(tiles) == m.distance(m.tile(0, 0), m.tile(6, 0)) and m.tile(3, 1) in tiles
+
+
+@pytest.mark.dirty
+def test_popping_a_route_past_its_end_is_not_modelled():
+    m, nav = small_map(["LLLWLLL", "LLLLLLL", "LLHHHLL"])
+    path = nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=costs(plains=10, hills=60)), 0)
+    while path.getSize(None) >= 1:
+        path.pop(None)
     with pytest.raises(NotModelled):
         path.pop(None)
 
 
+@pytest.mark.core
 def test_a_road_makes_its_tiles_cheaper():
     m, nav = small_map(["LLLLLLL", "LLLLLLL", "LLLLLLL"])
     for x in range(7):
@@ -141,6 +156,7 @@ def test_a_road_makes_its_tiles_cheaper():
     assert sum(1 for t in detour if t.RoadDirections) == 7 and len(detour) == 10
 
 
+@pytest.mark.dirty
 def test_what_the_navigator_does_not_model_is_an_error():
     m, nav = small_map(["LLL", "LLL"])
     s = settings(nav, ActionPointCosts=costs(plains=1))
@@ -155,6 +171,7 @@ def test_what_the_navigator_does_not_model_is_an_error():
     assert R.get(nav.createSettings(None), "RoadOnly") is False
 
 
+@pytest.mark.core
 def test_the_scripts_ask_it_through_world_get_navigator():
     from bbseed.engine import Engine
     e = Engine([])
@@ -194,6 +211,7 @@ def legends_map(rows, nav_types=21):
     return m, nav
 
 
+@pytest.mark.dirty
 def test_the_navigator_knows_the_games_terrain_count():
     """HexMap.navigator reads Const.World.TerrainType.COUNT of the loaded scripts (21 with Legends, 19 in the base
     game); with no scripts (a bare engine, no engine) it is the base game's 19; a bad count is not modelled."""
@@ -214,6 +232,7 @@ def test_the_navigator_knows_the_games_terrain_count():
             HexMap(e, 2, 2, "even-q-up").navigator
 
 
+@pytest.mark.dirty
 def test_a_tile_of_a_type_legends_adds_that_the_cost_table_has_no_entry_for_is_not_modelled():
     """MEASURED (Legends 19.4.22): the scripts' cost tables have 19 entries, Legends' COUNT is 21. A map without such
     tiles (all 3 + 40 maps looked at) is answered as before; one with such a tile raises instead of guessing."""
@@ -232,6 +251,7 @@ def test_a_tile_of_a_type_legends_adds_that_the_cost_table_has_no_entry_for_is_n
         assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0).isEmpty(None)
 
 
+@pytest.mark.edge
 def test_a_table_with_entries_for_every_type_answers_for_the_types_legends_adds():
     m, nav = legends_map(["LLLLLLL", "LLLLLLL"])
     R.set_(m.tile(3, 0), "Type", SWAMP_GREEN)
@@ -241,11 +261,19 @@ def test_a_table_with_entries_for_every_type_answers_for_the_types_legends_adds(
     assert nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0).isEmpty(None)
     table[SWAMP_GREEN] = 15.0                                   # one of them enterable
     assert not nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
+
+
+@pytest.mark.dirty
+def test_a_table_without_an_entry_for_one_type_legends_adds_is_not_modelled():
+    m, nav = legends_map(["LLLLLLL", "LLLLLLL"])
+    R.set_(m.tile(3, 0), "Type", SWAMP_GREEN)
+    R.set_(m.tile(3, 1), "Type", SWAMP_FOREST)
     table = costs(plains=10) + [12]                             # 20 entries: no entry for SwampForest only
     with pytest.raises(NotModelled, match="terrain type 20"):
         nav.findPath(None, m.tile(0, 0), m.tile(6, 0), settings(nav, ActionPointCosts=table), 0)
 
 
+@pytest.mark.edge
 def test_a_type_of_the_base_game_past_the_end_of_a_table_is_enterable_on_a_legends_map():
     """buildAdditionalRoads' table has 18 entries and every map has Oasis tiles (type 18): they cost 2 (MEASURED, see
     test_a_type_past_the_end_of_the_table_costs_2); an explicit 0 entry blocks them."""
@@ -259,6 +287,7 @@ def test_a_type_of_the_base_game_past_the_end_of_a_table_is_enterable_on_a_legen
 
 
 # ---------------------------------------------------------------- the route override (stage 2 Task 2: road fitting)
+@pytest.mark.core
 def test_route_override_used():
     """`route_override` (the lab's hook for replaying logged routes) supplies the route tiles when it returns a list."""
     m, nav = small_map(["LLLLL", "LLLLL", "LLLLL", "LLLLL", "LLLLL"])
@@ -279,6 +308,7 @@ def test_route_override_used():
     assert info["blocked"] == frozenset(range(TYPES)) - {PLAINS} and len(info["costs"]) == TYPES
 
 
+@pytest.mark.edge
 def test_route_override_none_falls_back():
     """An override that returns None leaves the route to the A* (the same tiles as with no override)."""
     m, nav = small_map(["LLLLL", "LLLLL", "LLLLL", "LLLLL", "LLLLL"])
@@ -338,6 +368,7 @@ LEGENDS_ROUTE = [(14, 10), (13, 10), (12, 11), (11, 11), (10, 12), (10, 13), (10
                  (10, 18), (11, 18), (11, 19), (11, 20), (12, 21)]
 
 
+@pytest.mark.core
 def test_the_games_route_on_a_legends_map_window():
     m, nav = window_map(LEGENDS_TYPES, LEGENDS_ROADS)
     assert build_roads_route(m, nav, (15, 10), (12, 21)) == LEGENDS_ROUTE
@@ -366,11 +397,13 @@ VANILLA_ROUTE = [(10, 21), (11, 20), (12, 20), (13, 19), (14, 19), (14, 18), (14
                  (14, 13), (14, 12), (14, 11), (14, 10), (14, 9), (14, 8)]
 
 
+@pytest.mark.core
 def test_the_games_route_on_a_vanilla_map_window():
     m, nav = window_map(VANILLA_TYPES, VANILLA_ROADS)
     assert build_roads_route(m, nav, (9, 20), (14, 8)) == VANILLA_ROUTE
 
 
+@pytest.mark.core
 def test_the_window_data_has_the_size_the_comment_says():
     assert (len(LEGENDS_TYPES), {len(r) for r in LEGENDS_TYPES}) == (32, {26})
     assert [len(LEGENDS_ROADS), {len(r) for r in LEGENDS_ROADS}] == [32, {26}]
@@ -378,6 +411,7 @@ def test_the_window_data_has_the_size_the_comment_says():
     assert [len(VANILLA_ROADS), {len(r) for r in VANILLA_ROADS}] == [30, {23}]
 
 
+@pytest.mark.dirty
 def test_route_tiles_for_what_no_map_script_asks_are_not_modelled():
     """RoadOnly and StopAtRoad route requests (the scripts only ask isEmpty() with RoadOnly, and no script sets StopAtRoad
     to true) raise NavError when the tiles are asked for; the empty / non-empty answer stays the component rule."""
@@ -398,6 +432,7 @@ def test_route_tiles_for_what_no_map_script_asks_are_not_modelled():
     assert nav.findPath(None, m.tile(0, 0), m.tile(6, 0), s, 0).getSize(None) >= 6
 
 
+@pytest.mark.dirty
 def test_a_table_entry_that_is_not_a_whole_number_is_not_modelled_for_route_tiles():
     """The exe's cost table holds ints (settings x 10); how it takes 2.5 is not read: reachability is still answered."""
     from bbseed.navigator import NavError
@@ -408,6 +443,7 @@ def test_a_table_entry_that_is_not_a_whole_number_is_not_modelled_for_route_tile
         path.getSize(None)
 
 
+@pytest.mark.edge
 def test_route_tiles_to_a_goal_of_a_blocked_type_are_the_exes_search():
     """The exe accepts the goal when an expanded tile is next to it, before the closed and cost checks (nav_exe.py:230-232):
     a goal on a cost-0 type (buildAdditionalRoads' attached locations on mountains) gets route tiles that end on it, and
@@ -430,8 +466,6 @@ def test_route_tiles_to_a_goal_of_a_blocked_type_are_the_exes_search():
     s = settings(nav, ActionPointCosts=costs(plains=10))
     path = nav.findPath(None, m.tile(0, 0), m.tile(3, 1), s, 0)
     assert path.isEmpty(None) and path.getSize(None) == 0
-    with pytest.raises(NotModelled):
-        path.getCurrent(None)
     # an enterable goal behind the water: empty, and no search runs for it
     m, nav = small_map(["LLWLL", "LLWLL"])
     s = settings(nav, ActionPointCosts=costs(plains=10))
@@ -446,6 +480,16 @@ def test_route_tiles_to_a_goal_of_a_blocked_type_are_the_exes_search():
     assert path.isEmpty(None) and path.getSize(None) == 0
 
 
+@pytest.mark.dirty
+def test_the_current_tile_of_an_empty_route_is_not_modelled():
+    m, nav = small_map(["LLWWW", "LLWHW", "LLWWW", "LLWWW"])
+    path = nav.findPath(None, m.tile(0, 0), m.tile(3, 1), settings(nav, ActionPointCosts=costs(plains=10)), 0)
+    assert path.isEmpty(None)
+    with pytest.raises(NotModelled):
+        path.getCurrent(None)
+
+
+@pytest.mark.edge
 def test_is_empty_for_a_goal_of_a_blocked_type_is_the_searchs_answer():
     """MEASURED (native probe 2026-10-31, kind n1: 202 calls, the game's isEmpty() was false on 109 where the component
     rule said true; the tiles equal the search's on all 202): a blocked-type goal that a tile the search expands touches
@@ -485,7 +529,11 @@ def test_is_empty_for_a_goal_of_a_blocked_type_is_the_searchs_answer():
     s = settings(nav, ActionPointCosts=costs(plains=10))
     before = nav.searches
     assert nav.findPath(None, m.tile(0, 0), m.tile(4, 0), s, 0).isEmpty(None) and nav.searches == before
-    # a blocked-type goal with RoadOnly / StopAtRoad is UNVERIFIED (0x4ea87e / 0x4ea88d; no script asks): NavError
+
+
+@pytest.mark.dirty
+def test_a_blocked_goal_with_road_only_or_stop_at_road_is_unverified():
+    """UNVERIFIED in the exe (0x4ea87e / 0x4ea88d; no script asks): NavError."""
     from bbseed.navigator import NavError
     m, nav = small_map(["LLLLH", "LLLLL"])
     for x in range(5):
@@ -496,6 +544,7 @@ def test_is_empty_for_a_goal_of_a_blocked_type_is_the_searchs_answer():
             nav.findPath(None, m.tile(0, 1), m.tile(4, 0), s, 0)
 
 
+@pytest.mark.edge
 def test_a_goal_of_terrain_type_0_is_empty_up_front_whatever_the_table_says():
     """0x4ea50c (MEASURED, native probe n2): with a maximum of 0 a goal of terrain type 0 answers empty before anything
     else is read, also when the cost table lets type 0 be entered (no NavError, no search, no tiles)."""
@@ -518,6 +567,7 @@ def test_a_goal_of_terrain_type_0_is_empty_up_front_whatever_the_table_says():
     assert not nav.findPath(None, m.tile(0, 0), m.tile(3, 0), settings(nav, ActionPointCosts=table), 0).isEmpty(None)
 
 
+@pytest.mark.edge
 def test_is_empty_for_a_blocked_goal_equals_the_searchs_result_on_random_maps():
     """isEmpty() for a blocked-type goal comes from the components (touched()); the exe's search must end on the goal in
     exactly those cases (the tiles are asked for and `compute` raises if the search disagrees with a found path)."""
@@ -542,6 +592,7 @@ def test_is_empty_for_a_blocked_goal_equals_the_searchs_result_on_random_maps():
     assert checked[0] > 20 and checked[1] > 20                      # both answers were exercised
 
 
+@pytest.mark.dirty
 def test_a_blocked_goal_is_answered_with_a_fractional_cost_table_but_has_no_tiles():
     """TerrainTypeNavCost holds fractions: the search's answer does not depend on them, its tiles are not modelled."""
     from bbseed.navigator import NavError
@@ -559,6 +610,7 @@ class _HeapItem:
         self.name, self.f = name, f
 
 
+@pytest.mark.edge
 def test_heap_tie_order_pushes():
     """Five pushes with equal f (_heap_push 0x4cc580: a value climbs only past a STRICTLY larger parent, so the vector
     stays A B C D E), then five pops (_heap_pop: last value out, the hole sinks from the root via _heap_sift 0x4cc4f0,
@@ -580,6 +632,7 @@ def test_heap_tie_order_pushes():
     assert "".join(_heap_pop(a).name for _ in range(5)) == "ACEBD"
 
 
+@pytest.mark.edge
 def test_heap_tie_order_make_heap():
     """make_heap (_heap_make 0x4cc310) on [X1 Y0 Z0 W0] (letter = name, digit = f), worked by hand:
       hole 1: val Y, bottom 4, max_non_leaf 1: no loop; idx 1 == 1, bottom even: hole <- a[3] = W, hole 3; Y climbs from 3

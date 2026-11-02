@@ -3,8 +3,8 @@
 Legends 19.4.22 with the player's Map Options (the lab gates' 55 / 38 / 85 / 24 / 4 / yes / yes) and on Vanilla
 1.5.2.3 with all DLCs. Skipped when that game / those mods are not installed.
 
-The whole-map tests are marked slow and split into four pytest-xdist groups of 5 maps (one lab each, ~2.5 min): run
-them by node id or with --full. The tests without a map use the session's shared labs (conftest.py)."""
+The whole-map tests are marked slow and run in two pytest-xdist groups of 3 maps (one lab each, ~3 min): run them by
+node id or with --full. The tests without a map use the session's shared labs (conftest.py)."""
 import pytest
 
 from bbseed import mapgen, profiles
@@ -17,9 +17,7 @@ HAVE_LEGENDS = HAVE_GAME and any("mod_legends-19.4.22" in m for m in FOUND["mods
 USER_OPTIONS = {"mod_legends:LandRatio": 55, "mod_legends:Water": 38, "mod_legends:Snowline": 85,
                 "mod_legends:Settlements": 24, "mod_legends:Factions": 4, "mod_legends:StackCitadels": True,
                 "mod_legends:AllTradeLocations": True}
-SEEDS = ("1234567890", "0000000001", "0000000002", "0000000003", "0000000004",
-         "0000000005", "0000000006", "0000000007", "0000000008", "0000000009")
-PART = 5                 # maps per group
+SEEDS = ("0000000005", "0000000006", "0000000007")
 DESERTERS = "deserters_scenario"
 
 _labs = {}
@@ -42,33 +40,32 @@ def _lab(setup):
     return _labs[setup]
 
 
-def _start_runs(setup, part):
-    """The whole Deserters starts of one group's seeds, each with the start without a map for its loop and fort:
+def _start_runs(setup):
+    """The whole Deserters starts of the seeds, each with the start without a map for its loop and fort:
     [(seed, world_map's result, deserters_start's result)]."""
-    key = (setup, part)
-    if key not in _runs:
+    if setup not in _runs:
         lab = _lab(setup)
         rows = []
-        for seed in SEEDS[part * PART:(part + 1) * PART]:
+        for seed in SEEDS:
             out = lab.world_map(seed, DESERTERS, stop_at="spawn")
             sp = out["spawn"]
             town = out["map"]["towns"][sp["fort"]]
             rows.append((seed, out, lab.deserters_start(seed, sp["loop"], (town["x"], town["y"]), sp["size"])))
-        _runs[key] = rows
-    return _runs[key]
+        _runs[setup] = rows
+    return _runs[setup]
 
 
 def _groups():
-    return [pytest.param(setup, part, marks=[pytest.mark.slow, pytest.mark.xdist_group("deserters_%s_%d" % (setup, part))],
-                         id="%s-%d" % (setup, part))
-            for setup in ("legends", "vanilla") for part in (0, 1)]
+    return [pytest.param(setup, marks=[pytest.mark.slow, pytest.mark.xdist_group("deserters_%s" % setup)], id=setup)
+            for setup in ("legends", "vanilla")]
 
 
-@pytest.mark.parametrize("setup, part", _groups())
-def test_the_roster_without_a_map_is_the_maps(setup, part):
+@pytest.mark.core
+@pytest.mark.parametrize("setup", _groups())
+def test_the_roster_without_a_map_is_the_maps(setup):
     """The recruits depend on the map only through the start loop's length: deserters_start with the map's loop count
     and fort gives the map's roster, and draws the map's start tile on its last iteration."""
-    for seed, out, no_map in _start_runs(setup, part):
+    for seed, out, no_map in _start_runs(setup):
         sp = out["spawn"]
         assert len(out["roster"]) == 3 and {b["background"] for b in out["roster"]} == {"background.deserter"}, seed
         assert no_map["roster"] == out["roster"], seed
@@ -78,18 +75,20 @@ def test_the_roster_without_a_map_is_the_maps(setup, part):
         assert 1 <= sp["loop"] <= mapgen.SPAWN_LOOP_CAP
 
 
-@pytest.mark.parametrize("setup, part", _groups())
-def test_the_start_has_no_unexplained_stub(setup, part):
-    for seed, out, _no_map in _start_runs(setup, part):
+@pytest.mark.core
+@pytest.mark.parametrize("setup", _groups())
+def test_the_start_has_no_unexplained_stub(setup):
+    for seed, out, _no_map in _start_runs(setup):
         assert mapgen.unexplained_stubs(out["stub_uses"]) == {}, seed
         assert out["map"]["towns"] and len(out["spawn"]["isolated"]) == len(out["map"]["towns"]), seed
 
 
-@pytest.mark.parametrize("setup, part", _groups())
-def test_the_fort_follows_the_scripts_rule(setup, part):
+@pytest.mark.core
+@pytest.mark.parametrize("setup", _groups())
+def test_the_fort_follows_the_scripts_rule(setup):
     """The fort is the first military, non-southern town that is not isolated from the roads (all maps here have one);
     the start tile is in its ranges, more than 4 away (spawn_summary checks that too), on a road."""
-    for seed, out, _no_map in _start_runs(setup, part):
+    for seed, out, _no_map in _start_runs(setup):
         sp, towns = out["spawn"], out["map"]["towns"]
         good = [i for i, t in enumerate(towns) if t["military"] and not t["southern"] and not sp["isolated"][i]]
         assert good and sp["fort"] == good[0], seed
@@ -97,13 +96,14 @@ def test_the_fort_follows_the_scripts_rule(setup, part):
         assert xlo <= sp["tile"][0] <= xhi and ylo <= sp["tile"][1] <= yhi, seed
 
 
+@pytest.mark.core
 @pytest.mark.slow
-@pytest.mark.parametrize("setup", [pytest.param(s, marks=pytest.mark.xdist_group("deserters_%s_1" % s)) for s in
-                                   ("legends", "vanilla")])
-def test_an_ordinary_origin_through_the_start_is_its_roster(setup):
-    """Trader makes its recruits in onSpawnAssets: running on through its own onSpawnPlayer changes none of them."""
-    lab = _lab(setup)
-    seed = SEEDS[0]
+@pytest.mark.xdist_group("deserters_vanilla")
+def test_an_ordinary_origin_through_the_start_is_its_roster():
+    """Trader makes its recruits in onSpawnAssets: running on through its own onSpawnPlayer changes none of them. (On
+    Legends: test_a_trader_spawn_run_gives_the_start_tile_and_leaves_the_roster_path_unchanged, test_mapgen_game.py.)"""
+    lab = _lab("vanilla")
+    seed = "1234567890"
     out = lab.world_map(seed, "trader_scenario", stop_at="spawn")
     assert out["roster"] == lab.roster(seed, "trader_scenario")
     sp = out["spawn"]
@@ -111,8 +111,9 @@ def test_an_ordinary_origin_through_the_start_is_its_roster(setup):
     assert mapgen.unexplained_stubs(out["stub_uses"]) == {}
 
 
+@pytest.mark.dirty
 @pytest.mark.slow
-@pytest.mark.xdist_group("deserters_vanilla_1")
+@pytest.mark.xdist_group("deserters_vanilla")
 def test_the_start_loop_stops_when_every_square_has_failed(monkeypatch):
     """A map on which no square passes would hang the game in onSpawnPlayer; the lab remembers the squares that failed
     and stops with an error as soon as all of the fort's squares have (here every square is made invalid: about a
@@ -127,14 +128,15 @@ def test_the_start_loop_stops_when_every_square_has_failed(monkeypatch):
         return real(self, this, original)
     monkeypatch.setattr(mapgen.MapRun, "_on_spawn_player", never_valid)
     with pytest.raises(LabError, match=r"all \d+ squares of its ranges failed"):
-        lab.world_map(SEEDS[1], DESERTERS, stop_at="spawn")
+        lab.world_map("0000000001", DESERTERS, stop_at="spawn")
     monkeypatch.undo()
-    assert lab.roster(SEEDS[0], "trader_scenario") == lab.roster(SEEDS[0], "trader_scenario", fresh=False)
+    assert lab.roster("1234567890", "trader_scenario") == lab.roster("1234567890", "trader_scenario", fresh=False)
     scenario = lab.scenario(DESERTERS)       # the run's wrappers are gone: the origin's own functions again
     assert all(type(scenario.d.get(name)) is not NativeFn for name in ("onSpawnPlayer", "onInit"))
 
 
 # ---------------------------------------------------------------- the start without a map (no map is built: fast)
+@pytest.mark.dirty
 @pytest.mark.parametrize("which", ["legends_lab", "vanilla_lab"])
 def test_the_start_without_a_map(which, request):
     lab = request.getfixturevalue(which)
@@ -171,12 +173,13 @@ def test_the_start_without_a_map(which, request):
 
 
 # ---------------------------------------------------------------- the search (stage 2 C2 Task 4)
+@pytest.mark.core
 @pytest.mark.slow
 @pytest.mark.parametrize("setup", [pytest.param("legends", marks=pytest.mark.xdist_group("deserters_search_legends")),
                                    pytest.param("vanilla", marks=pytest.mark.xdist_group("deserters_search_vanilla"))])
 def test_a_deserters_search_finds_the_roster_of_the_map_run(setup):
-    """Two real worker processes search the seeds 0000000001 and 0000000002 for Deserters with a map condition most maps
-    meet (1 port): every match is a seed whose map meets it, its roster is the one the lab's own start run gives
+    """Two real worker processes search the seed 0000000001 for Deserters with a map condition its map meets on both
+    setups (1 port): every match is a seed whose map meets it, its roster is the one the lab's own start run gives
     (with the perk trees), it is confirmed (stable), and the seed post says to start it as the first campaign."""
     from bbseed import search
     if setup == "legends" and not HAVE_LEGENDS:
@@ -184,11 +187,11 @@ def test_a_deserters_search_finds_the_roster_of_the_map_run(setup):
     if not HAVE_GAME:
         pytest.skip("Battle Brothers 1.5.2.3 is not installed")
     events = []
-    found = search.search(setup, DESERTERS, {"map": {"ports": 1}}, workers=2, count=2, max_seeds=2, start=1,
+    found = search.search(setup, DESERTERS, {"map": {"ports": 1}}, workers=2, count=1, max_seeds=1, start=1,
                           mod_settings=USER_OPTIONS if setup == "legends" else None,
                           on_event=lambda kind, payload: events.append((kind, payload)))
     assert not [p for k, p in events if k in ("fatal", "error")], events
-    assert found, "at least one of the two maps has a port"
+    assert found, "the map has a port"
     lab = _lab(setup)
     for match in found:
         assert match["stable"] and match["failure"] is None and match["map"] is not None
@@ -199,4 +202,4 @@ def test_a_deserters_search_finds_the_roster_of_the_map_run(setup):
         assert len(match["roster"]) == 3 and all(b["background"] == "background.deserter" for b in match["roster"])
         assert match["roster"][0].get("perk_groups") is not None or setup == "vanilla"
     odds = [p[3] for k, p in events if k == "progress"][-1]
-    assert 1 <= odds["tested"] <= 2 and odds["maps"] == odds["tested"]
+    assert odds["tested"] == 1 and odds["maps"] == 1

@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from bbseed.sq.vm import VM
@@ -16,6 +18,7 @@ def run(src):
     return out
 
 
+@pytest.mark.core
 def test_arithmetic_and_types():
     assert run('print(7 / 2); print(-7 / 2); print(7 % 3); print(-7 % 3); print(7 / 2.0); print(1 + 2.5)') == \
         ["3", "-3", "1", "-1", "3.5", "3.5"]
@@ -25,6 +28,7 @@ def test_arithmetic_and_types():
         ["true", "a12.5", "0.3", "1e+07"]
 
 
+@pytest.mark.core
 def test_locals_closures_and_loops():
     src = '''
     local fns = [];
@@ -40,6 +44,7 @@ def test_locals_closures_and_loops():
     assert run(src) == ["0", "10", "20", "2", "12", "5"]
 
 
+@pytest.mark.core
 def test_tables_this_and_root_fallback():
     src = '''
     ::G <- 5;
@@ -53,6 +58,7 @@ def test_tables_this_and_root_fallback():
     assert run(src) == ["6", "5", "true", "false", "12", "false", "42", "true"]
 
 
+@pytest.mark.core
 def test_switch_ternary_logic():
     src = '''
     local function f(x) { switch (x) { case 1: return "one"; case 2: case 3: return "few"; default: return "many"; } }
@@ -62,6 +68,7 @@ def test_switch_ternary_logic():
     assert run(src) == ["onefewmany", "dflt", "0", "y"]
 
 
+@pytest.mark.core
 def test_strings_arrays_format():
     src = '''
     local s = "Hello World";
@@ -76,6 +83,7 @@ def test_strings_arrays_format():
                         "123", "3", "4", "9", "2", "7", "6", "2", "6", "true"]
 
 
+@pytest.mark.core
 def test_classes():
     src = '''
     class Animal { name = null; constructor(n) { this.name = n; } function speak() { return name + " makes a sound"; } }
@@ -87,6 +95,7 @@ def test_classes():
     assert run(src) == ["Rex barks", "true", "instance", "Box(3)"]
 
 
+@pytest.mark.core
 def test_function_helpers_and_varargs():
     src = '''
     local function sum(...) { local t = 0; foreach (v in vargv) t += v; return t; }
@@ -97,6 +106,7 @@ def test_function_helpers_and_varargs():
     assert run(src) == ["6", "9", "2", "7", "11", "3"]
 
 
+@pytest.mark.edge
 def test_tail_call_replaces_frame_for_getstackinfos():
     src = '''
     local function who() { return getstackinfos(2).func; }
@@ -107,6 +117,7 @@ def test_tail_call_replaces_frame_for_getstackinfos():
     assert run(src) == ["outer"]
 
 
+@pytest.mark.dirty
 def test_errors_are_catchable():
     src = '''
     try { local t = {}; t.missing.x = 1; } catch (e) { print(e); }
@@ -116,6 +127,7 @@ def test_errors_are_catchable():
     assert run(src) == ["the index 'missing' does not exist", "boom", "string"]
 
 
+@pytest.mark.edge
 def test_weird_assignment_in_condition_is_accepted():
     # Legends' hunter_building.nut has `else if (typeof _m = "integer")`.
     assert run('local m = 5; if (typeof m = "integer") print("ok");') == ["ok"]
@@ -123,6 +135,7 @@ def test_weird_assignment_in_condition_is_accepted():
 
 # --- bug fixes after stage 2 (a player's 4.2.0 report) -------------------------------------------------------
 
+@pytest.mark.edge
 def test_call_arguments_may_omit_the_comma():
     # B-1: stdlib/packer.nut:103 calls `cset(op.mint op.integer)`; Squirrel 3.0 FunctionCallArgs takes the comma as optional.
     src = '''
@@ -137,6 +150,7 @@ def test_call_arguments_may_omit_the_comma():
     assert run(src) == ["1;2;", "1;2;", "1;2;3;", "1;2;3;4;", "a;b;", "", "7"]
 
 
+@pytest.mark.dirty
 def test_call_arguments_with_a_trailing_comma_stay_an_error():
     # Squirrel: "expression expected, found ')'" for `f(1,)` (the array literals accept a trailing comma, calls do not)
     import pytest
@@ -147,6 +161,7 @@ def test_call_arguments_with_a_trailing_comma_stay_an_error():
     assert run("local a = [1, 2,]; print(a.len());") == ["2"]
 
 
+@pytest.mark.edge
 def test_vargv_in_nested_functions():
     # B-2: Clever Recruiter does `vargv.insert(0, this)` and then `@() __original.acall(vargv)`; vargv is a local of the
     # vararg function in Squirrel 3.0, so a nested function sees it as an outer variable (the same list object).
@@ -166,6 +181,7 @@ def test_vargv_in_nested_functions():
     assert run(src) == ["4;first4;4", "7"]
 
 
+@pytest.mark.edge
 def test_vargv_assignment_and_scope():
     src = '''
     local function a(...) { vargv = [5, 6]; return vargv.len(); }

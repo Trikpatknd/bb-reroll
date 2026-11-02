@@ -1,8 +1,11 @@
 """bbreroll/criteria.py — the criteria the GUI hands to the search, and the pre-search checks."""
+import pytest
+
 from bbreroll import criteria as C
 from bbseed.search import first_failure, normalize
 
 
+@pytest.mark.core
 def test_default_criteria_are_fresh_copies_of_the_default_lists():
     a, b = C.default_criteria(), C.default_criteria()
     assert a == b and a["banned"] is not b["banned"]
@@ -11,6 +14,7 @@ def test_default_criteria_are_fresh_copies_of_the_default_lists():
     assert not set(C.DEFAULT_BANNED) & set(C.DEFAULT_REQUIRED)
 
 
+@pytest.mark.core
 def test_trivial_criteria_match_everything():
     assert C.is_trivial({"stars_by_slot": {"*": {}}, "banned": [], "required": []})
     assert not C.is_trivial({"stars_by_slot": {"*": {}, "2": {"msk": 1}}, "banned": [], "required": []})
@@ -18,6 +22,7 @@ def test_trivial_criteria_match_everything():
     assert not C.is_trivial(C.default_criteria())
 
 
+@pytest.mark.core
 def test_the_search_accepts_the_gui_criteria_as_they_are():
     gui = {"stars_by_slot": {"*": {"hp": 1}, "2": {"msk": 2}}, "banned": ["dumb"], "required": ["brave", "tough"],
            "required_mode": "any"}
@@ -30,6 +35,7 @@ def test_the_search_accepts_the_gui_criteria_as_they_are():
     assert first_failure([{"stars": dict(zero, hp=1), "traits": ["brave", "dumb"]}, good[1]], crit) is not None
 
 
+@pytest.mark.dirty
 def test_number_checks():
     ok = {"Max seeds": 100000, "Stop after matches": 3, "Workers": 4}
     assert C.number_errors(ok, cpu_threads=8) == []
@@ -40,6 +46,7 @@ def test_number_checks():
     assert C.to_int(" 42 ") == 42 and C.to_int("4.5") is None and C.to_int("") is None
 
 
+@pytest.mark.dirty
 def test_trait_names_typed_by_the_player():
     assert C.sanitize_trait("Iron Lungs") == "iron_lungs"
     assert C.sanitize_trait("  legend-Heavy! ") == "legend_heavy"
@@ -48,6 +55,7 @@ def test_trait_names_typed_by_the_player():
     assert C.id_to_display("iron_jaw") == "Iron Jaw"
 
 
+@pytest.mark.core
 def test_roster_lines():
     bro = {"name": "Musa the Merchant", "background_name": "Background: Merchant",
            "stars": dict(dict.fromkeys(C.STATS, 0), res=3, msk=1), "trait_names": ["Bleeder", "Spartan"]}
@@ -58,6 +66,7 @@ def test_roster_lines():
     ]
 
 
+@pytest.mark.core
 def test_failure_reasons_read_as_sentences():
     assert C.explain_failure("bro2 msk*1<2") == "Brother 2 has 1 MSK stars. The minimum is 2."
     assert C.explain_failure("bro1 hp roll mid<high") == "The HP roll of brother 1 is mid. The minimum is high."
@@ -68,6 +77,7 @@ def test_failure_reasons_read_as_sentences():
     assert C.explain_failure("something else") == "something else"
 
 
+@pytest.mark.core
 def test_map_failures_read_as_sentences():
     """Final review M9: a checked seed's map failure (mapgen.failure) reads like the brothers' failures, for every
     form failure() can return: the three port counts and the five town types."""
@@ -86,6 +96,7 @@ def test_map_failures_read_as_sentences():
     assert C.explain_failure("Note: 2 maps, needs more") == "Note: 2 maps, needs more"
 
 
+@pytest.mark.dirty
 def test_a_map_that_could_not_be_built_reads_as_a_sentence():
     """Final review M3: the failure text a checked seed gets when its map run failed (mapgen.MAP_NOT_BUILT + reason)."""
     from bbseed.mapgen import MAP_NOT_BUILT

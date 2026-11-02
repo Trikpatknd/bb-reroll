@@ -3,7 +3,7 @@
 On 2026-10-19 the game (Battle Brothers 1.5.2.3, Legends 19.4.22, MSU 1.9.0, Modern Hooks 0.6.0) started 40 Trader
 campaigns by itself and logged every generated map (bb_seedlab tools/verify_template.nut, map jobs; the comparison
 is bb_seedlab tools/map_compare.py and MODLOG "CHECKPOINT B"). In all 40 the lab's towns and its terrain before
-buildRoads were the game's. Two of those seeds are pinned here:
+buildRoads were the game's. Two of those seeds are pinned here (the lab's gate compares all 40):
 
 - the towns: every VERIFIED field (script, x, y, size, name, port = the town's IsCoastal, southern, military), in
   the order the scripts created them. The values are the GAME's log rows, so this pin is game truth. The names of
@@ -142,18 +142,21 @@ def _verified(town):
             town["port"], town["southern"], town["military"])
 
 
+@pytest.mark.core
 @pytest.mark.slow
 @pytest.mark.parametrize("seed", sorted(GAME_TOWNS))
 def test_towns_are_the_games(maps, seed):
     assert [_verified(t) for t in maps[seed]["towns"]] == GAME_TOWNS[seed]
 
 
+@pytest.mark.core
 @pytest.mark.slow
 @pytest.mark.parametrize("seed", sorted(GAME_TOWNS))
 def test_land_and_sea_attempts_are_the_games(maps, seed):
     assert maps[seed]["attempts"] == GAME_ATTEMPTS[seed]
 
 
+@pytest.mark.core
 @pytest.mark.slow
 @pytest.mark.parametrize("seed", sorted(GAME_TOWNS))
 def test_terrain_lab_regression(maps, seed):

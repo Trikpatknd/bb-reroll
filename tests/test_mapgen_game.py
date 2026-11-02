@@ -11,17 +11,6 @@ HAVE_GAME = FOUND is not None and FOUND["game_version"] == "1.5.2.3"
 HAVE_LEGENDS = HAVE_GAME and any("mod_legends-19.4.22" in m for m in FOUND["mods"]) and any("1.9.0" in m for m in FOUND["mods"])
 
 
-@pytest.mark.slow
-def test_legends_map_reaches_world_accepted(legends_lab):
-    out = legends_lab.world_map("1234567890", stop_at="accepted")
-    lands = [l for l in out["log"] if l.startswith("Land Ocean ratio")]
-    assert lands and out["log"][-1] == "World accepted."
-    assert out["draws"] > 140 * 170          # one land/sea draw per tile at least
-    needed = {"getTileSquare", "getNextTile", "hasNextTile", "getSurroundingTilesOfType", "spawnDetail", "setBrush"}
-    assert not {n for (_k, n) in out["stub_uses"]} & needed      # modelled, not stubbed
-    assert "map" not in out          # the summary is of a whole map: no towns exist at this stop
-
-
 def _natives(eng):
     """The natives a map run replaces while it runs: ::World's, ::Math's and the root table's."""
     from bbseed.sq.runtime import NativeFn
@@ -29,25 +18,22 @@ def _natives(eng):
             for k, v in table.d.items() if type(v) is NativeFn}
 
 
+@pytest.mark.edge
 @pytest.mark.slow
 def test_world_map_leaves_roster_path_unchanged(legends_lab):
+    """The search's sift loop reuses the world state (fresh=False); a map run must not leave it a
+    half-started campaign."""
     before = legends_lab.roster("1234567890", "trader_scenario", fresh=True)
+    fresh = legends_lab.roster("0000000001", "trader_scenario", fresh=True)
     natives, world_keys = _natives(legends_lab.lab.eng), set(legends_lab.lab.eng.World.d)
     legends_lab.world_map("1234567890", stop_at="accepted")
     assert _natives(legends_lab.lab.eng) == natives and set(legends_lab.lab.eng.World.d) == world_keys, \
         "the run takes its natives (tiles, seed wrappers, top bar ...) away again"
+    assert legends_lab.roster("0000000001", "trader_scenario", fresh=False) == fresh
     assert legends_lab.roster("1234567890", "trader_scenario", fresh=True) == before
 
 
-@pytest.mark.slow
-def test_a_sift_roster_after_a_map_is_the_fresh_one(legends_lab):
-    """The search's sift loop reuses the world state (fresh=False); a map run must not leave it a
-    half-started campaign."""
-    fresh = legends_lab.roster("0000000001", "trader_scenario", fresh=True)
-    legends_lab.world_map("1234567890", stop_at="accepted")
-    assert legends_lab.roster("0000000001", "trader_scenario", fresh=False) == fresh
-
-
+@pytest.mark.edge
 @pytest.mark.slow
 def test_a_spawn_run_leaves_the_roster_path_unchanged(legends_lab):
     """A run on through the start (Deserters: the recruits are made in onSpawnPlayer and read from the player roster)
@@ -63,11 +49,14 @@ def test_a_spawn_run_leaves_the_roster_path_unchanged(legends_lab):
     assert legends_lab.roster("0000000001", "trader_scenario", fresh=True) == fresh
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_a_trader_spawn_run_gives_the_start_tile_and_leaves_the_roster_path_unchanged(legends_lab):
     """Stage 2 C1: the party's square of ANY origin is in the map summary ("start"), on land and not on a town. The
-    run takes everything it put in place away again (as the Deserters run does)."""
+    run takes everything it put in place away again (as the Deserters run does). Trader makes its recruits in
+    onSpawnAssets: running on through its own onSpawnPlayer changes none of them."""
     from bbseed import mapdraw
+    from bbseed.mapgen import unexplained_stubs
     fresh = legends_lab.roster("0000000001", "trader_scenario", fresh=True)
     natives, world_keys = _natives(legends_lab.lab.eng), set(legends_lab.lab.eng.World.d)
     out = legends_lab.world_map("1234567890", "trader_scenario", stop_at="spawn", blackmarket=0)
@@ -77,11 +66,16 @@ def test_a_trader_spawn_run_gives_the_start_tile_and_leaves_the_roster_path_unch
     assert m["terrain"][y * m["size"][0] + x] not in "OC", "the party does not start in the sea or on the shore"
     assert (x, y) not in [(t["x"], t["y"]) for t in m["towns"]]
     assert 'class="start"' in mapdraw.svg(m, verified=True) and 'class="start"' not in mapdraw.svg(m)
+    sp = out["spawn"]
+    assert sp["fort"] is sp["loop"] is sp["draws"] is None and sp["tile"] is not None
+    assert not unexplained_stubs(out["stub_uses"])
     assert _natives(legends_lab.lab.eng) == natives and set(legends_lab.lab.eng.World.d) == world_keys
     assert legends_lab.roster("0000000001", "trader_scenario", fresh=False) == fresh
     assert legends_lab.roster("0000000001", "trader_scenario", fresh=True) == fresh
+    assert out["roster"] == legends_lab.roster("1234567890", "trader_scenario")
 
 
+@pytest.mark.edge
 @pytest.mark.slow
 def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
     """The tile world is reused between maps (blanked, not rebuilt): nothing of one map may leak into the
@@ -91,6 +85,9 @@ def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
     assert legends_lab.world_map("0000000002", stop_at="accepted", layout=other)["log"][-1] == "World accepted."
     first = legends_lab.world_map("1234567890", stop_at="accepted")
     again = legends_lab.world_map("1234567890", stop_at="accepted")
+    assert [l for l in first["log"] if l.startswith("Land Ocean ratio")] and first["log"][-1] == "World accepted."
+    assert first["draws"] > 140 * 170          # one land/sea draw per tile at least
+    assert "map" not in first and "probe" not in first      # no towns exist at this stop; only a whole map has these
     assert again["log"] == first["log"] and again["draws"] == first["draws"]
     # this run's stub uses only (the engine's total since start-up is never empty): up to "World accepted."
     # every native is modelled or an explained no-op
@@ -98,12 +95,11 @@ def test_a_map_does_not_depend_on_the_maps_made_before(legends_lab):
 
 
 # ---------------------------------------------------------------- whole maps (stop_at="reseed"), map-search Task 5
-# At most 5 Legends whole maps in this file (ruling N, amended in map-search Task 9 and again in the test-speed work of
-# 2026-10-31; the Vanilla section at the end has 2 more, stage 2 Task 5; the repo suite builds 9: these 7 plus the 2 in
-# test_offline_map.py): the 3 of TOWN_SEEDS, built ONCE per test session by the `town_maps` fixture (between the two
-# roster reads of each seed, which is the roster test's check, so no map is built just for that test), and the search
-# test's 2 (the sift map and the confirming map of one checked seed, in the search's own worker process).
-TOWN_SEEDS = ("1234567890", "0000000001", "0000000002")
+# Keep the maps few: a map is the suite's main cost (cut again 2026-11-01). This section builds 3 Legends whole maps: the
+# one of TOWN_SEEDS, built ONCE per test session by the `town_maps` fixture (between the two roster reads of the seed,
+# which is the roster test's check, so no map is built just for that test), and the search test's 2 (the sift map and
+# the confirming map of one checked seed, in the search's own worker process). The Vanilla section at the end has 1.
+TOWN_SEEDS = ("1234567890",)
 ORIGINS = ("trader_scenario", "legends_noble_scenario")
 _ENTITIES = """
 local out = { settlements = 0, placed = 0, occupied = 0, locations = 0 };
@@ -144,6 +140,7 @@ def town_maps(legends_lab):
     return built
 
 
+@pytest.mark.edge
 @pytest.mark.slow
 def test_roster_unchanged_after_a_full_map(town_maps):
     """A whole map (towns, roads, regions, factions) on the lab's engine leaves both origins' rosters as they were: the
@@ -155,6 +152,7 @@ def test_roster_unchanged_after_a_full_map(town_maps):
         assert after == before, seed
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_legends_map_completes_with_towns(town_maps):
     from bbseed.mapgen import unexplained_stubs
@@ -171,6 +169,7 @@ def test_legends_map_completes_with_towns(town_maps):
         assert out["entities"]["locations"] > n           # attached locations and the abandoned fortresses
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_summary_roads_are_the_hexmaps_road_directions(town_maps):
     """A real Legends whole map: summary["roads"] decodes to the hexmap's RoadDirections of every tile (y-major, row 0 =
@@ -206,6 +205,7 @@ def test_summary_roads_are_the_hexmaps_road_directions(town_maps):
         assert all(0 <= x <= width and 0 <= y <= height for seg in segments for x, y in (seg[:2], seg[2:]))
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_summary_is_complete(town_maps):
     """The summary of a whole map (map-search Task 6), taken from the cached full map of TOWN_SEEDS[0]: no map is
@@ -253,6 +253,7 @@ return out;
 """
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_map_limits_follow_the_games_settlement_lists(legends_lab, town_maps):
     """map_conditions.limits() (map-search Task 8) rests on a copy of Legends' settlement lists
@@ -288,6 +289,7 @@ def test_map_limits_follow_the_games_settlement_lists(legends_lab, town_maps):
             assert M.problems(criteria) == [], (seed, band, c)
 
 
+@pytest.mark.core
 def test_info_reports_the_map_options_at_legends_defaults(legends_lab):
     """Lab.info()["map_options"] (map-search Task 10) is what the seed post prints as the Map Options: the seven
     settings of Legends' Map Options page, read from MSU. A lab with default settings reports Legends' defaults, as
@@ -301,6 +303,7 @@ def test_info_reports_the_map_options_at_legends_defaults(legends_lab):
         assert type(options[key]) is type(default), (key, options[key])
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_real_search_finds_a_port_rich_map(town_maps):
     """search() with a map condition, in a real worker process (map-search Task 9). The seed is checked (seeds=[...]),
@@ -324,8 +327,9 @@ def test_real_search_finds_a_port_rich_map(town_maps):
     assert {k: v for k, v in match["map"].items() if k != "start"} == town_maps.maps[seed]["map"]
 
 
+@pytest.mark.core
 @pytest.mark.slow
-def test_probe_is_the_next_draw_of_the_maps_stream(legends_lab, town_maps):
+def test_probe_is_the_next_draw_of_the_maps_stream(town_maps):
     """out["probe"] (map-search Task 7) is one Math.rand(1, 2147483646) drawn at the stop: the next number of the
     stream the campaign seed started, after all of the run's draws, and not counted in them. Checked against the RNG
     alone (no new map: the cached full map of TOWN_SEEDS[0], ruling N)."""
@@ -339,9 +343,9 @@ def test_probe_is_the_next_draw_of_the_maps_stream(legends_lab, town_maps):
     for _ in range(out["draws"]):
         stream.next()
     assert stream.rand(*PROBE_RANGE) == out["probe"]
-    assert "probe" not in legends_lab.world_map(seed, stop_at="accepted")      # only a whole map has the stop
 
 
+@pytest.mark.core
 def test_terrain_chars_follow_the_games_terrain_table(legends_lab):
     """TERRAIN_CHARS / TERRAIN_NAMES have one entry per value of the game's Const.World.TerrainType (Legends
     adds two to the 19 of the base game), in the order of the values."""
@@ -357,6 +361,7 @@ def test_terrain_chars_follow_the_games_terrain_table(legends_lab):
         assert TERRAIN_NAMES[value] == name or (name, value) == ("Land", 2), (name, value)     # Land is Plains
 
 
+@pytest.mark.edge
 def test_the_navigators_terrain_count_is_the_games_and_its_cost_tables_miss_the_types_legends_adds(legends_lab):
     """Final review 89, MEASURED on Legends 19.4.22: Const.World.TerrainType.COUNT is 21 (SwampGreen 19, SwampForest
     20), the navigator reads it, and the three cost tables the scripts hand to createSettings have 19 entries - so a
@@ -375,6 +380,7 @@ def test_the_navigators_terrain_count_is_the_games_and_its_cost_tables_miss_the_
     assert table_lengths == [19, 19, 19]
 
 
+@pytest.mark.core
 def test_harmless_stubs_all_have_a_reason():
     from bbseed.mapgen import HARMLESS_STUBS, unexplained_stubs
     assert all(isinstance(why, str) and len(why) > 20 for why in HARMLESS_STUBS.values())
@@ -383,6 +389,7 @@ def test_harmless_stubs_all_have_a_reason():
     assert unexplained_stubs({("World", "spawnParticleEffect"): 2, ("Sound", "play"): 1}) == {}
 
 
+@pytest.mark.core
 def test_events_from_log_reads_the_generators_attempt_lines():
     """The attempts of a map run, in the format of the lab's reference data from the in-game logs
     (bb_seedlab tools/maplog.py): the ratio's text is not compared, only the counts."""
@@ -400,9 +407,9 @@ def test_events_from_log_reads_the_generators_attempt_lines():
 
 
 # ---------------------------------------------------------------- Vanilla maps (map-search stage 2, Task 5)
-# The base game alone (no mod; the lab answers hasDLC True for every DLC). Its two whole maps are built once for the
-# module (vanilla_maps): the 2 counted in the budget above.
-VANILLA_SEEDS = ("1234567890", "5567142647")
+# The base game alone (no mod; the lab answers hasDLC True for every DLC). Its whole map is built once for the module
+# (vanilla_maps). This seed's generator rejects 4 worlds first, so the attempts test has something to count.
+VANILLA_SEEDS = ("5567142647",)
 _VANILLA_LISTS = """
 local out = [];
 foreach (list in ::Const.World.Settlements.Master)
@@ -432,6 +439,7 @@ def vanilla_town_type(script):
     return {"small": "size1", "medium": "size2", "large": "size3"}[name.split("_", 1)[0]]
 
 
+@pytest.mark.core
 def test_vanilla_lists_match_the_game(vanilla_lab):
     """VANILLA_LISTS is the base game's Const.World.Settlements.Master: the same Amounts in the same order, and every
     script of a list makes that list's town type."""
@@ -444,6 +452,7 @@ def test_vanilla_lists_match_the_game(vanilla_lab):
         assert {vanilla_town_type(script) for script in l.get("scripts")} == {key}, key
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_vanilla_map_has_no_unexplained_stubs(vanilla_maps):
     from bbseed.mapgen import unexplained_stubs
@@ -452,6 +461,7 @@ def test_vanilla_map_has_no_unexplained_stubs(vanilla_maps):
         assert not unexplained_stubs(out["stub_uses"]), seed
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_vanilla_summary_flags(vanilla_maps):
     """Every town of a Vanilla map has bool flags: southern is the city state, military the stronghold (a *_fort
@@ -466,6 +476,7 @@ def test_vanilla_summary_flags(vanilla_maps):
         assert sum(t["southern"] for t in towns) == 3, seed
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_vanilla_attempts_are_the_builds_of_land_and_sea(vanilla_maps):
     """summary()["attempts"] is one more than the worlds the generator rejected. Vanilla logs no ratio line, so the
@@ -474,6 +485,7 @@ def test_vanilla_attempts_are_the_builds_of_land_and_sea(vanilla_maps):
         assert out["map"]["attempts"] == out["log"].count("World rejected. Creating new one...") + 1, seed
 
 
+@pytest.mark.core
 @pytest.mark.slow
 def test_vanilla_maps_stay_within_the_limits(vanilla_maps):
     """No Vanilla map has more of anything than limits(vanilla=True) allows."""

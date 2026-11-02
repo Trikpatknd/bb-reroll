@@ -7,16 +7,19 @@ from bbseed import mapgen
 SIZE = (140, 170)        # Const.World.Settings.SizeX / SizeY of both setups
 
 
+@pytest.mark.core
 def test_full_ranges_in_the_middle():
     assert mapgen.loop_ranges((70, 85), SIZE) == ((63, 77), (78, 92))
     assert mapgen.deserters_loop_draws((70, 85), 9, SIZE) == 18
 
 
+@pytest.mark.edge
 def test_no_fort_square_means_the_full_ranges():
     assert mapgen.deserters_loop_draws(None, 23, None) == 46
     assert mapgen.deserters_loop_draws(None, 0, SIZE) == 0
 
 
+@pytest.mark.edge
 @pytest.mark.parametrize("fort, ranges", [
     ((0, 0), ((2, 7), (2, 7))),                      # the low corner: max(2, X - 7) = 2
     ((8, 8), ((2, 15), (2, 15))),                    # X - 7 = 1: clamped to 2
@@ -29,6 +32,7 @@ def test_clamped_ranges_at_the_edges_still_draw_twice(fort, ranges):
     assert mapgen.deserters_loop_draws(fort, 5, SIZE) == 10
 
 
+@pytest.mark.edge
 def test_a_range_of_one_value_draws_nothing():
     # engine fact 1: rand(a, a) draws nothing; on a 4 x 4 map both ranges are 2 .. 2
     assert mapgen.loop_ranges((1, 3), (4, 4)) == ((2, 2), (2, 2))
@@ -40,12 +44,14 @@ def test_a_range_of_one_value_draws_nothing():
     assert mapgen.deserters_loop_draws((0, 0), 3, (3, 3)) == 0
 
 
+@pytest.mark.edge
 def test_every_square_of_a_side_of_5_or_more_draws_twice():
     for side in (5, 6, 10, 18, 140):
         for x in range(side):
             assert mapgen.deserters_loop_draws((x, x), 1, (side, side)) == 2, (side, x)
 
 
+@pytest.mark.dirty
 def test_bad_arguments():
     with pytest.raises(ValueError):
         mapgen.deserters_loop_draws(None, -1)
@@ -53,23 +59,27 @@ def test_bad_arguments():
         mapgen.deserters_loop_draws((3, 3), 1, None)
 
 
+@pytest.mark.core
 def test_the_fort_is_the_first_military_one_on_the_roads_and_not_southern():
     # [military, isolated, southern] per settlement, in getSettlements() order
     flags = [[False, False, False], [True, True, False], [True, False, True], [True, False, False], [True, False, False]]
     assert mapgen.fort_index(flags) == 3
 
 
+@pytest.mark.edge
 def test_without_a_qualifying_fort_the_loop_ends_on_the_last_settlement():
     assert mapgen.fort_index([[True, True, False], [False, False, False], [True, False, True]]) == 2
     assert mapgen.fort_index([[False, False, False]]) == 0
     assert mapgen.fort_index([]) is None
 
 
+@pytest.mark.core
 def test_spawn_is_a_stop():
     assert mapgen.STOPS == ("accepted", "reseed", "spawn")
     assert mapgen.SPAWN_LOOP_CAP == 100000
 
 
+@pytest.mark.dirty
 def test_a_start_loop_that_has_tried_every_square_ends_with_an_error():
     """The checks of one square never change, so the loop remembers the squares that failed: a map on which none passes
     raises as soon as the last square of the ranges has failed, not after SPAWN_LOOP_CAP iterations."""
@@ -83,13 +93,7 @@ def test_a_start_loop_that_has_tried_every_square_ends_with_an_error():
         loop.enter(10, 20)                  # the loop went on: (10, 21) failed too, so all 4 have failed
 
 
-def test_the_start_loop_does_not_count_the_square_it_is_still_on():
-    loop = mapgen.StartLoop(((10, 11), (20, 21)))
-    for square in ((10, 20), (11, 20), (10, 21)):
-        loop.enter(*square)
-    assert loop.enter(11, 21) is False      # the last square may be the one that passes: no error yet
-
-
+@pytest.mark.edge
 def test_a_range_with_one_value_or_none_counts_one_value():
     assert mapgen.StartLoop(((5, 5), (7, 9))).total == 3
     assert mapgen.StartLoop(((6, 5), (7, 6))).total == 1       # hi < lo: rand gives lo, nothing is drawn

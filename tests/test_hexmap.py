@@ -13,6 +13,7 @@ from bbseed.sq import runtime as R
 from bbseed.sq.runtime import SqError, SqTable
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_inner_tile_has_six_distinct_neighbours_that_point_back(layout):
     m = HexMap(None, 140, 170, layout)
@@ -24,6 +25,7 @@ def test_inner_tile_has_six_distinct_neighbours_that_point_back(layout):
         assert m.distance(t, n) == 1
 
 
+@pytest.mark.edge
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_corner_and_distance(layout):
     m = HexMap(None, 140, 170, layout)
@@ -33,6 +35,7 @@ def test_corner_and_distance(layout):
     assert m.tile(140, 0) is None and m.tile(0, 170) is None
 
 
+@pytest.mark.core
 def test_surrounding_tiles_of_type_counts_neighbours():
     m = HexMap(None, 10, 10, LAYOUTS[0])
     t = m.tile(5, 5)
@@ -52,10 +55,12 @@ EXPECTED = {
 }
 
 
+@pytest.mark.core
 def test_layouts_are_the_four_expected_ones():
     assert set(LAYOUTS) == set(EXPECTED) and len(LAYOUTS) == 4
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_neighbour_tables(layout):
     m = HexMap(None, 12, 12, layout)
@@ -65,11 +70,13 @@ def test_neighbour_tables(layout):
         assert [(n.x, n.y) for n in (m.neighbour(t, d) for d in range(6))] == want
 
 
+@pytest.mark.dirty
 def test_unknown_layout_is_an_error():
     with pytest.raises(ValueError):
         HexMap(None, 4, 4, "pointy")
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_distance_is_the_walking_distance(layout):
     m = HexMap(None, 15, 14, layout)
@@ -91,6 +98,7 @@ def test_distance_is_the_walking_distance(layout):
             assert m.distance(start, t) == steps == t.getDistanceTo(None, start)
 
 
+@pytest.mark.edge
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_tile_numbers_and_borders(layout):
     m = HexMap(None, 9, 7, layout)
@@ -106,6 +114,7 @@ def test_tile_numbers_and_borders(layout):
 
 
 # ---------------------------------------------------------------- tile fields and methods
+@pytest.mark.core
 def test_tile_defaults_and_python_attributes():
     m = HexMap(None, 6, 6, LAYOUTS[0])
     t = m.tile(2, 3)
@@ -115,12 +124,19 @@ def test_tile_defaults_and_python_attributes():
     assert m.tile(2, 3).Type == 7 and m.tile(3, 3).Type == 0
 
 
-def test_script_fields_and_unknown_field_raises():
+@pytest.mark.core
+def test_script_fields_read_and_write():
     m = HexMap(None, 6, 6, LAYOUTS[0])
     t = m.tile(2, 3)
     R.set_(t, "Type", 5)
     R.set_(t, "IsOccupied", True)
     assert R.get(t, "Type") == 5 and t.Type == 5 and R.get(t, "IsOccupied") is True
+    assert R.has(t, "Type") and R.has(t, "getNextTile")
+
+
+@pytest.mark.dirty
+def test_an_unknown_or_read_only_script_field_raises():
+    t = HexMap(None, 6, 6, LAYOUTS[0]).tile(2, 3)
     for bad in ("Bogus", "type", "x"):
         with pytest.raises(SqError):
             R.get(t, bad)
@@ -130,9 +146,9 @@ def test_script_fields_and_unknown_field_raises():
         R.set_(t, "Bogus", 1)
     with pytest.raises(SqError):
         R.set_(t, "ID", 1)                    # computed, read-only
-    assert R.has(t, "Type") and R.has(t, "getNextTile")
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_coordinates(layout):
     m = HexMap(None, 11, 9, layout)
@@ -148,6 +164,7 @@ def test_coordinates(layout):
     assert m.tile_at_coords(-50, 3) is None
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_neighbours_differ_by_the_axial_directions(layout):
     m = HexMap(None, 12, 12, layout)
@@ -168,6 +185,7 @@ GAME_POS = {(0, 0): (120, 60), (1, 0): (300, 120), (0, 1): (120, 180), (1, 1): (
             (71, 85): (12900, 10320), (139, 0): (25140, 120), (0, 169): (120, 20340), (139, 169): (25140, 20400)}
 
 
+@pytest.mark.core
 def test_positions_are_the_games():
     m = HexMap(None, 140, 170, "even-q-up")
     for (x, y), want in GAME_POS.items():
@@ -183,6 +201,7 @@ def test_positions_are_the_games():
     assert steps == [(0, 120), (180, 60), (180, -60), (0, -120), (-180, -60), (-180, 60)]
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_positions_convert_back(layout):
     """worldToTile gives a tile's Coords for its Pos, and for a point well inside the tile (the cell's border is
@@ -248,12 +267,14 @@ def _wtt(m, px, py):
     return R.get(c, "X"), R.get(c, "Y")
 
 
+@pytest.mark.edge
 def test_world_to_tile_is_the_games():
     m = HexMap(None, 140, 170, "even-q-up")
     for (px, py), want in GAME_WTT:
         assert _wtt(m, float(px), float(py)) == want, (px, py)
 
 
+@pytest.mark.edge
 def test_world_to_tile_pick_map_borders():
     """The pixels where the game's pick in box 71 (Coords 71,49 / 71,50) changes tile, as the game answered them: the
     box is 180 x 120 px, its top-left triangle (lx + ly < 60) goes to the upper-left neighbour, rows 60 and 61 are the
@@ -267,6 +288,7 @@ def test_world_to_tile_pick_map_borders():
         assert _wtt(m, float(12780 + lx), float(py)) == want, (lx, ly)
 
 
+@pytest.mark.edge
 def test_world_to_tile_float_border_points():
     """The native probe's r1 calls from tile 0,0 (Pos 120,60) toward its neighbour 1,0 (offset 180,60): the border's
     midpoint and 0.01 / 0.5 px to either side, worked out in float32 like the game's script, and 200 / 150 px beyond the
@@ -286,6 +308,7 @@ def test_world_to_tile_float_border_points():
         assert _wtt(m, x, y) == want, tag
 
 
+@pytest.mark.edge
 def test_world_to_tile_tiles_in_front_and_the_top_row():
     """The exe tests tiles in front against their mask before the box's own pixel. (1) The corner C0 of tile 70,85
     (centre of its centre and the neighbours above and up-right, 12780,10200) moved 0.01 / 0.5 px toward the tile:
@@ -306,6 +329,7 @@ def test_world_to_tile_tiles_in_front_and_the_top_row():
         assert _wtt(m, f(mx + f(ux * step)), f(my + f(uy * step))) == (70, -35), step
 
 
+@pytest.mark.core
 def test_world_mask_is_the_games_file():
     """_world_mask equals gfx/masks/hex_mask_world.0 of the installed game pixel for pixel (TGA, bottom-up, BGRA bytes;
     the exe reads row 119 - ly with blue and red swapped)."""
@@ -329,6 +353,7 @@ def test_world_mask_is_the_games_file():
             assert a == 255 and colour[(b, g, r)] == _world_mask(lx, ly), (lx, ly)
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("layout", LAYOUTS)
 def test_direction_to(layout):
     m = HexMap(None, 30, 30, layout)
@@ -350,6 +375,7 @@ def test_direction_to(layout):
     assert not t.isSameTileAs(None, None)
 
 
+@pytest.mark.edge
 def test_surrounding_tiles_not_of_type_ignores_missing_neighbours():
     m = HexMap(None, 10, 10, LAYOUTS[0])
     inner = m.tile(5, 5)
@@ -361,6 +387,7 @@ def test_surrounding_tiles_not_of_type_ignores_missing_neighbours():
     assert corner.getSurroundingTilesNotOfType(None, 1) == n_real
 
 
+@pytest.mark.core
 def test_details_brushes_and_roads():
     m = HexMap(None, 6, 6, LAYOUTS[0])
     t = m.tile(2, 2)
@@ -384,11 +411,16 @@ def test_details_brushes_and_roads():
     t.clearAllBut(None, 4)
     t.clear(None)
     assert t.HasRoad
-    with pytest.raises(SqError):
-        R.set_(t, "HasRoad", False)          # read-only: no script assigns it
     R.set_(t, "RoadDirections", 0)
     assert not t.HasRoad
     assert t.isSuitable(None) is True
+
+
+@pytest.mark.dirty
+def test_has_road_is_read_only():
+    t = HexMap(None, 6, 6, LAYOUTS[0]).tile(2, 2)
+    with pytest.raises(SqError):
+        R.set_(t, "HasRoad", False)          # no script assigns it
 
 
 # ---------------------------------------------------------------- the World natives, through the interpreter
@@ -402,6 +434,7 @@ def lab():
     return e, m, out
 
 
+@pytest.mark.core
 def test_install_puts_the_natives_on_the_world_table(lab):
     e, m, out = lab
     for name in ("getTileSquare", "getTile", "isValidTileSquare", "getMapSize", "resizeScene", "clearScene",
@@ -412,6 +445,7 @@ def test_install_puts_the_natives_on_the_world_table(lab):
     assert "getTileSquare" in t and t.key_list().count("getTileSquare") == 1
 
 
+@pytest.mark.core
 def test_scripts_read_and_write_tiles(lab):
     e, m, out = lab
     e.vm.run('''
@@ -438,6 +472,7 @@ def test_scripts_read_and_write_tiles(lab):
     assert m.tile(5, 5).Type == 7 and m.tile(6, 5).Type == 3
 
 
+@pytest.mark.core
 def test_scripts_accumulate_settlement_heat(lab):
     # the loop of Legends' refineSettlements / entity_manager.updateSettlementHeat: add (6 - d) to every tile
     # within 6 of a settlement, without zeroing first, so the field must start as a number
@@ -468,6 +503,7 @@ def test_scripts_accumulate_settlement_heat(lab):
     assert all(t.HeatFromSettlements == 0 for t in m.tiles)
 
 
+@pytest.mark.core
 def test_world_natives(lab):
     e, m, out = lab
     e.vm.run('''
@@ -491,6 +527,7 @@ def test_world_natives(lab):
     assert out == ["true", "false", "false", "12x10", "true", "2", "3", str(120 - 3), "1", "true", "true"]
 
 
+@pytest.mark.core
 def test_clear_tiles_resets_but_keeps_the_tile_objects(lab):
     e, m, out = lab
     t = m.tile(3, 3)
@@ -509,6 +546,7 @@ def test_clear_tiles_resets_but_keeps_the_tile_objects(lab):
     assert m.tile(1, 1).Type == 0
 
 
+@pytest.mark.core
 def test_resize_scene_builds_a_new_grid(lab):
     e, m, out = lab
     old = m.tile(2, 2)
@@ -518,6 +556,7 @@ def test_resize_scene_builds_a_new_grid(lab):
     assert m.neighbour(m.tile(10, 7), 3) is m.tile(10, 8)
 
 
+@pytest.mark.core
 def test_building_a_map_leaves_the_address_counter_alone():
     before = R.new_addr()
     m = HexMap(None, 20, 20, LAYOUTS[0])
@@ -526,6 +565,7 @@ def test_building_a_map_leaves_the_address_counter_alone():
     assert len({t.addr for t in m.tiles}) == 400
 
 
+@pytest.mark.core
 def test_a_full_size_map_builds_quickly_and_neighbours_are_consistent():
     import time
     t0 = time.perf_counter()
@@ -546,6 +586,7 @@ def test_a_full_size_map_builds_quickly_and_neighbours_are_consistent():
 LEGENDS_NEIGHBOURS = [(0, 1), (1, 0), (1, -1), (0, -1), (-1, 0), (-1, 1)]     # z_legends_hex.nut, N NE SE S SW NW
 
 
+@pytest.mark.core
 def test_coords_are_the_hex_coordinates_legends_computes():
     """Legends walks rings in Coords itself (config/z_legends_hex.nut): Y = squareY - squareX / 2 (integer division)
     and fixed neighbour offsets; in the measured layout even-q-up both hold, and getTile(X, Y) takes them."""
@@ -562,6 +603,7 @@ def test_coords_are_the_hex_coordinates_legends_computes():
     assert m._get_tile(None, 0, 40) is None
 
 
+@pytest.mark.core
 def test_ring_order_is_legends_traverse_circle():
     m = HexMap(None, 30, 30, "even-q-up")
     centre = m.tile(15, 14)
@@ -580,6 +622,7 @@ def test_ring_order_is_legends_traverse_circle():
     assert all(t is not None for t in m.ring(corner, 2)) and len(m.ring(corner, 2)) < 12
 
 
+@pytest.mark.core
 def test_query_tiles_in_range_through_a_script(lab):
     """getTerrainInRegion: World.queryTilesInRange(tile, 1, 4, callback.bindenv(this), counts) counts the terrain."""
     e, m, out = lab
@@ -606,6 +649,7 @@ def _query(m, tile, lo, hi):
     return seen
 
 
+@pytest.mark.core
 def test_query_tiles_in_range_is_the_exes_order_without_the_centre():
     """MEASURED by the native probe (kind r5, 352 calls on 4 maps; the game's answer for the corner tile 0,0 radius 0..1
     was `n=2 t=0,1;1,0`): the sector walk's order, N NE SE S SW NW, the centre never included, min cuts the near tiles."""
@@ -625,6 +669,7 @@ def test_query_tiles_in_range_is_the_exes_order_without_the_centre():
     assert (5, 5) not in _query(m, centre, 0, 4)
 
 
+@pytest.mark.edge
 def test_query_tiles_in_range_skips_type_0_tiles():
     """MEASURED (probe kind r5t0, 16 calls: the game skipped the tile of Type 0 in every one)."""
     m = _grid(12, 10, PLAINS)
@@ -646,6 +691,7 @@ def test_query_tiles_in_range_skips_type_0_tiles():
     assert (later.x, later.y) not in seen
 
 
+@pytest.mark.dirty
 def test_world_tile_level_raises_in_scripts(lab):
     """MEASURED (probe kind level: `err` on 126 of 126 reads): a world tile has no Level for the scripts; the Python
     attribute the lab's tools read stays."""
@@ -720,6 +766,7 @@ def _flood_transcription(m, start, radius, ttype):
     return result[0]
 
 
+@pytest.mark.edge
 def test_find_next_region_is_the_exes_order():
     """0x553a20 floods depth first, neighbours N, S, NE, NW, SE, SW (blocks 0x553a70, 0x553aee, 0x553b69, 0x553be3,
     0x553c61, 0x553cdf), and the callback 0x4f3770 OVERWRITES the result at every leaf it meets (0x4f37dc): nothing
@@ -755,6 +802,7 @@ def test_find_next_region_is_the_exes_order():
     assert _region(m, 4, 4, 4.9, 2.0) == 6 and _region(m, 4, 4, 3.9, 2.0) == 0
 
 
+@pytest.mark.edge
 def test_find_next_region_is_depth_first():
     """Pins depth-first against breadth-first (reviewer finding of Task 1). The N neighbour of (4, 4) has Region 0 and
     a Region-9 leaf behind it (one step further north, (4, 6)); the S neighbour is a Region-7 leaf. The flood goes
@@ -775,6 +823,7 @@ def test_find_next_region_is_depth_first():
     assert _region(m, 4, 4, 3, PLAINS) == 9
 
 
+@pytest.mark.core
 def test_find_next_region_radius_and_type():
     """0x4f3789..0x4f3791: hex distance (0x552680) from the start > radius -> the callback answers 0 and the flood does
     not enter the tile. A region 4 steps north of (4, 4) - (4, 8) - is found with radius 4 and not with radius 3.
@@ -809,6 +858,7 @@ def test_find_next_region_radius_and_type():
     assert _region(m, 4, 4, 3, PLAINS) == 2
 
 
+@pytest.mark.core
 def test_find_next_region_equals_a_recursive_transcription():
     """The iterative flood (no deep recursion: buildLabels' pass three floods radius 16 from every Region-0 land tile)
     visits in the order of the exe's recursion: same answer on random grids, radii, types and borders, all layouts."""
@@ -828,6 +878,7 @@ def test_find_next_region_equals_a_recursive_transcription():
                     (layout, start, radius, ttype)
 
 
+@pytest.mark.edge
 def test_find_next_region_survives_a_deep_flood():
     """A flood that visits 3600 tiles one after the other (depth first goes as deep as the map is wide) must not run
     into Python's recursion limit: nothing but the far corner is a leaf."""
@@ -874,6 +925,7 @@ def _walk_transcription(m, centre, radius):
     return out
 
 
+@pytest.mark.core
 def test_the_exes_sector_walk_order():
     """The candidates of findNextTileOfType are the exe's own walk (0x5526f0, with the centre): the centre, then one
     sector per neighbour in the order N, NE, SE, S, SW, NW, each a depth-first walk (pre-order) along the neighbour's
@@ -890,6 +942,7 @@ def test_the_exes_sector_walk_order():
     assert _offsets(m, centre, m.exe_tiles_in_range(centre, -1)) == [(0, 0)]
 
 
+@pytest.mark.core
 def test_the_sector_walk_equals_the_exes_walk_that_revisits():
     """The walk here skips a tile it already walked in the same sector (everything reachable from it is stamped after
     its first visit, so a revisit adds nothing): the same vector as the literal walk, on every tile of two small maps,
@@ -902,6 +955,7 @@ def test_the_sector_walk_equals_the_exes_walk_that_revisits():
                     (layout, centre, radius)
 
 
+@pytest.mark.core
 def test_the_sector_walk_equals_the_literal_walk_at_radius_9():
     """The radius findNextTileOfType gets in buildLabels is 9: the same vector as the literal (revisiting) walk on a
     25 x 25 map from a few centres whose disc lies on the grid (no clipping), in both layouts. The literal walk is
@@ -914,6 +968,7 @@ def test_the_sector_walk_equals_the_literal_walk_at_radius_9():
             assert m.exe_tiles_in_range(centre, 9) == _walk_transcription(m, centre, 9), (layout, x, y)
 
 
+@pytest.mark.core
 def test_find_next_tile_of_type_is_the_exes_rule():
     """0x4f37f0: of the tiles within the radius (0x5526f0 with the centre: the start tile counts), a tile of the type
     qualifies only when its six neighbours exist (0x4f38f7..0x4f3922) and are of the type (0x4f3941); the one nearest to
@@ -954,6 +1009,7 @@ def test_find_next_tile_of_type_is_the_exes_rule():
     assert R.get(result, "Result") is None
 
 
+@pytest.mark.core
 def test_find_next_tile_of_type_wants_a_tile_inside_the_type(lab):
     """A "decent spot" for a region label: a tile of the type whose six neighbours are of it too."""
     e, m, out = lab
@@ -979,6 +1035,7 @@ def test_find_next_tile_of_type_wants_a_tile_inside_the_type(lab):
     assert out == ["true true", "false", "true true", "false false", "false"]       # last: at the map's edge
 
 
+@pytest.mark.core
 def test_update_tiles_with_heat_adds_like_legends_refine_settlements():
     m = HexMap(None, 20, 20, "even-q-up")
     a, b = m.tile(5, 5), m.tile(8, 6)
@@ -988,6 +1045,7 @@ def test_update_tiles_with_heat_adds_like_legends_refine_settlements():
         assert t.HeatFromSettlements == want
 
 
+@pytest.mark.core
 def test_the_other_world_natives_of_a_map_run(lab):
     e, m, out = lab
     e.vm.run('''
@@ -996,8 +1054,16 @@ def test_the_other_world_natives_of_a_map_run(lab):
     ''', "t.nut")
     assert out == ["true", "true"]
     t = m.tile(4, 4)
-    with pytest.raises(NotModelled):
-        t.getDirectionTo(None, t)
     assert m.far_directions == 0
     t.getDirectionTo(None, m.tile(9, 9))
     assert m.far_directions == 1
+
+
+@pytest.mark.dirty
+def test_the_direction_from_a_tile_to_itself_is_not_modelled_and_not_counted(lab):
+    _e, m, _out = lab
+    t = m.tile(4, 4)
+    before = m.far_directions
+    with pytest.raises(NotModelled):
+        t.getDirectionTo(None, t)
+    assert m.far_directions == before

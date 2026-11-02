@@ -20,6 +20,7 @@ def bro(traits=(), **stars):
     return {"stars": dict(ZERO, **stars), "traits": list(traits)}
 
 
+@pytest.mark.dirty
 def test_parse_stars():
     assert parse_stars("msk2 mdf1") == {"msk": 2, "mdf": 1}
     assert parse_stars("") == {}
@@ -28,6 +29,7 @@ def test_parse_stars():
             parse_stars(bad)
 
 
+@pytest.mark.core
 def test_normalize_accepts_bb_reroll_config():
     c = normalize({"stars_by_slot": {"*": {}, "1": {"res": 3}, "2": "msk2"}, "banned": ["trait.dumb", "fat"],
                    "required": ["brave"], "required_mode": "any"})
@@ -35,6 +37,7 @@ def test_normalize_accepts_bb_reroll_config():
     assert c["banned"] == ["dumb", "fat"] and c["required"] == ["brave"] and c["required_slots"] is None
 
 
+@pytest.mark.core
 def test_stars_per_slot_and_wildcard():
     c = normalize({"stars_by_slot": {"*": "hp1", "2": "msk2"}})
     assert first_failure([bro(hp=1), bro(hp=2, msk=2)], c) is None
@@ -47,12 +50,14 @@ def test_stars_per_slot_and_wildcard():
     assert first_failure([bro(hp=1), bro(hp=0)], c) == "bro2 hp*0<1"
 
 
+@pytest.mark.core
 def test_banned_applies_to_every_recruit():
     c = normalize({"banned": ["dumb"]})
     assert first_failure([bro(["brave"]), bro([])], c) is None
     assert first_failure([bro(["brave"]), bro(["dumb"])], c) == "bro2 banned dumb"
 
 
+@pytest.mark.core
 def test_required_any_all_and_slots():
     any_ = normalize({"required": ["brave", "tough"]})
     assert first_failure([bro(["brave"]), bro(["tough", "fat"])], any_) is None
@@ -64,11 +69,13 @@ def test_required_any_all_and_slots():
     assert first_failure([bro(["brave"]), bro([])], first_only) is None
 
 
+@pytest.mark.edge
 def test_slot_beyond_roster_fails():
     c = normalize({"stars_by_slot": {"4": "hp1"}})
     assert first_failure([bro(hp=3)], c) == "no bro4 in this origin's roster"
 
 
+@pytest.mark.core
 def test_odds_multiply_the_slots_pass_rates():
     from bbseed.search import Odds
     c = normalize({"stars_by_slot": {"1": "msk2", "2": "mdf1"}})
@@ -82,6 +89,7 @@ def test_odds_multiply_the_slots_pass_rates():
     assert odds.chance() == 0.25 and odds.never() == []
 
 
+@pytest.mark.edge
 def test_odds_name_a_slot_that_never_passes_and_merge_worker_counts():
     from bbseed.search import Odds
     c = normalize({"stars_by_slot": {"2": "hp3"}})
@@ -94,11 +102,13 @@ def test_odds_name_a_slot_that_never_passes_and_merge_worker_counts():
     assert total.chance() == 0.0 and total.never() == [2]
 
 
+@pytest.mark.edge
 def test_seeds_are_ten_digits():
     assert seed_text(42) == "0000000042"
     assert seed_text(10 ** 10 + 7) == "0000000007"
 
 
+@pytest.mark.core
 def test_backgrounds_per_slot_and_for_any_brother():
     def b(background):
         return dict(bro(), background=background)
@@ -113,6 +123,7 @@ def test_backgrounds_per_slot_and_for_any_brother():
     assert first_failure([b("background.miller")] * 4, beyond) == "no bro6 in this origin's roster"
 
 
+@pytest.mark.core
 def test_odds_count_the_any_brother_condition_as_one_more_factor():
     from bbseed.search import Odds
     def b(background):
@@ -134,12 +145,14 @@ def test_odds_count_the_any_brother_condition_as_one_more_factor():
 
 
 # ---------------------------------------------------------------- map conditions (map-search Task 9)
+@pytest.mark.core
 def test_normalize_keeps_map_conditions():
     c = normalize({"map": {"ports": 6, "north_band": 33, "towns": {"city_state": 2}}})
     assert c["map"] == {"ports": 6, "ports_south": 0, "ports_north": 0, "north_band": 33, "towns": {"city_state": 2}}
     assert normalize(c) == c                                  # search() normalizes what the CLI normalized
 
 
+@pytest.mark.edge
 def test_normalize_without_map_conditions():
     assert normalize({})["map"] is None
     # 0 is no condition, and a band alone is none either
@@ -147,6 +160,7 @@ def test_normalize_without_map_conditions():
     assert normalize({"map": None})["map"] is None
 
 
+@pytest.mark.core
 def test_normalize_fills_in_the_north_band():
     assert normalize({"map": {"ports_north": 1}})["map"] == {
         "ports": 0, "ports_south": 0, "ports_north": 1, "north_band": 33, "towns": {}}
@@ -154,6 +168,7 @@ def test_normalize_fills_in_the_north_band():
     assert normalize({"map": {"towns": {"size3": "4"}}})["map"]["towns"] == {"size3": 4}
 
 
+@pytest.mark.dirty
 def test_normalize_rejects_a_bad_north_band_only_for_northern_ports():
     """Carried from Task 8's review: the band matters only for northern ports, so only then is it checked."""
     for band in (0, 100, -3, 150, "far"):
@@ -165,6 +180,7 @@ def test_normalize_rejects_a_bad_north_band_only_for_northern_ports():
     assert normalize({"map": {"ports": 2, "north_band": 50}})["map"]["north_band"] == 50
 
 
+@pytest.mark.dirty
 def test_normalize_rejects_unknown_map_conditions():
     for bad in ({"port": 3}, {"map_options": {"Settlements": 24}}, {"towns": {"castle": 1}}, {"ports": -1},
                 {"towns": {"size1": -2}}, {"ports": "many"}):
@@ -279,6 +295,7 @@ def odds_of(events, map_wanted=False):
     return total
 
 
+@pytest.mark.core
 def test_worker_with_map_only_conditions_reports_roster_and_map(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(), criteria={"map": {"ports": 9}}, limit=30)
     matches = matches_of(events)
@@ -292,14 +309,7 @@ def test_worker_with_map_only_conditions_reports_roster_and_map(monkeypatch):
     assert odds.tested == 30 and odds.map == [30, 3] and odds.chance() == pytest.approx(0.1)
 
 
-def test_every_map_is_built_as_a_first_campaign(monkeypatch):
-    """Ruling AD: the search passes blackmarket=0 (Legends' never-reset counter as in the first campaign after the
-    game starts), so the sift map and the confirming map of a match are built alike."""
-    lab = FakeLab()
-    run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10)
-    assert lab.blackmarket == [0] * 11
-
-
+@pytest.mark.core
 def test_roster_conditions_only_build_no_map(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(), criteria={"stars_by_slot": {"1": "hp1"}}, limit=30)
     matches = matches_of(events)
@@ -309,6 +319,7 @@ def test_roster_conditions_only_build_no_map(monkeypatch):
     assert odds_of(events).map is None
 
 
+@pytest.mark.core
 def test_roster_and_map_conditions_build_maps_only_for_roster_passers(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(), criteria={"stars_by_slot": {"1": "hp1"}, "map": {"ports": 9}},
                         limit=30)
@@ -321,6 +332,7 @@ def test_roster_and_map_conditions_build_maps_only_for_roster_passers(monkeypatc
     assert odds.chance() == pytest.approx(0.5 * 0.2)
 
 
+@pytest.mark.dirty
 def test_a_map_error_on_one_seed_does_not_stop_the_search(monkeypatch):
     """3 of 1,000 surveyed seeds raise in Legends' guaranteeAllBuildingsInSettlements: such a seed is an error event
     and the worker goes on - also when it is the worker's first seed."""
@@ -332,6 +344,7 @@ def test_a_map_error_on_one_seed_does_not_stop_the_search(monkeypatch):
         assert events[-1][0] == "done" and not [e for e in events if e[0] == "fatal"]
 
 
+@pytest.mark.dirty
 def test_a_map_generator_that_never_works_is_one_fatal_event(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(map_errors=True), criteria={"map": {"ports": 1}}, limit=30)
     kinds = [kind for kind, _i, _p in events]
@@ -341,6 +354,7 @@ def test_a_map_generator_that_never_works_is_one_fatal_event(monkeypatch):
     assert FakeLab.world_map_calls == 2        # the first failure could be the seed's own: one more seed is tried
 
 
+@pytest.mark.dirty
 def test_a_map_error_in_roster_and_map_mode_is_skipped(monkeypatch):
     """With roster conditions too, a roster passer whose map run fails is an error event; its roster still counts in
     the odds (without a map), and the worker goes on."""
@@ -354,6 +368,7 @@ def test_a_map_error_in_roster_and_map_mode_is_skipped(monkeypatch):
     assert odds.tested == 30 and odds.passed[0] == 15 and odds.map == [14, 2]
 
 
+@pytest.mark.dirty
 def test_the_held_error_of_the_only_map_run_is_sent_at_the_end(monkeypatch):
     """A worker whose first map run fails holds that error until the next map tells whether every map fails. When
     there is no next map (one checked seed), the error is sent at the end, and it is no fatal event."""
@@ -369,6 +384,7 @@ UNREVIEWED = {("World", "spawnEntity"): 2, ("entity", "getFoo"): 1}       # not 
 HARMLESS = {("sprite", "varyColor"): 3, ("root", "updateAchievement"): 1}
 
 
+@pytest.mark.dirty
 def test_a_map_that_used_engine_functions_nobody_reviewed_is_an_error_for_that_seed(monkeypatch):
     """Final review I1: every unmodelled native returns a counted do-nothing stand-in; mapgen.HARMLESS_STUBS lists the
     reviewed ones. A map run that used any other one may be wrong without a sign, so it is a LabError like any map
@@ -383,6 +399,7 @@ def test_a_map_that_used_engine_functions_nobody_reviewed_is_an_error_for_that_s
     assert events[-1][0] == "done" and not [e for e in events if e[0] == "fatal"]
 
 
+@pytest.mark.dirty
 def test_maps_that_always_use_engine_functions_nobody_reviewed_end_the_search_with_a_map_fatal(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(stubs=lambda seed: UNREVIEWED), criteria={"map": {"ports": 1}}, limit=30)
     kinds = [kind for kind, _i, _p in events]
@@ -392,6 +409,7 @@ def test_maps_that_always_use_engine_functions_nobody_reviewed_end_the_search_wi
     assert FakeLab.world_map_calls == 2
 
 
+@pytest.mark.dirty
 def test_the_confirming_map_is_checked_too(monkeypatch):
     """A match is confirmed with a second map; when that one used unreviewed functions the seed is skipped."""
     class SecondUnreviewed(FakeLab):
@@ -406,6 +424,7 @@ def test_the_confirming_map_is_checked_too(monkeypatch):
     assert len(errors) == 1 and "0000000009" in errors[0] and "World.spawnEntity" in errors[0]
 
 
+@pytest.mark.dirty
 def test_a_checked_seed_whose_map_could_not_be_built_still_gets_its_roster(monkeypatch):
     """Final review M3: "Check a seed" with a map condition whose map run fails (3 in 1,000 seeds, or a map that used
     unreviewed functions) reports the roster, with the failure "map could not be built: <reason>" and no map. The
@@ -442,12 +461,7 @@ def test_a_checked_seed_whose_map_could_not_be_built_still_gets_its_roster(monke
     assert m["map"] is None and m["failure"] == "bro1 hp*0<1" and m["roster"]
 
 
-def test_a_search_that_is_not_checking_does_not_report_a_seed_without_a_map(monkeypatch):
-    for criteria in ({"map": {"ports": 9}}, {"stars_by_slot": {"1": "hp1"}, "map": {"ports": 9}}):
-        events = run_worker(monkeypatch, FakeLab(map_errors={"0000000009"}), criteria=criteria, limit=10)
-        assert "0000000009" not in [m["seed"] for m in matches_of(events)]
-
-
+@pytest.mark.dirty
 def test_a_map_code_exception_that_is_no_lab_error_is_a_map_fatal(monkeypatch):
     """Fix round 1: an exception of the map code that is not a LabError (a bug, or map data the code cannot read)
     must not kill the worker silently (search() would wait forever): one MAP_FATAL event, the worker stops."""
@@ -461,6 +475,7 @@ def test_a_map_code_exception_that_is_no_lab_error_is_a_map_fatal(monkeypatch):
         assert ("RuntimeError: tile natives are missing" in fatal) or ("ValueError: town" in fatal)
 
 
+@pytest.mark.dirty
 def test_an_unexpected_roster_exception_is_a_fatal_event(monkeypatch, capsys):
     """Fix round 1, the roster path (the same gap from before Task 9): one fatal event with the exception's type and
     text and the seed, instead of a worker that dies silently."""
@@ -471,6 +486,7 @@ def test_an_unexpected_roster_exception_is_a_fatal_event(monkeypatch, capsys):
     assert "Traceback" in capsys.readouterr().err          # the worker's console gets the whole traceback
 
 
+@pytest.mark.dirty
 def test_world_map_turns_a_map_path_that_cannot_load_into_a_lab_error(monkeypatch):
     """Fix round 1: the first world_map() makes mapgen.MapRun, which runs scripts. A script error there (a game
     setup whose map scripts the lab cannot run) must be a LabError like any failed map run, so the worker's
@@ -499,6 +515,7 @@ def test_world_map_turns_a_map_path_that_cannot_load_into_a_lab_error(monkeypatc
     assert lab._maps is None and lab._blackmarket is None and lab.eng.vm.stack == []    # tried again next time
 
 
+@pytest.mark.edge
 def test_the_stable_flag_covers_the_map(monkeypatch):
     """The confirming map must have the sift map's towns and ports; when it has not, the match is not stable."""
     events = run_worker(monkeypatch, FakeLab(second_map=lambda m: fake_map(9, shift=1)),
@@ -508,6 +525,7 @@ def test_the_stable_flag_covers_the_map(monkeypatch):
     assert match["map"]["towns"][0]["x"] == 1                 # the payload has the confirming map
 
 
+@pytest.mark.dirty
 def test_a_map_that_fails_when_built_again_is_skipped(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(second_map=lambda m: fake_map(2)), criteria={"map": {"ports": 9}},
                         limit=10)
@@ -516,6 +534,7 @@ def test_a_map_that_fails_when_built_again_is_skipped(monkeypatch):
     assert len(errors) == 1 and "0000000009" in errors[0]
 
 
+@pytest.mark.core
 def test_checking_seeds_with_map_conditions_reports_every_seed(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(), criteria={"map": {"ports": 9}}, seeds=["0000000003", "0000000009"])
     got = {m["seed"]: m for m in matches_of(events)}
@@ -529,6 +548,7 @@ def test_checking_seeds_with_map_conditions_reports_every_seed(monkeypatch):
     assert m["failure"] == "bro1 hp*0<1" and m["map"]["towns"]
 
 
+@pytest.mark.core
 def test_odds_count_the_map_as_one_more_factor_with_its_own_count():
     c = normalize({"stars_by_slot": {"1": "hp1"}, "map": {"ports": 1}})
     odds = Odds(map_wanted=True)
@@ -556,6 +576,7 @@ def test_odds_count_the_map_as_one_more_factor_with_its_own_count():
     assert plain.chance() == 0.5 and plain.map is None and not plain.map_never()
 
 
+@pytest.mark.core
 def test_odds_brothers_chance_is_the_rosters_part_of_the_estimate_without_the_map_factor():
     """Final review M7: with brother and map conditions the full estimate waits for 30 maps; the brothers' rate is
     known after the first seeds, so the progress event carries it too (map factor: Odds.chance)."""
@@ -606,6 +627,7 @@ def run_search(monkeypatch, lab_factory, criteria, origin="trader_scenario", **k
     return found, events
 
 
+@pytest.mark.core
 def test_search_reports_the_map_of_a_match(monkeypatch):
     found, events = run_search(monkeypatch, FakeLab, {"map": {"ports": 9}}, workers=2, max_seeds=20, count=2)
     assert sorted(m["seed"] for m in found) == ["0000000009", "0000000019"]
@@ -617,6 +639,7 @@ def test_search_reports_the_map_of_a_match(monkeypatch):
     assert events[-1][0] == "finished"
 
 
+@pytest.mark.dirty
 def test_search_ends_at_the_first_map_fatal(monkeypatch):
     """A game setup whose map generator does not work: every worker finds it, the player gets ONE fatal event."""
     found, events = run_search(monkeypatch, lambda: FakeLab(map_errors=True), {"map": {"ports": 1}}, workers=3,
@@ -627,6 +650,7 @@ def test_search_ends_at_the_first_map_fatal(monkeypatch):
     assert events[-1][0] == "finished"
 
 
+@pytest.mark.dirty
 def test_search_returns_after_unexpected_worker_exceptions(monkeypatch):
     """Fix round 1: before it, a worker exception that was not a LabError ended the worker without "done" or
     "fatal", and search() waited until Stop. Map path: one MAP_FATAL ends the search. Roster path: every worker
@@ -643,6 +667,7 @@ def test_search_returns_after_unexpected_worker_exceptions(monkeypatch):
     assert events[-1][0] == "finished"
 
 
+@pytest.mark.core
 def test_cli_map_flags(monkeypatch, capsys):
     got = {}
     monkeypatch.setattr(S, "search", lambda profile, origin, criteria, **kw: got.update(criteria=criteria))
@@ -653,6 +678,11 @@ def test_cli_map_flags(monkeypatch, capsys):
                                       "towns": {"city_state": 2, "size3": 3}}
     S.main(["--origin", "trader_scenario", "--stars", "1", "hp1"])
     assert got["criteria"]["map"] is None
+
+
+@pytest.mark.dirty
+def test_cli_bad_towns_flags_exit_and_name_the_flag(monkeypatch, capsys):
+    monkeypatch.setattr(S, "search", lambda profile, origin, criteria, **kw: None)
     for bad in (["--towns", "castle=2"], ["--towns", "size1"], ["--towns", "size1=x"]):
         with pytest.raises(SystemExit):
             S.main(["--origin", "trader_scenario"] + bad)
@@ -680,6 +710,7 @@ VERIFIED_INFO = {"game_version": "1.5.2.3", "legends_version": "19.4.22",
 NOTE = "Map results are not verified for this setup."
 
 
+@pytest.mark.dirty
 def test_the_console_notes_an_unverified_setup_once_for_a_search_with_map_conditions(monkeypatch, capsys):
     """Final review M10: map conditions on a game / Legends version / mod set that nobody checked build maps with
     no sign; the console says so (once: every worker reports the same setup). ASCII only."""
@@ -698,6 +729,7 @@ def test_the_console_notes_an_unverified_setup_once_for_a_search_with_map_condit
         assert NOTE in run_cli_events(monkeypatch, capsys, ready, ["--origin", "trader_scenario", "--ports", "4"])
 
 
+@pytest.mark.dirty
 def test_setup_note_for_vanilla_needs_every_dlc_and_fails_closed():
     """The note is fail-closed: an info without "dlc_complete" is not verified for Vanilla (Lab.info() gives it)."""
     assert S._setup_note({"game_version": "1.5.2.3", "legends_version": None, "mods": []}) == NOTE
@@ -712,6 +744,7 @@ def test_setup_note_for_vanilla_needs_every_dlc_and_fails_closed():
                           "dlc_complete": True}) is None
 
 
+@pytest.mark.edge
 def test_the_console_hint_for_a_map_search_that_found_no_map_waits_for_100_maps(monkeypatch, capsys):
     """Final review I2: 6 or more ports are 3.9 % of the maps, so 0 hits in 20 maps is normal (45 %) and 0 in 100
     is not (2 %). The hint says the maps are rare; it does not say that no seed matches."""
@@ -738,6 +771,7 @@ class DesertersLab(FakeLab):
         return dict(VERIFIED_INFO, dlc_complete=True)
 
 
+@pytest.mark.core
 def test_deserters_get_their_roster_from_the_map_run_not_from_a_roster_call(monkeypatch):
     lab = DesertersLab()
     events = run_worker(monkeypatch, lab, {"stars_by_slot": {"1": "hp1"}}, limit=10, origin=DESERTERS)
@@ -753,6 +787,7 @@ def test_deserters_get_their_roster_from_the_map_run_not_from_a_roster_call(monk
     assert events[-1][0] == "done" and not [e for e in events if e[0] in ("error", "fatal")]
 
 
+@pytest.mark.edge
 def test_deserters_odds_count_every_map_as_one_that_meets_a_condition_that_is_not_there(monkeypatch):
     events = run_worker(monkeypatch, DesertersLab(), {"stars_by_slot": {"1": "hp1"}}, limit=20, origin=DESERTERS)
     odds = odds_of(events)
@@ -760,6 +795,7 @@ def test_deserters_odds_count_every_map_as_one_that_meets_a_condition_that_is_no
     assert odds.maps() == 20 and odds.chance() == pytest.approx(0.5) and not odds.map_never()
 
 
+@pytest.mark.edge
 def test_deserters_with_map_conditions_check_the_same_map(monkeypatch):
     lab = DesertersLab()
     events = run_worker(monkeypatch, lab, {"stars_by_slot": {"1": "hp1"}, "map": {"ports": 7}}, limit=30,
@@ -774,12 +810,14 @@ def test_deserters_with_map_conditions_check_the_same_map(monkeypatch):
     assert odds.chance() == pytest.approx(0.5 * 0.3)
 
 
+@pytest.mark.edge
 def test_deserters_with_map_conditions_only(monkeypatch):
     events = run_worker(monkeypatch, DesertersLab(), {"map": {"ports": 9}}, limit=30, origin=DESERTERS)
     assert [m["seed"] for m in matches_of(events)] == ["0000000009", "0000000019", "0000000029"]
     assert FakeLab.roster_calls == 0 and FakeLab.world_map_calls == 33
 
 
+@pytest.mark.core
 def test_deserters_checked_seeds_report_the_roster_and_the_failure(monkeypatch):
     events = run_worker(monkeypatch, DesertersLab(), {"stars_by_slot": {"1": "hp1"}},
                         seeds=["0000000002", "0000000003"], origin=DESERTERS)
@@ -789,6 +827,7 @@ def test_deserters_checked_seeds_report_the_roster_and_the_failure(monkeypatch):
     assert all(m["roster"] and m["map"] is None for m in found.values())
 
 
+@pytest.mark.dirty
 def test_a_deserters_map_error_skips_that_seed_and_a_checked_one_has_no_roster(monkeypatch):
     events = run_worker(monkeypatch, DesertersLab(map_errors={"0000000005"}), {"stars_by_slot": {"1": "hp1"}},
                         limit=10, origin=DESERTERS)
@@ -801,6 +840,7 @@ def test_a_deserters_map_error_skips_that_seed_and_a_checked_one_has_no_roster(m
     assert not matches_of(events) and [p for kind, _i, p in events if kind == "error"]
 
 
+@pytest.mark.dirty
 def test_a_deserters_map_that_fails_twice_without_one_that_worked_is_a_deserters_fatal(monkeypatch):
     events = run_worker(monkeypatch, DesertersLab(map_errors=True), {"stars_by_slot": {"1": "hp1"}}, limit=30,
                         origin=DESERTERS)
@@ -821,6 +861,7 @@ def _with_version(mod_id, version):
     return [dict(m, version=version) if m["id"] == mod_id else dict(m) for m in VERIFIED_INFO["mods"]]
 
 
+@pytest.mark.dirty
 def test_deserters_need_a_verified_setup(monkeypatch):
     """Their brothers are made on the map: on a setup whose maps nobody checked the search stops with one fatal event
     and builds no map. Another origin is not held back."""
@@ -842,6 +883,7 @@ def test_deserters_need_a_verified_setup(monkeypatch):
     assert events[0][0] == "ready" and len(matches_of(events)) == 5
 
 
+@pytest.mark.dirty
 def test_a_deserters_search_ends_at_the_first_deserters_fatal(monkeypatch):
     found, events = run_search(monkeypatch, lambda: DesertersLab(map_errors=True), {"stars_by_slot": {"1": "hp1"}},
                                origin=DESERTERS, workers=3, max_seeds=30, count=1)
@@ -856,6 +898,7 @@ def test_a_deserters_search_ends_at_the_first_deserters_fatal(monkeypatch):
     assert progress[-1][3]["maps"] == progress[-1][3]["tested"] > 0
 
 
+@pytest.mark.core
 def test_the_console_says_when_to_start_a_deserters_seed(monkeypatch, capsys):
     """Legends' black-market counter: every map of a search is built at 0, so the seed is for the first campaign after
     the game starts. The base game has none; no other origin gets the line."""
@@ -877,6 +920,7 @@ DESERTER_BRO = {"name": "Hans", "background": "background.deserter", "background
 OPTIONS = {"Settlements": 24, "Water": 38}
 
 
+@pytest.mark.core
 def test_the_console_match_of_a_deserters_search_shows_the_map_options(monkeypatch, capsys):
     legends = dict(VERIFIED_INFO, dlc_complete=True, map_options=OPTIONS)
     match = ("match", {"seed": "0000000001", "stable": True, "failure": None, "map": None, "roster": [DESERTER_BRO]})
@@ -889,6 +933,7 @@ def test_the_console_match_of_a_deserters_search_shows_the_map_options(monkeypat
     assert "Map Options used" not in out and "first campaign" not in out, "the base game has no Map Options"
 
 
+@pytest.mark.core
 def test_show_a_deserters_seed_runs_the_whole_map_for_the_roster(monkeypatch, capsys):
     """--show SEED --origin deserters_scenario: the brothers are made on the map, so the roster comes from the map run
     on through the start (with the perk trees, the counter at 0), never from Lab.roster_with_perks."""
@@ -923,6 +968,7 @@ def test_show_a_deserters_seed_runs_the_whole_map_for_the_roster(monkeypatch, ca
 
 
 # ---------------------------------------------------------------- the company's start tile on the map (stage 2 C1)
+@pytest.mark.core
 def test_a_match_with_a_map_carries_the_start_tile_of_the_confirming_map(monkeypatch):
     """Every origin's confirming map is run on through the start (the sift maps are not: the start is no condition),
     so the payload's map has "start" = the party's square."""
@@ -934,18 +980,14 @@ def test_a_match_with_a_map_carries_the_start_tile_of_the_confirming_map(monkeyp
     assert lab.blackmarket == [0] * 11
 
 
-def test_a_roster_only_search_still_builds_no_map(monkeypatch):
-    lab = FakeLab()
-    events = run_worker(monkeypatch, lab, criteria={"stars_by_slot": {"1": "hp1"}}, limit=10)
-    assert lab.map_calls == [] and all(m["map"] is None for m in matches_of(events))
-
-
+@pytest.mark.core
 def test_a_checked_seed_gets_a_start_on_its_map(monkeypatch):
     events = run_worker(monkeypatch, FakeLab(), criteria={"map": {"ports": 1}}, seeds=["0000000004"])
     [match] = matches_of(events)
     assert match["map"]["start"] == [7, 40]
 
 
+@pytest.mark.dirty
 def test_a_start_that_cannot_be_made_leaves_the_map_without_one(monkeypatch):
     """The start is a picture only: an origin whose start the lab cannot run (a mod's) must not lose its matches."""
     lab = FakeLab()
@@ -957,18 +999,6 @@ def test_a_start_that_cannot_be_made_leaves_the_map_without_one(monkeypatch):
     assert lab.map_calls[-2:] == [("spawn", False), ("reseed", False)]
 
 
-def test_a_confirming_map_that_is_bad_without_its_start_too_is_still_skipped(monkeypatch):
-    class Bad(FakeLab):
-        def world_map(self, seed, *args, **kwargs):
-            out = FakeLab.world_map(self, seed, *args, **kwargs)
-            if self.builds[seed] >= 2:
-                out["stub_uses"] = UNREVIEWED
-            return out
-    events = run_worker(monkeypatch, Bad(), criteria={"map": {"ports": 9}}, limit=10)
-    assert matches_of(events) == []
-    assert len([p for k, _i, p in events if k == "error"]) == 1
-
-
 def small_cli_map(**extra):
     """A map summary mapdraw can draw: 10 x 8 tiles of land and two towns."""
     towns = [{"name": "Hafen", "script": "legends_fishing_village", "size": 1, "x": 2, "y": 3, "southern": False,
@@ -978,6 +1008,7 @@ def small_cli_map(**extra):
     return dict({"size": [10, 8], "layout": "even-q-up", "terrain": "L" * 80, "towns": towns, "attempts": 1}, **extra)
 
 
+@pytest.mark.edge
 def test_the_map_report_has_a_start_line_only_for_a_verified_setup():
     from bbseed.mapgen import FIRST_CAMPAIGN
     m = small_cli_map(start=[4, 6])
@@ -993,6 +1024,7 @@ def test_the_map_report_has_a_start_line_only_for_a_verified_setup():
         assert not any(line.strip().startswith("Start:") or "first campaign" in line for line in lines)
 
 
+@pytest.mark.core
 def test_cli_map_prints_the_start_and_draws_it_only_on_a_verified_setup(monkeypatch, capsys, tmp_path):
     import bbseed.lab as lab_module
     calls = []

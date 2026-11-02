@@ -8,6 +8,7 @@ from bbreroll import offline_origins as O
 from bbseed import profiles
 
 
+@pytest.mark.core
 def test_setups_are_named_vanilla_and_legends():
     assert (O.LEGENDS, O.VANILLA) == ("Legends", "Vanilla")
     for setup, (profile, _legends) in O.SETUPS.items():
@@ -18,6 +19,7 @@ def test_setups_are_named_vanilla_and_legends():
     assert not any(O.is_legends_only(n) for n in O.names_for("a setup that does not exist"))
 
 
+@pytest.mark.core
 def test_setups_follow_what_is_installed(monkeypatch):
     def setups(found):
         monkeypatch.setattr(profiles, "installed_summary", lambda game_data=None: found)
@@ -46,6 +48,7 @@ def test_setups_follow_what_is_installed(monkeypatch):
         O.refresh()
 
 
+@pytest.mark.core
 def test_the_in_game_mod_is_never_loaded_by_the_offline_search(tmp_path):
     import zipfile
     data = tmp_path / "data"
@@ -61,6 +64,7 @@ def test_the_in_game_mod_is_never_loaded_by_the_offline_search(tmp_path):
     assert summary["legends"] is True and summary["reroll_mod"] == ["mod_bb_reroll_dump.zip"]
 
 
+@pytest.mark.core
 @pytest.mark.xdist_group("labs")          # it takes the session labs through request.getfixturevalue
 @pytest.mark.skipif(O.FOUND is None, reason="no installed game found")
 def test_every_offered_origin_exists_in_the_game_menu(request):
@@ -83,6 +87,7 @@ def test_every_offered_origin_exists_in_the_game_menu(request):
         assert not missing, "%s: not in the game's new-campaign menu: %s" % (setup, missing)
 
 
+@pytest.mark.edge
 def test_origins_other_mods_add_are_offered_for_their_setup_only():
     catalog = {"origins": [["trader_scenario", "scenario.trader", "Trading Caravan"],
                            ["random_scenario", "scenario.random", "Random"],
@@ -120,6 +125,7 @@ def _installed(monkeypatch, **found):
     O.refresh()
 
 
+@pytest.mark.edge
 def test_deserters_are_offered_only_where_the_maps_are_verified(monkeypatch):
     """Their brothers are made on the map: Legends 19.4.22 with its own mods, or the base game with every DLC."""
     try:
@@ -150,6 +156,7 @@ def test_deserters_are_offered_only_where_the_maps_are_verified(monkeypatch):
         O.refresh()
 
 
+@pytest.mark.core
 def test_the_note_for_a_setup_without_deserters_is_short_plain_text():
     note = O.NOT_SEARCHABLE["Deserters"]
     assert "map" in note and note.isascii() and all(len(s.split()) <= 25 for s in note.split(". "))

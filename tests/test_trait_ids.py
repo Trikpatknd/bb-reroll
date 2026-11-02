@@ -6,6 +6,8 @@ LEGENDS_TRAIT_IDS = every `ID = "trait.X"` in Legends 19.4.22
 mod_legends/!!config/trait_defs.nut (identical to 19.3.41). Refresh it when
 checking a new Legends release.
 """
+import pytest
+
 from bbreroll.criteria import DEFAULT_BANNED, DEFAULT_REQUIRED
 from bbreroll.trait_names import TRAIT_NAMES
 
@@ -40,17 +42,21 @@ LEGENDS_TRAIT_IDS = frozenset({
 })
 
 
+@pytest.mark.core
 def test_oracle_size():
     assert len(LEGENDS_TRAIT_IDS) == 129
 
 
+@pytest.mark.core
 def test_default_banned_are_real_traits():
     assert sorted(set(DEFAULT_BANNED) - LEGENDS_TRAIT_IDS) == []
 
 
+@pytest.mark.core
 def test_default_required_are_real_traits():
     assert sorted(set(DEFAULT_REQUIRED) - LEGENDS_TRAIT_IDS) == []
 
 
+@pytest.mark.core
 def test_trait_names_keys_are_real_traits():
     assert sorted(set(TRAIT_NAMES) - LEGENDS_TRAIT_IDS) == []

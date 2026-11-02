@@ -7,6 +7,12 @@ in all) to run them side by side. `slow` = a test whose setup + call took more t
 real search workers, game rosters): the `@pytest.mark.slow` lines of the test files list them. A test named by its
 node id on the command line (`tests/test_x.py::test_y`) always runs, and so does anything selected with `-m`.
 
+Categories: every test function has exactly one of three markers, and collection stops with an error when one has none or
+several. Decide in this order. `dirty`: invalid, malformed, missing or failing input or environment, and how it is
+handled. `edge`: valid input at a limit or an unusual case or combination. `core`: ordinary valid input, the main
+behaviour. A test with a failure check beside other checks is two tests: `pytest.raises` belongs in `dirty` tests.
+`python -m pytest -m core` runs one category (slow tests too); `-m "core and not slow"` the fast part of it.
+
 Labs: booting a Legends lab takes ~15 s, a Vanilla one ~4 s, so the game tests that only READ a lab share one per
 test session (`legends_lab`, `vanilla_lab` below; the lab is booted by the first test that asks for it). A test that
 needs a fresh or an altered lab (another profile or Mod Options, `watch_rolls()`, a TalentWatch that wraps the player
@@ -35,6 +41,9 @@ def pytest_addoption(parser, pluginmanager):
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: setup + call over ~5 s; runs only with --full (or -m slow / a node id)")
     config.addinivalue_line("markers", "xdist_group(name): tests of one group run on one pytest-xdist worker, in order")
+    config.addinivalue_line("markers", "core: ordinary valid input, the main behaviour")
+    config.addinivalue_line("markers", "edge: valid input at a limit or an unusual case or combination")
+    config.addinivalue_line("markers", "dirty: invalid, missing or failing input or environment, and how it is handled")
 
 
 
@@ -54,6 +63,10 @@ def _xdist_group(item):
 
 @pytest.hookimpl(tryfirst=True)       # before pytest-xdist adds the group names to the node ids
 def pytest_collection_modifyitems(config, items):
+    wrong = [item.nodeid for item in items
+             if len({mark.name for mark in item.iter_markers()} & {"core", "edge", "dirty"}) != 1]
+    if wrong:
+        raise pytest.UsageError("every test needs exactly one of core / edge / dirty (conftest.py):\n  " + "\n  ".join(wrong))
     for item in items:
         group = _xdist_group(item)
         if group and not item.get_closest_marker("xdist_group"):

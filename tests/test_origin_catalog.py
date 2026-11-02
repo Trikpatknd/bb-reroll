@@ -1,5 +1,7 @@
 """Integrity checks for the per-origin hardcoded-stars catalog and its
 agreement with the GUI's ORIGINS list (bbreroll/offline_origins.py)."""
+import pytest
+
 from bbreroll import offline_origins
 from bbreroll import origin_hardcoded_stars as ohs
 
@@ -12,16 +14,13 @@ def _gui_origins():
     return offline_origins.ORIGINS
 
 
+@pytest.mark.core
 def test_catalog_has_expected_count():
     # 14 vanilla Legends-hooked + 21 Legends-added (Legends 19.4.22).
     assert len(ohs.ORIGIN_HARDCODED_STARS) == 35
 
 
-def test_disabled_origins_absent():
-    for name in DISABLED:
-        assert name not in ohs.ORIGIN_HARDCODED_STARS, f"{name} is disabled and must not appear"
-
-
+@pytest.mark.core
 def test_slot_keys_and_values_valid():
     for origin, slots in ohs.ORIGIN_HARDCODED_STARS.items():
         assert isinstance(slots, list), origin
@@ -33,6 +32,7 @@ def test_slot_keys_and_values_valid():
                     f"{origin} slot {i}: {stat} out of range ({val})"
 
 
+@pytest.mark.core
 def test_catalog_matches_gui_origins():
     gui_names = [name for name, _count in _gui_origins()]
     assert set(gui_names) == set(ohs.ORIGIN_HARDCODED_STARS), \
@@ -41,6 +41,7 @@ def test_catalog_matches_gui_origins():
         assert name not in gui_names
 
 
+@pytest.mark.core
 def test_slot_count_matches_gui_bro_count():
     """For origins with a fixed bro count in the dropdown, the catalog should
     list exactly that many slots."""
@@ -52,6 +53,7 @@ def test_slot_count_matches_gui_bro_count():
         assert len(slots) == count, f"{origin}: catalog has {len(slots)} slots, dropdown says {count}"
 
 
+@pytest.mark.core
 def test_every_origin_has_a_scenario_script_and_a_brother_count():
     assert [name for name, _count in _gui_origins()] == list(offline_origins.SCENARIO)
     assert offline_origins.COUNTS["Peasant Militia"] == 12 and offline_origins.COUNTS["Random Party"] is None

@@ -44,6 +44,7 @@ def survey_vanilla():
     return big_stack(lambda: Lab("vanilla"))
 
 
+@pytest.mark.core
 @legends_only
 def test_info_lists_the_installed_mod_zips_with_their_versions(legends):
     mods = _in_lab(legends, lambda lab: lab.info()["mods"])
@@ -52,12 +53,14 @@ def test_info_lists_the_installed_mod_zips_with_their_versions(legends):
         ("Modern Hooks", "0.6.0"), ("Modding Standards & Utilities (MSU)", "1.9.0")]
 
 
+@pytest.mark.edge
 @game_only
 def test_the_unmodded_game_has_no_mods(vanilla):
     assert _in_lab(vanilla, lambda lab: lab.info()["mods"]) == []
     assert _in_lab(vanilla, lambda lab: lab.info()["dlc_complete"]) is True, "this install has every DLC"
 
 
+@pytest.mark.core
 @game_only
 def test_this_install_has_all_dlc():
     from bbseed import gamedata
@@ -67,6 +70,7 @@ def test_this_install_has_all_dlc():
 
 
 # ---------------------------------------------------------------- perk trees
+@pytest.mark.core
 @legends_only
 def test_a_confirmed_roster_lists_each_recruits_perk_groups(legends):
     from bbseed.lab import describe, without_perks
@@ -79,6 +83,7 @@ def test_a_confirmed_roster_lists_each_recruits_perk_groups(legends):
     assert "Profession perk groups: Caravaneering, Barter" in describe(with_perks[0])
 
 
+@pytest.mark.edge
 @game_only
 def test_the_unmodded_game_has_no_perk_groups(vanilla):
     roster = _in_lab(vanilla, lambda lab: lab.roster_with_perks("1234567890", "early_access_scenario"))
@@ -106,6 +111,7 @@ def _rolls_unchanged_and_in_range(make_lab, origins):
                 assert r["lo"] <= r["value"] <= r["hi"], (bro["background"], stat, r)
 
 
+@pytest.mark.core
 @pytest.mark.slow
 @legends_only
 def test_legends_rolls_are_recorded_inside_their_ranges_without_changing_rosters():
@@ -114,6 +120,7 @@ def test_legends_rolls_are_recorded_inside_their_ranges_without_changing_rosters
                                                             "legends_rangers_scenario", "legend_risen_legion_scenario"])
 
 
+@pytest.mark.core
 @pytest.mark.slow
 @game_only
 def test_vanilla_rolls_are_recorded_inside_their_ranges_without_changing_rosters():
@@ -132,6 +139,7 @@ def _survey(lab, origin):
     return _in_lab(lab, run)
 
 
+@pytest.mark.edge
 @legends_only
 def test_berserker_always_has_stars_in_four_stats(survey_legends):
     (slot,) = _survey(survey_legends, "legends_berserker_scenario")["slots"]
@@ -140,6 +148,7 @@ def test_berserker_always_has_stars_in_four_stats(survey_legends):
     assert all(top == 3 for top in slot["max"].values())
 
 
+@pytest.mark.edge
 @legends_only
 def test_scaling_beggar_can_never_have_four_starred_stats_nor_hp_or_resolve_stars(survey_legends):
     # the user's case of 2026-10-15: 100,000 seeds searched for 4 starred stats, none found
@@ -149,6 +158,7 @@ def test_scaling_beggar_can_never_have_four_starred_stats_nor_hp_or_resolve_star
     assert slot["rolled"] == ["fat", "init", "msk", "rsk", "mdf", "rdf"]
 
 
+@pytest.mark.edge
 @legends_only
 @pytest.mark.slow
 def test_inquisition_fixes_stars_after_the_roll(survey_legends):
@@ -159,6 +169,7 @@ def test_inquisition_fixes_stars_after_the_roll(survey_legends):
     assert slots[1]["most"] == 3 and slots[1]["picks"] == 1            # one forced pick on top
 
 
+@pytest.mark.edge
 @legends_only
 @pytest.mark.slow
 def test_ranger_brother_two_gets_stars_from_his_background_and_the_origin(survey_legends):
@@ -168,6 +179,7 @@ def test_ranger_brother_two_gets_stars_from_his_background_and_the_origin(survey
     assert slots[1]["picks"] == 2 and slots[1]["most"] == 5
 
 
+@pytest.mark.core
 @legends_only
 @pytest.mark.slow
 def test_legends_a_new_company_has_fixed_stars_too(survey_legends):
@@ -178,6 +190,7 @@ def test_legends_a_new_company_has_fixed_stars_too(survey_legends):
     assert all(s["picks"] == 0 for s in slots)
 
 
+@pytest.mark.core
 @game_only
 def test_vanilla_a_new_company_has_the_same_stars_on_every_seed(survey_vanilla):
     slots = _survey(survey_vanilla, "early_access_scenario")["slots"]
@@ -199,6 +212,7 @@ def _deserters_survey(lab):
     return s
 
 
+@pytest.mark.core
 @pytest.mark.slow
 @legends_only
 def test_legends_deserters_are_surveyed_with_the_start_loop_lengths(survey_legends):
@@ -214,6 +228,7 @@ def test_legends_deserters_are_surveyed_with_the_start_loop_lengths(survey_legen
     assert len(DESERTERS_LOOPS) == len(set(DESERTERS_LOOPS)) and DESERTERS_LOOPS[0] == 1
 
 
+@pytest.mark.core
 @pytest.mark.slow
 @game_only
 def test_vanilla_deserters_are_surveyed_with_the_start_loop_lengths(survey_vanilla):

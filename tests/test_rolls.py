@@ -7,6 +7,7 @@ from bbseed.search import first_failure, normalize, parse_tiers
 ZERO = dict.fromkeys(("hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf"), 0)
 
 
+@pytest.mark.core
 def test_one_even_roll():
     dist = distribution(1, 3, averaged=False)
     assert dist == pytest.approx({1: 1 / 3, 2: 1 / 3, 3: 1 / 3})
@@ -14,6 +15,7 @@ def test_one_even_roll():
     assert tier(1, 3, 2, False) == "mid" and tier(1, 3, 3, False) == "high"
 
 
+@pytest.mark.core
 def test_legends_averages_two_rolls_in_integers():
     # (a + b) / 2 truncated: 50..52 -> sums 100..104 -> 50, 50 (101), 51, 51 (103), 52
     dist = distribution(50, 52, averaged=True)
@@ -23,15 +25,18 @@ def test_legends_averages_two_rolls_in_integers():
     assert tier(50, 52, 50, True) == "low" and tier(50, 52, 51, True) == "mid" and tier(50, 52, 52, True) == "high"
 
 
+@pytest.mark.edge
 def test_negative_sums_truncate_toward_zero_as_squirrel_does():
     dist = distribution(-2, -1, averaged=True)       # sums -4, -3, -3, -2 -> -2, -1, -1, -1
     assert dist == pytest.approx({-2: 0.25, -1: 0.75})
 
 
+@pytest.mark.edge
 def test_a_single_value_range_has_no_tier():
     assert place(55, 55, 55, True) is None and tier(55, 55, 55, True) == "fixed"
 
 
+@pytest.mark.core
 def test_minimum_tiers():
     assert meets("high", "mid") and meets("mid", "mid") and not meets("low", "mid")
     assert meets("high", "high") and not meets("mid", "high")
@@ -44,6 +49,7 @@ def bro(**tiers):
             "rolls": {s: {"lo": 0, "hi": 9, "value": 5, "tier": tiers.get(s, "low")} for s in ZERO}}
 
 
+@pytest.mark.core
 def test_roll_criteria_follow_the_slot_rules():
     c = normalize({"tiers_by_slot": {"*": "msk:mid", "2": {"hp": "high", "res": "any"}}})
     assert c["tiers_by_slot"] == {"*": {"msk": "mid"}, "2": {"hp": "high"}}
@@ -54,6 +60,7 @@ def test_roll_criteria_follow_the_slot_rules():
         "no bro3 in this origin's roster"
 
 
+@pytest.mark.dirty
 def test_parse_tiers():
     assert parse_tiers("msk:high res:mid") == {"msk": "high", "res": "mid"}
     for bad in ("msk", "msk:great", "xyz:high"):

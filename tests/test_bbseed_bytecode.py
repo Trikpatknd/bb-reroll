@@ -57,6 +57,7 @@ def table(**slots):
     return t
 
 
+@pytest.mark.core
 def test_arithmetic_and_operand_order():
     # return a - b * 2  (target = STK(arg2) op STK(arg1))
     p = proto([(LOADINT, 3, 2, 0, 0), (MUL, 3, 3, 2, 0), (SUB, 3, 3, 1, 0), (RETURN, 1, 3, 0, 0)], params=("this", "a", "b"))
@@ -65,8 +66,6 @@ def test_arithmetic_and_operand_order():
     assert run(p, 17, 5) == 2 and run(p, -17, 5) == -2
     p = proto([(DIV, 3, 2, 1, 0), (RETURN, 1, 3, 0, 0)], params=("this", "a", "b"))
     assert run(p, 7, 2) == 3 and run(p, -7, 2) == -3 and run(p, 7.0, 2) == 3.5
-    with pytest.raises(SqError):
-        run(p, 1, 0)
     for kind, want in ((0, 12 & 10), (2, 12 | 10), (3, 12 ^ 10), (4, 12 << 10), (5, 12 >> 1), (6, 12 >> 1)):
         p = proto([(BITW, 3, 2, 1, kind), (RETURN, 1, 3, 0, 0)], params=("this", "a", "b"))
         assert run(p, 12, 10 if kind < 5 else 1) == want
@@ -76,6 +75,14 @@ def test_arithmetic_and_operand_order():
     assert run(proto([(RETURN, NONE, 0, 0, 0)])) is None
 
 
+@pytest.mark.dirty
+def test_a_division_by_zero_is_an_error():
+    p = proto([(DIV, 3, 2, 1, 0), (RETURN, 1, 3, 0, 0)], params=("this", "a", "b"))
+    with pytest.raises(SqError):
+        run(p, 1, 0)
+
+
+@pytest.mark.edge
 def test_integer_overflow_wraps_like_a_32_bit_int():
     p = proto([(ADD, 3, 2, 1, 0), (RETURN, 1, 3, 0, 0)], params=("this", "a", "b"))
     assert run(p, 2147483647, 1) == -2147483648
@@ -84,6 +91,7 @@ def test_integer_overflow_wraps_like_a_32_bit_int():
     assert run(p, 1.5) == 2.5
 
 
+@pytest.mark.core
 def test_comparisons_and_jumps():
     # return a < b ? "lt" : "ge"   via JCMP (jumps when the comparison is false)
     lt = proto([(JCMP, 2, 2, 1, 3), (LOAD, 3, 0, 0, 0), (RETURN, 1, 3, 0, 0), (LOAD, 3, 1, 0, 0), (RETURN, 1, 3, 0, 0)],
@@ -103,6 +111,7 @@ def test_comparisons_and_jumps():
     assert [run(jz, v) for v in (None, False, 0, 0.0, "", [], 1, True)] == [False] * 4 + [True] * 4
 
 
+@pytest.mark.core
 def test_and_or_short_circuit_keep_the_deciding_value():
     # return a && b    /    return a || b
     land = proto([(AND, 3, 1, 1, 0), (MOVE, 3, 2, 0, 0), (RETURN, 1, 3, 0, 0)], params=("this", "a", "b"))
@@ -111,6 +120,7 @@ def test_and_or_short_circuit_keep_the_deciding_value():
     assert run(lor, 0, "b") == "b" and run(lor, "a", "b") == "a"
 
 
+@pytest.mark.edge
 def test_post_increment_of_a_local():
     # local j = i++; return [i, j]
     p = proto([(PINCL, 2, 1, 0, 1), (NEWOBJ, 3, 2, 0, 1), (APPENDARRAY, 3, 1, 0, 0), (APPENDARRAY, 3, 2, 0, 0),
@@ -123,6 +133,7 @@ def test_post_increment_of_a_local():
     assert run(p, 5) == 4
 
 
+@pytest.mark.core
 def test_slots_get_set_newslot_delete_exists():
     t = table(x=10)
     # t.y <- t.x; t.x = 3; delete t.x -> returns the deleted value; "x" in t
@@ -132,14 +143,19 @@ def test_slots_get_set_newslot_delete_exists():
               literals=("x", "y"), params=("this", "t"))
     assert run(p, t) == [3, 3, False]
     assert t.get("y") == 10 and "x" not in t
-    with pytest.raises(SqError):
-        run(proto([(LOAD, 2, 0, 0, 0), (LOADINT, 3, 1, 0, 0), (SET, NONE, 1, 2, 3), (RETURN, NONE, 0, 0, 0)],
-                  literals=("nope",), params=("this", "t")), table())
     # `in` never throws: a key in null is just false
     p = proto([(LOAD, 2, 0, 0, 0), (EXISTS, 3, 1, 2, 0), (RETURN, 1, 3, 0, 0)], literals=("x",), params=("this", "t"))
     assert run(p, None) is False and run(p, table(x=1)) is True and run(p, 5) is False
 
 
+@pytest.mark.dirty
+def test_setting_a_slot_that_does_not_exist_is_an_error():
+    with pytest.raises(SqError):
+        run(proto([(LOAD, 2, 0, 0, 0), (LOADINT, 3, 1, 0, 0), (SET, NONE, 1, 2, 3), (RETURN, NONE, 0, 0, 0)],
+                  literals=("nope",), params=("this", "t")), table())
+
+
+@pytest.mark.core
 def test_compound_assignment_and_increment_of_a_slot():
     # t.x += 5   -> COMPARITH: self register in the high word of arg1, value register in the low word
     p = proto([(LOAD, 2, 0, 0, 0), (LOADINT, 3, 5, 0, 0), (COMPARITH, 4, (1 << 16) | 3, 2, ord("+")), (RETURN, 1, 4, 0, 0)],
@@ -155,27 +171,35 @@ def test_compound_assignment_and_increment_of_a_slot():
         assert run(p, t) == want and t.get("x") == left
 
 
+@pytest.mark.edge
 def test_this_falls_back_to_the_root_table():
     vm = VM()
     vm.root.newslot("Global", 7)
     env = table(Local=1)
     read = proto([(GETK, 1, 0, 0, 0), (RETURN, 1, 1, 0, 0)], literals=("Global",))
     assert run(read, this=env, vm=vm) == 7
-    # an assignment through `this` writes the root slot when `this` has none ...
+    # an assignment through `this` writes the root slot when `this` has none
     write = proto([(LOAD, 1, 0, 0, 0), (LOADINT, 2, 9, 0, 0), (SET, NONE, 0, 1, 2), (RETURN, NONE, 0, 0, 0)], literals=("Global",))
     run(write, this=env, vm=vm)
     assert vm.root.get("Global") == 9 and "Global" not in env
-    # ... but a name that exists nowhere is an error, and another object's slots get no such fallback
-    with pytest.raises(SqError):
-        run(proto([(GETK, 1, 0, 0, 0), (RETURN, 1, 1, 0, 0)], literals=("Missing",)), this=env, vm=vm)
-    other = proto([(GETK, 2, 0, 1, 0), (RETURN, 1, 2, 0, 0)], literals=("Global",), params=("this", "t"))
-    with pytest.raises(SqError):
-        run(other, env, this=env, vm=vm)
     # this[integer] on an array `this`
     idx = proto([(LOADINT, 1, 1, 0, 0), (GET, 2, 0, 1, 0), (RETURN, 1, 2, 0, 0)])
     assert run(idx, this=[10, 20, 30], vm=vm) == 20
 
 
+@pytest.mark.dirty
+def test_a_name_that_exists_nowhere_is_an_error_and_another_objects_slots_have_no_root_fallback():
+    vm = VM()
+    vm.root.newslot("Global", 7)
+    env = table(Local=1)
+    with pytest.raises(SqError):
+        run(proto([(GETK, 1, 0, 0, 0), (RETURN, 1, 1, 0, 0)], literals=("Missing",)), this=env, vm=vm)
+    other = proto([(GETK, 2, 0, 1, 0), (RETURN, 1, 2, 0, 0)], literals=("Global",), params=("this", "t"))
+    with pytest.raises(SqError):
+        run(other, env, this=env, vm=vm)
+
+
+@pytest.mark.core
 def test_calls_methods_and_tail_calls():
     vm = VM()
     seen = []
@@ -193,12 +217,19 @@ def test_calls_methods_and_tail_calls():
                   params=("this", "fn"), name="outer")
     run(outer, inner, vm=vm)
     assert seen == [1] and vm.stack == []
+
+
+@pytest.mark.dirty
+def test_a_wrong_number_of_arguments_or_a_call_of_something_not_callable_is_an_error():
+    vm = VM()
+    callee = closure(proto([(ADD, 3, 2, 1, 0), (RETURN, 1, 3, 0, 0)], params=("this", "a", "b"), name="add"), vm)
     with pytest.raises(SqError):                    # wrong number of arguments
         callee.invoke(vm.root, (1,))
     with pytest.raises(SqError):                    # calling something that is not callable
         run(proto([(MOVE, 2, 0, 0, 0), (CALL, 3, 1, 2, 1), (RETURN, 1, 3, 0, 0)], params=("this", "fn")), 5, vm=vm)
 
 
+@pytest.mark.edge
 def test_default_parameters_and_varargs():
     # function(a, b = <value of a register when the closure is made>)
     child = proto([(NEWOBJ, 3, 2, 0, 1), (APPENDARRAY, 3, 1, 0, 0), (APPENDARRAY, 3, 2, 0, 0), (RETURN, 1, 3, 0, 0)],
@@ -206,20 +237,29 @@ def test_default_parameters_and_varargs():
     make = proto([(LOADINT, 1, 7, 0, 0), (CLOSURE, 2, 0, 0, 0), (RETURN, 1, 2, 0, 0)], functions=(child,))
     f = run(make)
     assert f.invoke(None, (1,)) == [1, 7] and f.invoke(None, (1, 2)) == [1, 2]
-    with pytest.raises(SqError):
-        f.invoke(None, ())
-    with pytest.raises(SqError):
-        f.invoke(None, (1, 2, 3))
     # function(a, ...) { return vargv }
     va = closure(proto([(RETURN, 1, 2, 0, 0)], params=("this", "a", "vargv"), varparams=1))
     assert va.invoke(None, (1,)) == [] and va.invoke(None, (1, 2, 3)) == [2, 3]
-    with pytest.raises(SqError):
-        va.invoke(None, ())
     infos = va.vm.lookup(va, "getinfos")
     from bbseed.sq.runtime import call
     assert call(infos, va, ()).get("parameters") == ["this", "a", "vargv", "..."]
 
 
+@pytest.mark.dirty
+def test_too_few_or_too_many_arguments_for_defaults_and_varargs_are_errors():
+    child = proto([(NEWOBJ, 3, 2, 0, 1), (APPENDARRAY, 3, 1, 0, 0), (APPENDARRAY, 3, 2, 0, 0), (RETURN, 1, 3, 0, 0)],
+                  params=("this", "a", "b"), defaults=(1,))
+    f = run(proto([(LOADINT, 1, 7, 0, 0), (CLOSURE, 2, 0, 0, 0), (RETURN, 1, 2, 0, 0)], functions=(child,)))
+    with pytest.raises(SqError):
+        f.invoke(None, ())
+    with pytest.raises(SqError):
+        f.invoke(None, (1, 2, 3))
+    va = closure(proto([(RETURN, 1, 2, 0, 0)], params=("this", "a", "vargv"), varparams=1))
+    with pytest.raises(SqError):
+        va.invoke(None, ())
+
+
+@pytest.mark.core
 def test_foreach_over_arrays_tables_and_strings():
     # local sum = 0; foreach (k, v in c) sum += v; return sum
     total = proto([(LOADINT, 2, 0, 0, 0), (LOADNULLS, 3, 3, 0, 0), (FOREACH, 1, 3, 3, 0), (POSTFOREACH, 1, 3, 3, 0),
@@ -227,8 +267,6 @@ def test_foreach_over_arrays_tables_and_strings():
     assert run(total, [1, 2, 3]) == 6 and run(total, []) == 0
     assert run(total, table(a=10, b=20)) == 30
     assert run(total, "AB") == 65 + 66
-    with pytest.raises(SqError):
-        run(total, 5)
     # the keys: array indices
     keys = proto([(NEWOBJ, 2, 0, 0, 1), (LOADNULLS, 3, 3, 0, 0), (FOREACH, 1, 3, 3, 0), (POSTFOREACH, 1, 3, 3, 0),
                   (APPENDARRAY, 2, 3, 0, 0), (JMP, 0, -4, 0, 0), (RETURN, 1, 2, 0, 0)], params=("this", "c"))
@@ -236,6 +274,15 @@ def test_foreach_over_arrays_tables_and_strings():
     assert sorted(run(keys, table(a=1, b=2))) == ["a", "b"]
 
 
+@pytest.mark.dirty
+def test_foreach_over_a_number_is_an_error():
+    total = proto([(LOADINT, 2, 0, 0, 0), (LOADNULLS, 3, 3, 0, 0), (FOREACH, 1, 3, 3, 0), (POSTFOREACH, 1, 3, 3, 0),
+                   (ADD, 2, 4, 2, 0), (JMP, 0, -4, 0, 0), (RETURN, 1, 2, 0, 0)], params=("this", "c"))
+    with pytest.raises(SqError):
+        run(total, 5)
+
+
+@pytest.mark.core
 def test_closures_share_a_captured_local_and_keep_it_after_the_function_returns():
     # local n = 0; local inc = function() { n = n + 1; return n }; inc(); inc(); return [n, inc]
     inc = proto([(GETOUTER, 1, 0, 0, 0), (LOADINT, 2, 1, 0, 0), (ADD, 1, 2, 1, 0), (SETOUTER, NONE, 0, 1, 0), (RETURN, 1, 1, 0, 0)],
@@ -253,6 +300,7 @@ def test_closures_share_a_captured_local_and_keep_it_after_the_function_returns(
     assert run(top, "kept").invoke(None, ()).invoke(None, ()) == "kept"
 
 
+@pytest.mark.edge
 def test_a_local_declared_in_a_loop_body_is_captured_anew_each_time():
     # local fns = []; for (local i = 0; i < 3; i++) { local j = i * 10; fns.append(function() { return j }) }; return fns
     get_j = proto([(GETOUTER, 1, 0, 0, 0), (RETURN, 1, 1, 0, 0)], outers=((0, 3, "j"),))
@@ -264,6 +312,7 @@ def test_a_local_declared_in_a_loop_body_is_captured_anew_each_time():
     assert [f.invoke(None, ()) for f in run(loop)] == [0, 10, 20]
 
 
+@pytest.mark.dirty
 def test_try_catch():
     # try { throw x } catch (e) { return e }   /   try { } catch (e) { }; return "fine"
     thrown = proto([(PUSHTRAP, 2, 3, 0, 0), (THROW, 1, 0, 0, 0), (POPTRAP, 1, 0, 0, 0), (JMP, 0, 1, 0, 0),
@@ -284,6 +333,7 @@ def test_try_catch():
     assert caught.value.value == "up" and vm.stack == [thrower]
 
 
+@pytest.mark.core
 def test_classes_instances_typeof_clone():
     vm = VM()
     get_x = proto([(GETK, 1, 0, 0, 0), (RETURN, 1, 1, 0, 0)], literals=("x",), name="getX")
@@ -301,8 +351,6 @@ def test_classes_instances_typeof_clone():
                 literals=("getX",), params=("this", "cls"))
     x, is_inst, kind, five, inst = run(use, cls, vm=vm)
     assert (x, is_inst, kind, five) == (5, True, "instance", False) and type(inst) is SqInstance
-    with pytest.raises(SqError):                    # instanceof needs a class on the right
-        run(proto([(INSTANCEOF, 2, 1, 1, 0), (RETURN, 1, 2, 0, 0)], params=("this", "a")), 5, vm=vm)
     # clone copies a table; array literals take stack values, literals, ints, floats and bools
     cl = proto([(CLONE, 2, 1, 0, 0), (RETURN, 1, 2, 0, 0)], params=("this", "t"))
     src = table(a=1)
@@ -314,6 +362,13 @@ def test_classes_instances_typeof_clone():
     assert run(arr, vm=vm) == ["lit", -3, 1.5, True]
 
 
+@pytest.mark.dirty
+def test_instanceof_needs_a_class_on_the_right():
+    with pytest.raises(SqError):
+        run(proto([(INSTANCEOF, 2, 1, 1, 0), (RETURN, 1, 2, 0, 0)], params=("this", "a")), 5, vm=VM())
+
+
+@pytest.mark.edge
 def test_generator_functions_give_a_generator_object_without_running():
     gen = closure(proto([(THROW, 0, 0, 0, 0)], generator=True))
     assert typeof(gen.invoke(None, ())) == "generator"

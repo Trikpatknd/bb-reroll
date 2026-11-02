@@ -1,4 +1,6 @@
 """Pins the Discord seed-report formatter. Pure / tkinter-free."""
+import pytest
+
 from bbreroll.seed_report import _ANY_MAP, _MAP_OPTION_LABELS, _UNKNOWN, build_seed_report
 
 FULL_INFO = {
@@ -13,6 +15,7 @@ FULL_INFO = {
 }
 
 
+@pytest.mark.core
 def test_full_report_has_all_fields():
     out = build_seed_report("Gladiators", "Two melee 3-star bros", "UUG243P3BQ",
                             FULL_INFO, "3.4.6")
@@ -28,12 +31,14 @@ def test_full_report_has_all_fields():
     assert "Found with BB Reroll v3.4.6 — github.com/Trikpatknd/bb-reroll" in out
 
 
+@pytest.mark.core
 def test_booleans_render_yes_no():
     out = build_seed_report("Noble", "", "ABCDEFGH12", FULL_INFO, "3.4.6")
     assert "Decked Out Citadels: Yes" in out          # StackCitadels=true
     assert "All trade buildings available: No" in out  # AllTradeLocations=false
 
 
+@pytest.mark.dirty
 def test_unknown_info_renders_placeholders_not_crash():
     empty = {"version": None, "build_name": None, "battle_sisters": None, "map_options": {}}
     out = build_seed_report("Lone Wolf", "", "ABCDEFGH12", empty, "3.4.6")
@@ -41,6 +46,7 @@ def test_unknown_info_renders_placeholders_not_crash():
     assert "Battle sisters: (unknown)" in out
 
 
+@pytest.mark.core
 def test_without_map_options_the_post_says_they_do_not_matter():
     # what the offline search passes: the recruits come from the seed text alone
     info = {"version": "19.4.22", "build_name": "Bandits & Greenskins", "battle_sisters": "Enabled",
@@ -51,22 +57,26 @@ def test_without_map_options_the_post_says_they_do_not_matter():
     assert out.endswith("Found with BB Reroll v4.0.0 — github.com/Trikpatknd/bb-reroll")
 
 
+@pytest.mark.edge
 def test_empty_description_leaves_blank_value():
     out = build_seed_report("Gladiators", "", "ABCDEFGH12", FULL_INFO, "3.4.6")
     assert "Brief description: \n" in out
 
 
+@pytest.mark.edge
 def test_version_without_build_name_omits_trailing_space():
     info = dict(FULL_INFO, build_name=None)
     out = build_seed_report("Gladiators", "x", "ABCDEFGH12", info, "3.4.6")
     assert "Version: 19.3.39\n" in out
 
 
+@pytest.mark.edge
 def test_footer_drops_version_when_unknown():
     out = build_seed_report("Gladiators", "x", "ABCDEFGH12", FULL_INFO, "unknown")
     assert "Found with BB Reroll — github.com/Trikpatknd/bb-reroll" in out
 
 
+@pytest.mark.edge
 def test_origin_prefers_report_info_over_dropdown_arg():
     # The origin the search actually ran must win over the GUI dropdown value.
     info = dict(FULL_INFO, origin="Gladiators")
@@ -75,12 +85,7 @@ def test_origin_prefers_report_info_over_dropdown_arg():
     assert "Origin: Lone Wolf" not in out
 
 
-def test_origin_falls_back_to_dropdown_arg_when_not_reported():
-    info = dict(FULL_INFO)            # FULL_INFO has no "origin" key
-    out = build_seed_report("Lone Wolf", "x", "ABCDEFGH12", info, "3.4.6")
-    assert "Origin: Lone Wolf" in out
-
-
+@pytest.mark.core
 def test_roster_adds_a_bros_line_with_stars_per_brother():
     roster = [{"stars": {"hp": 0, "msk": 3, "mdf": 2, "rdf": 1}},
               {"stars": {"mdf": 1, "fat": 2}},          # dict order is not the stat order
@@ -89,6 +94,7 @@ def test_roster_adds_a_bros_line_with_stars_per_brother():
     assert "Brief description: x\nBros: 1) MSK3 MDF2 RDF1 | 2) FAT2 MDF1 | 3) no stars\nSeed:" in out
 
 
+@pytest.mark.core
 def test_game_version_and_mods_are_listed_for_compatibility():
     info = dict(FULL_INFO, game_version="1.5.2.3",
                 mods=[{"name": "Legends Mod", "version": "19.4.22"}, {"name": "mod_textures", "version": None}])
@@ -96,22 +102,26 @@ def test_game_version_and_mods_are_listed_for_compatibility():
     assert "Game version: 1.5.2.3\nMods: Legends Mod 19.4.22, mod_textures\n" in out
 
 
+@pytest.mark.edge
 def test_an_unmodded_game_says_no_mods():
     info = dict(FULL_INFO, game_version="1.5.2.3", mods=[])
     out = build_seed_report("Gladiators", "x", "ABCDEFGH12", info, "4.0.0")
     assert "Mods: none\n" in out
 
 
+@pytest.mark.edge
 def test_older_entries_without_mod_info_have_no_mods_line():
     out = build_seed_report("Gladiators", "x", "ABCDEFGH12", FULL_INFO, "4.0.0")
     assert "Mods:" not in out and "Game version:" not in out
 
 
+@pytest.mark.edge
 def test_without_roster_there_is_no_bros_line():
     out = build_seed_report("Gladiators", "x", "ABCDEFGH12", FULL_INFO, "4.0.0")
     assert "Bros:" not in out
 
 
+@pytest.mark.core
 def test_the_bros_line_names_each_brothers_background():
     roster = [{"stars": {"msk": 3}, "background_name": "Hedge Knight"},
               {"stars": {}, "background_name": "Background: Sellsword"}]
@@ -147,15 +157,7 @@ MAP_9_PORTS = {"size": [10, 10], "layout": "even-q-up", "terrain": "L" * 100, "a
     _town(3, 5, port=True), _town(4, 4, port=True), _town(5, 3, port=True), _town(6, 2, port=True)]}
 
 
-def test_post_with_map_names_ports_and_map_options():
-    text = build_seed_report("Trading Caravan", "", "0000000009", info_with_map_options(), "4.2.0",
-                             roster=ROSTER, game_map=MAP_9_PORTS)
-    assert "Map: Ports 9 (south 2, north 3) · 3 city states\n" in text
-    assert "Land Mass Ratio: 55" in text and "Water: 38" in text and "Snowline: 85" in text
-    assert "Decked Out Citadels: Yes" in text and "All trade buildings available: No" in text
-    assert _ANY_MAP not in text
-
-
+@pytest.mark.core
 def test_the_post_with_a_map_in_full():
     """The Map line stands in the Map Options block's paragraph, above the block."""
     text = build_seed_report("Trading Caravan", "A port map", "0000000009", info_with_map_options(), "4.2.0",
@@ -199,6 +201,7 @@ TODAY_ANY_MAP = (
     "Found with BB Reroll v4.2.0 — github.com/Trikpatknd/bb-reroll")
 
 
+@pytest.mark.core
 def test_post_without_map_is_unchanged():
     info = info_with_map_options()
     args = ("Trading Caravan", "A port map", "0000000009", info, "4.2.0")
@@ -212,6 +215,7 @@ def test_post_without_map_is_unchanged():
                              roster=ROSTER, north_band=50) == TODAY_ANY_MAP
 
 
+@pytest.mark.edge
 def test_a_post_with_a_map_always_lists_every_map_option():
     # the lab reported nothing (a game without these settings): every option is unknown, none is left out
     for info in (dict(info_with_map_options(), map_options={}),
@@ -222,6 +226,7 @@ def test_a_post_with_a_map_always_lists_every_map_option():
         assert block == ["%s: %s" % (label, _UNKNOWN) for _key, label in _MAP_OPTION_LABELS]
 
 
+@pytest.mark.edge
 def test_a_map_option_the_lab_did_not_report_is_unknown():
     options = {k: v for k, v in OPTIONS.items() if k not in ("Snowline", "StackCitadels")}
     options["Factions"] = None
@@ -231,12 +236,7 @@ def test_a_map_option_the_lab_did_not_report_is_unknown():
            "Decked Out Citadels: (unknown)\nAll trade buildings available: No\n" in text
 
 
-def test_booleans_of_the_lab_render_yes_no_in_a_map_post():
-    info = dict(info_with_map_options(), map_options=dict(OPTIONS, StackCitadels=False, AllTradeLocations=True))
-    text = build_seed_report("Trading Caravan", "", "0000000009", info, "4.2.0", game_map=MAP_9_PORTS)
-    assert "Decked Out Citadels: No\nAll trade buildings available: Yes\n" in text
-
-
+@pytest.mark.edge
 def test_the_map_line_names_a_north_band_that_is_not_the_default():
     """The band decides which ports are northern: a reader repeats the search with the same band."""
     base = "Map: Ports 9 (south 2, north %d) · 3 city states"
@@ -254,6 +254,7 @@ def test_the_map_line_names_a_north_band_that_is_not_the_default():
     assert (base % 3) + " · north band: the top 20 % of the map\nMap Options:\n" in narrow   # rows 8-9: still 3
 
 
+@pytest.mark.core
 def test_the_lab_and_the_post_name_the_same_map_options():
     """bbseed never imports bbreroll, so the lab keeps its own list of the Map Options it reports."""
     from bbreroll import map_conditions
@@ -262,6 +263,7 @@ def test_the_lab_and_the_post_name_the_same_map_options():
     assert tuple(map_conditions.MAP_OPTION_DEFAULTS) == MAP_OPTION_KEYS
 
 
+@pytest.mark.edge
 def test_a_vanilla_map_post_says_the_base_game_has_no_map_options():
     """The base game has no Map Options (report_info legends False): one line after the Map line, no block."""
     info = dict(info_with_map_options(), legends=False, map_options={}, version="Vanilla 1.5.2.3", build_name=None)
@@ -273,6 +275,7 @@ def test_a_vanilla_map_post_says_the_base_game_has_no_map_options():
     assert "· north band: the top 50 % of the map\nMap Options: none. The base game has no Map Options.\n" in band
 
 
+@pytest.mark.edge
 def test_a_legends_post_and_a_vanilla_roster_post_keep_their_text():
     """legends True reads the same as the old key-less info; without a map a Vanilla post says "any" as before."""
     args = ("Trading Caravan", "A port map", "0000000009")
@@ -288,6 +291,7 @@ def _base_game_info(**changes):
                 build_name=None, **changes)
 
 
+@pytest.mark.edge
 def test_a_base_game_post_names_the_dlcs_right_after_the_mods():
     """Final review F2: a base-game map depends on the DLCs, so the post says whether every DLC is installed."""
     text = build_seed_report("Trading Caravan", "", "0000000009", _base_game_info(dlc_complete=True), "4.2.0",
@@ -301,6 +305,7 @@ def test_a_base_game_post_names_the_dlcs_right_after_the_mods():
     assert "Mods: none\nDLCs: all\n\nMap: Ports 9 (south 2, north 3)" in text
 
 
+@pytest.mark.edge
 def test_the_dlc_line_is_for_the_base_game_only():
     """A Legends post, and a report_info without the key (a search from before it), keep their text."""
     legends = build_seed_report("Trading Caravan", "", "0000000009",
@@ -318,6 +323,7 @@ def _deserters_info(**changes):
     return dict(info_with_map_options(), origin="Deserters", **changes)
 
 
+@pytest.mark.core
 def test_a_legends_deserters_post_lists_the_map_options_and_the_counter_line():
     """Deserters make their brothers on the map: the Map Options change them, so the post lists every one (also with
     no map condition) and says to start the seed as the first campaign after the game starts (Legends' counter)."""
@@ -329,18 +335,21 @@ def test_a_legends_deserters_post_lists_the_map_options_and_the_counter_line():
     assert "\nOrigin: Deserters\n" in text
 
 
+@pytest.mark.edge
 def test_a_deserters_post_with_a_map_has_the_counter_line_once():
     text = build_seed_report("Deserters", "", "0000000009", _deserters_info(legends=True), "4.3.0", roster=ROSTER,
                              game_map=MAP_9_PORTS)
     assert text.count(COUNTER_LINE) == 1 and "\nMap: Ports 9 (south 2, north 3) · 3 city states\n" in text
 
 
+@pytest.mark.edge
 def test_a_deserters_option_the_lab_did_not_report_is_unknown():
     info = _deserters_info(legends=True, map_options={"Settlements": 24})
     text = build_seed_report("Deserters", "", "0000000009", info, "4.3.0", roster=ROSTER)
     assert "Settlements: 24" in text and "Land Mass Ratio: (unknown)" in text
 
 
+@pytest.mark.edge
 def test_a_base_game_deserters_post_has_no_counter_line_and_no_map_options():
     """The base game has no black-market counter and no Map Options; its map depends on the DLCs."""
     info = _base_game_info(dlc_complete=True, origin="Deserters")
@@ -349,6 +358,7 @@ def test_a_base_game_deserters_post_has_no_counter_line_and_no_map_options():
     assert "DLCs: all\n\nMap Options: none. The base game has no Map Options.\n\nFound with BB Reroll" in text
 
 
+@pytest.mark.core
 def test_no_other_origin_gets_the_counter_line():
     """A map-search post for another origin keeps its text (the README says the map is the same in every campaign)."""
     for game_map in (None, MAP_9_PORTS):

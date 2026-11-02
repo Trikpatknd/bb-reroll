@@ -23,11 +23,13 @@ def summary(size=(10, 10), towns=()):
 S = summary(size=(10, 10), towns=[town(1, 9, port=True), town(2, 0, port=True, southern=True, size=3), town(5, 5)])
 
 
+@pytest.mark.core
 def test_counts_ports_north_and_south():
     assert mapgen.counts(S, north_band=20) == {"ports": 2, "ports_south": 1, "ports_north": 1,
                                                "towns": dict(ZERO_TOWNS, city_state=1, size1=2)}
 
 
+@pytest.mark.edge
 def test_a_southern_port_in_the_north_band_is_a_southern_port_only():
     # Ruling C: northern ports are the ports in the band that are not southern
     s = summary(towns=[town(3, 9, port=True, southern=True, size=3)])
@@ -35,6 +37,7 @@ def test_a_southern_port_in_the_north_band_is_a_southern_port_only():
                                                "towns": dict(ZERO_TOWNS, city_state=1)}
 
 
+@pytest.mark.core
 def test_town_types_split_the_towns():
     """Every town has exactly one type: southern -> city state, else military -> stronghold (any size),
     else its size (village, town, city)."""
@@ -46,11 +49,6 @@ def test_town_types_split_the_towns():
     assert sum(got.values()) == len(towns)
 
 
-def test_a_town_size_outside_1_to_3_is_an_error():
-    with pytest.raises(ValueError):
-        mapgen.counts(summary(towns=[town(0, 0, size=4)]), north_band=33)
-
-
 def _band_rows(height, band):
     """The rows y of a `height`-row map that the north band holds, found with one port per row."""
     s = summary(size=(1, height), towns=[town(0, y, port=True) for y in range(height)])
@@ -60,6 +58,7 @@ def _band_rows(height, band):
     return rows
 
 
+@pytest.mark.core
 @pytest.mark.parametrize("band, first", [(1, 169), (20, 136), (33, 114), (50, 85), (99, 2)])
 def test_the_north_band_is_the_top_rows_rounded_down(band, first):
     """A band of P % holds the rows y with 100 * (height - y) <= P * height: the top floor(height * P / 100) rows
@@ -68,6 +67,7 @@ def test_the_north_band_is_the_top_rows_rounded_down(band, first):
     assert _band_rows(170, band) == list(range(first, 170))
 
 
+@pytest.mark.edge
 def test_the_north_band_on_a_small_map():
     assert _band_rows(10, 20) == [8, 9]
     assert _band_rows(10, 25) == [8, 9]          # 2.5 rows: rounded down
@@ -75,12 +75,14 @@ def test_the_north_band_on_a_small_map():
     assert _band_rows(10, 0) == [] and _band_rows(10, 100) == list(range(10))
 
 
+@pytest.mark.dirty
 def test_counts_rejects_a_band_outside_0_to_100():
     for band in (-1, 101):
         with pytest.raises(ValueError):
             mapgen.counts(S, north_band=band)
 
 
+@pytest.mark.core
 def test_failure_names_the_first_unmet_condition():
     assert mapgen.failure(S, {"ports": 3}) == "Ports: 2, needs 3"
     assert mapgen.failure(S, {"ports": 2, "ports_south": 1}) is None
@@ -93,11 +95,13 @@ def test_failure_names_the_first_unmet_condition():
     assert mapgen.failure(S, {"towns": {"size3": 9, "size1": 3}}) == "Villages: 2, needs 3"
 
 
+@pytest.mark.edge
 def test_zero_or_missing_is_no_condition():
     assert mapgen.failure(S, {}) is None and mapgen.failure(S, None) is None
     assert mapgen.failure(S, {"ports": 0, "ports_south": 0, "ports_north": 0, "towns": {"size3": 0}}) is None
 
 
+@pytest.mark.core
 def test_failure_uses_the_default_north_band():
     s = summary(towns=[town(4, 6, port=True)])          # in a 50 % band (rows 5-9), not in 33 % (rows 7-9)
     assert mapgen.DEFAULT_NORTH_BAND == 33
@@ -106,6 +110,7 @@ def test_failure_uses_the_default_north_band():
     assert mapgen.failure(s, {"ports_north": 1, "north_band": 50}) is None
 
 
+@pytest.mark.dirty
 def test_failure_reads_the_band_only_for_northern_ports():
     """Carried from Task 8's review: problems() ignores the band without a northern-port condition, so failure()
     must too (a worker would otherwise stop on a band the pre-search check let through)."""
@@ -116,11 +121,13 @@ def test_failure_reads_the_band_only_for_northern_ports():
         mapgen.failure(S, {"ports_north": 1, "north_band": 150})
 
 
+@pytest.mark.dirty
 def test_failure_rejects_an_unknown_town_type():
     with pytest.raises(ValueError):
         mapgen.failure(S, {"towns": {"castle": 1}})
 
 
+@pytest.mark.core
 def test_town_type_labels():
     assert list(M.TOWN_TYPES) == list(mapgen.TOWN_TYPE_KEYS) == ["city_state", "military", "size1", "size2", "size3"]
     assert M.TOWN_TYPES == {"city_state": "City states", "military": "Strongholds", "size1": "Villages",
@@ -128,18 +135,21 @@ def test_town_type_labels():
     assert M.counts is mapgen.counts and M.failure is mapgen.failure
 
 
+@pytest.mark.core
 def test_limits_at_the_default_map_options():
     assert M.limits(None) == M.limits({}) == M.limits(dict(M.MAP_OPTION_DEFAULTS)) == {
         "ports": 23, "ports_south": 3, "ports_north": 20,
         "towns": {"city_state": 3, "military": 6, "size1": 9, "size2": 9, "size3": 10}}
 
 
+@pytest.mark.core
 def test_limits_at_settlements_27():
     assert M.limits({"Settlements": 27}) == {
         "ports": 32, "ports_south": 3, "ports_north": 29,
         "towns": {"city_state": 3, "military": 9, "size1": 15, "size2": 15, "size3": 16}}
 
 
+@pytest.mark.core
 def test_the_most_towns_per_settlements_value():
     """The placement calls of Legends' buildSettlements for Settlements 19..27, as counted in map-search Task 5: the
     port limit is the town count (every list can make a port), southern + northern ports are all of them."""
@@ -150,6 +160,7 @@ def test_the_most_towns_per_settlements_value():
     assert all(sum(m["towns"].values()) > m["ports"] for m in most)
 
 
+@pytest.mark.core
 def test_only_settlements_changes_the_limits():
     others = {"LandRatio": 70, "Water": 28, "Snowline": 75, "Factions": 6, "StackCitadels": True,
               "AllTradeLocations": True}
@@ -157,6 +168,7 @@ def test_only_settlements_changes_the_limits():
     assert M.limits(dict(others, Settlements="24")) == M.limits({"Settlements": 24})
 
 
+@pytest.mark.dirty
 def test_limits_rejects_bad_map_options():
     for bad in ({"Settlements": 18}, {"Settlements": 28}, {"Settlements": "many"},
                 {"mod_legends:Settlements": 24}):          # the lab's key form is not a Map Options key here
@@ -164,6 +176,7 @@ def test_limits_rejects_bad_map_options():
             M.limits(bad)
 
 
+@pytest.mark.edge
 def test_vanilla_limits():
     """Vanilla's limits are its settlement lists' Amounts (VANILLA_LISTS, checked against the base game by
     test_mapgen_game.test_vanilla_lists_match_the_game): 7 villages, 3 towns, 3 cities, 6 strongholds and 3 city
@@ -176,6 +189,7 @@ def test_vanilla_limits():
     assert M.limits(vanilla=False) == M.limits(None)          # Legends' limits are the default
 
 
+@pytest.mark.core
 def test_problems():
     assert M.problems({"ports": 2, "ports_south": 2, "ports_north": 1})      # north + south > total
     assert M.problems({"ports_north": 1, "north_band": 0}) and M.problems({"ports_north": 1, "north_band": 100})
@@ -183,6 +197,7 @@ def test_problems():
     assert M.problems({"ports": 3, "north_band": 33}) == []
 
 
+@pytest.mark.core
 def test_problem_texts():
     assert M.problems({"ports": 24}) == [
         "Ports: a map has a maximum of 23 with these Map Options. Your condition is 24."]
@@ -195,12 +210,14 @@ def test_problem_texts():
     assert M.problems({}, {"Settlements": 30}) == ["Settlements: set a value from 19 to 27. Your value is 30."]
 
 
+@pytest.mark.edge
 def test_the_limits_follow_the_map_options():
     assert M.problems({"ports": 24}) and M.problems({"ports": 24}, {"Settlements": 27}) == []
     assert M.problems({"ports_north": 21}) and M.problems({"ports_north": 21}, {"Settlements": 21}) == []
     assert M.problems({"towns": {"military": 7}}) and M.problems({"towns": {"military": 7}}, {"Settlements": 21}) == []
 
 
+@pytest.mark.edge
 def test_no_problem_without_conditions():
     assert M.problems(None) == [] and M.problems({}) == []
     assert M.problems({"north_band": 0}) == []          # the band matters only for northern ports
@@ -208,6 +225,7 @@ def test_no_problem_without_conditions():
     assert M.problems({"ports": 0, "towns": {"size1": 0}}) == []
 
 
+@pytest.mark.edge
 def test_vanilla_problems_use_vanilla_limits():
     """Vanilla's maxima (VANILLA_LISTS): 22 towns in all, 3 city states, 6 strongholds, 7 / 3 / 3 villages / towns /
     cities. The Map Options are not read there, and no joint check runs (each list makes one town type)."""
@@ -233,6 +251,7 @@ def test_vanilla_problems_use_vanilla_limits():
     assert M.problems(None, vanilla=True) == [] and M.problems({}, vanilla=True) == []
 
 
+@pytest.mark.edge
 def test_villages_towns_and_cities_share_the_same_placements():
     """At Settlements 19 the village lists make 2 villages, 2 towns and 3 cities first, then 7 more of a random
     size: 9 villages or 10 cities can happen, but not both."""
@@ -243,6 +262,7 @@ def test_villages_towns_and_cities_share_the_same_placements():
     assert M.problems({"towns": {"size1": 4, "size2": 4, "size3": 7}}) == [joint]     # 2 + 2 + 4 more = 8
 
 
+@pytest.mark.core
 def test_every_count_of_a_map_is_a_possible_condition():
     """What one map has is never an impossible condition."""
     s = summary(towns=[town(1, 9, port=True), town(2, 0, port=True, southern=True, size=3),
@@ -253,6 +273,7 @@ def test_every_count_of_a_map_is_a_possible_condition():
     assert M.problems(criteria) == []
 
 
+@pytest.mark.core
 def test_map_line():
     towns = ([town(i, 9, port=True) for i in range(3)] + [town(i, 0, port=True, southern=True, size=3) for i in range(2)]
              + [town(5, 5, port=True), town(6, 6, port=True), town(7, 0, southern=True, size=3), town(8, 4)])

@@ -1,5 +1,7 @@
 """Which stars a recruit's talent roll made, and which ones the origin set (bbseed/talents.py).
 The calls are real ones, logged from Legends 19.4.22 rolls on 2026-10-15."""
+import pytest
+
 from bbseed.talents import SlotFacts, analyse
 
 # Const.Attributes order: Hitpoints, Bravery, Fatigue, Initiative, MeleeSkill, RangedSkill, MeleeDefense, RangedDefense
@@ -11,6 +13,7 @@ def stars(**given):
     return {s: given.get(s, 0) for s in INDEX}
 
 
+@pytest.mark.core
 def test_berserker_two_fixed_stars_then_two_forced_picks():
     calls = [([3, 0, 0, 0, 3, 0, 0, 0], [3, 0, 0, 1, 3, 0, 0, 2], [], W, False, False),
              ([3, 0, 0, 1, 3, 0, 0, 2], [3, 0, 0, 1, 3, 0, 0, 2], [], W, False, False)]   # untalented: no-op
@@ -20,6 +23,7 @@ def test_berserker_two_fixed_stars_then_two_forced_picks():
     assert can_roll == {"res", "fat", "init", "rsk", "mdf", "rdf"}
 
 
+@pytest.mark.edge
 def test_a_roll_the_origin_overwrites_tells_nothing():
     # Inquisition, brother 1: rolled fat/rsk/mdf, then the origin set hp 3, res 3, msk 2
     calls = [([], [0, 0, 3, 0, 0, 1, 1, 0], [], W, False, False)]
@@ -27,6 +31,7 @@ def test_a_roll_the_origin_overwrites_tells_nothing():
     assert rolled == {} and fixed == {"hp": 3, "res": 3, "msk": 2} and can_roll == set()
 
 
+@pytest.mark.edge
 def test_only_the_surviving_call_counts():
     # Inquisition, brother 2: a full roll the origin replaced by res 3 / rsk 3, then one forced pick
     calls = [([], [0, 0, 0, 1, 1, 0, 0, 1], [], W, False, False),
@@ -36,6 +41,7 @@ def test_only_the_surviving_call_counts():
     assert can_roll == {"hp", "fat", "init", "msk", "mdf", "rdf"}
 
 
+@pytest.mark.edge
 def test_a_pick_the_origin_happens_to_repeat_is_still_fixed():
     # Inquisition, brother 3 (monk): the roll gave msk 2 among others, then the origin set res 3,
     # msk 2, mdf 3 — msk equals the roll by chance, but the roll's other picks are gone
@@ -44,6 +50,7 @@ def test_a_pick_the_origin_happens_to_repeat_is_still_fixed():
     assert rolled == {} and fixed == {"res": 3, "msk": 2, "mdf": 3} and can_roll == set()
 
 
+@pytest.mark.edge
 def test_excluded_talents_can_never_be_rolled():
     # Scaling Beggar's commander excludes Hitpoints and Bravery
     calls = [([], [0, 0, 3, 0, 0, 0, 2, 1], [0, 1], W, False, False)]
@@ -52,12 +59,14 @@ def test_excluded_talents_can_never_be_rolled():
     assert can_roll == {"fat", "init", "msk", "rsk", "mdf", "rdf"}
 
 
+@pytest.mark.edge
 def test_undead_recruits_skip_their_stats():
     calls = [([], [0, 0, 0, 0, 1, 1, 1, 0], [], W, True, False)]       # a zombie
     _r, _f, can_roll = analyse(calls, stars(msk=1, rsk=1, mdf=1), INDEX)
     assert can_roll == {"hp", "msk", "rsk", "mdf", "rdf"}
 
 
+@pytest.mark.core
 def test_slot_summary():
     facts = SlotFacts()
     facts.add("background.berserker", stars(hp=3, msk=3, init=1, rdf=2), {"res", "init", "rdf"})
@@ -70,6 +79,7 @@ def test_slot_summary():
     assert not s["varied"]
 
 
+@pytest.mark.edge
 def test_a_star_the_origin_writes_after_the_roll_is_fixed_even_when_the_roll_made_it_too():
     # Legends' Ranger, brother 2: the origin sets MSK 2 and HP 2 after the roll and keeps the rest;
     # on the second seed the roll itself had made MSK 2
@@ -82,6 +92,7 @@ def test_a_star_the_origin_writes_after_the_roll_is_fixed_even_when_the_roll_mad
     assert s["picks"] == 2 and s["most"] == 5 and s["least"] == 4
 
 
+@pytest.mark.edge
 def test_a_slot_whose_background_changes_is_marked():
     facts = SlotFacts()
     facts.add("background.farmhand", stars(hp=1), {"hp"})
@@ -89,6 +100,7 @@ def test_a_slot_whose_background_changes_is_marked():
     assert facts.summary()["varied"]
 
 
+@pytest.mark.edge
 def test_a_slot_that_picks_from_a_list_can_get_the_whole_list():
     # Free Company brother 3: one of six elite backgrounds; the samples showed only two of them
     elite = ["background.hedge_knight", "background.swordmaster", "background.gladiator"]
@@ -99,12 +111,14 @@ def test_a_slot_that_picks_from_a_list_can_get_the_whole_list():
     assert s["choices"] == sorted(elite) and s["choices_exact"] and s["varied"]
 
 
+@pytest.mark.edge
 def test_a_list_with_one_background_seen_once_is_still_varied():
     facts = SlotFacts()
     facts.add("background.gambler", stars(), set(), pool=["background.gambler", "background.thief"])
     assert facts.summary()["varied"] and facts.summary()["choices"] == ["background.gambler", "background.thief"]
 
 
+@pytest.mark.edge
 def test_a_background_the_origin_sets_outside_any_list_is_not_exact():
     facts = SlotFacts()
     facts.add("background.legend_commander_beggar", stars(), set(), pool=None)
@@ -113,6 +127,7 @@ def test_a_background_the_origin_sets_outside_any_list_is_not_exact():
     assert s["choices"] == ["background.legend_commander_beggar"] and not s["choices_exact"] and not s["varied"]
 
 
+@pytest.mark.edge
 def test_brothers_that_share_a_list_share_every_list():
     # Random Party: each brother rolls from the common list, 1 time in 100 from the party list
     from bbseed.talents import share_lists

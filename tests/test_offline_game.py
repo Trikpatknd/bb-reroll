@@ -13,6 +13,7 @@ HAVE_GAME = FOUND is not None and FOUND["game_version"] == "1.5.2.3"
 HAVE_LEGENDS = HAVE_GAME and any("mod_legends-19.4.22" in m for m in FOUND["mods"]) and any("1.9.0" in m for m in FOUND["mods"])
 
 
+@pytest.mark.core
 @pytest.mark.skipif(not HAVE_GAME, reason="Battle Brothers 1.5.2.3 is not installed")
 def test_vanilla_gives_the_rosters_the_game_gave(vanilla_lab):
     from bbseed.lab import big_stack
@@ -33,6 +34,7 @@ def test_vanilla_gives_the_rosters_the_game_gave(vanilla_lab):
     assert not eng.files and len(eng.cfiles) > 3000, "the base game ran from its compiled scripts only"
 
 
+@pytest.mark.core
 @pytest.mark.skipif(not HAVE_LEGENDS, reason="Battle Brothers 1.5.2.3 with Legends 19.4.22 + MSU 1.9.0 is not installed")
 def test_legends_gives_the_rosters_the_game_gave(legends_lab):
     from bbseed.lab import big_stack

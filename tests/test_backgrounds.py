@@ -1,5 +1,7 @@
 """The GUI's view of which backgrounds an origin's brothers can have (bbreroll/backgrounds.py). The
 lists below are cut-down versions of what the catalog found for Legends 19.4.22."""
+import pytest
+
 from bbreroll import backgrounds as B
 from bbreroll.criteria import explain_failure, is_trivial
 
@@ -19,6 +21,7 @@ RANDOM = [slot("background.thief", "background.gambler"), slot("background.thief
                                                                 "background.hedge_knight")]
 
 
+@pytest.mark.core
 def test_names_and_choices_sorted_by_name():
     assert B.choices(FREE_COMPANY, NAMES)[1] == [("background.hedge_knight", "Hedge Knight"),
                                                 ("background.swordmaster", "Swordmaster")]
@@ -26,12 +29,14 @@ def test_names_and_choices_sorted_by_name():
     assert B.display("background.legend_noble_2h", NAMES) == "Warrior"
 
 
+@pytest.mark.core
 def test_only_brothers_with_more_than_one_background_vary():
     assert B.varied(FREE_COMPANY) == [1, 2]
     assert B.varied(FIXED) == []
     assert B.varied([slot("background.farmhand"), slot("background.thief", "background.gambler")]) == [2]
 
 
+@pytest.mark.edge
 def test_the_any_brother_row_needs_two_varied_brothers():
     assert [b for b, _n in B.any_choices(RANDOM, NAMES)] == [
         "background.gambler", "background.hedge_knight", "background.thief"]
@@ -39,6 +44,7 @@ def test_the_any_brother_row_needs_two_varied_brothers():
     assert B.any_choices([slot("background.farmhand"), slot("background.thief", "background.gambler")]) == []
 
 
+@pytest.mark.dirty
 def test_impossible_background_conditions():
     assert B.problems(FIXED, {"1": ["background.thief"]}, NAMES) == [
         "Brother 1 is always a Farmhand. Your condition is Thief."]
@@ -54,24 +60,28 @@ def test_impossible_background_conditions():
     assert B.problems(FIXED, {"5": ["background.thief"]}) == []
 
 
+@pytest.mark.core
 def test_describe():
     assert "does not change" in B.describe(FIXED)
     assert B.describe(FREE_COMPANY) == "The seed selects the background of brothers 1, 2."
     assert "Other backgrounds are possible" in B.describe([slot("background.a", "background.b", exact=False)])
 
 
+@pytest.mark.core
 def test_a_background_condition_is_a_condition():
     base = {"stars_by_slot": {"*": {}}, "banned": [], "required": []}
     assert is_trivial(dict(base, backgrounds_by_slot={"1": []}))
     assert not is_trivial(dict(base, backgrounds_by_slot={"1": ["background.thief"]}))
 
 
+@pytest.mark.core
 def test_background_failures_as_sentences():
     assert explain_failure("bro3 background legend_noble_2h", background_names=NAMES) == (
         "Brother 3 has the background Warrior. Your condition is a different background.")
     assert explain_failure("no bro with a wanted background") == "No brother has a background from your conditions."
 
 
+@pytest.mark.edge
 def test_two_backgrounds_with_one_name_stay_apart():
     names = {"background.legend_conscript": "Conscript", "background.legend_conscript_ranged": "Conscript"}
     menu = B.choices([slot("background.legend_conscript", "background.legend_conscript_ranged")], names)[0]
