@@ -38,7 +38,7 @@ Other versions are read the same way and will usually just work, but they are un
 
 - Windows 10/11
 - Battle Brothers installed (Steam installs are found automatically; otherwise point the GUI at the game folder)
-- To build: Python 3.10+ (see `requirements.txt`)
+- To build: Python 3.15 from python.org (see `requirements.txt`). Dev mode also runs on Python 3.10 or later, but slower
 - About 0.8 GB of memory per search worker with Legends (less for the unmodded game)
 
 ## Install
@@ -75,7 +75,7 @@ The first start after installing or updating the game or a mod works out what ea
 
 **Check a seed** → **Show roster** shows the roster any seed gives for the chosen setup and origin — handy for a seed someone shared. Seed text is case-sensitive in the game (`SEEDTEST` and `seedtest` are different seeds); the search only produces digit seeds, so there is nothing to mistype.
 
-Speed with Legends is about 3 seeds per second per worker; each worker takes ~15 seconds to load the game's scripts.
+Speed with Legends is about 4 seeds per second per worker; each worker takes ~10 seconds to load the game's scripts.
 
 ### Map conditions
 
@@ -91,7 +91,7 @@ Use them to search for seeds by their world map. They work with the **Legends** 
 
 **Map Options.** With Legends, the map depends on the Map Options of the game. The Map view has the seven Map Options of the Legends Mod: Land Mass Ratio, Water, Snowline, Settlements, Factions, Decked Out Citadels and All trade buildings available. When the program starts, it reads them from your saved Mod Options (the file that MSU writes in `Documents\Battle Brothers\savegames`). If you typed other values since the last read, the program keeps your values and the Map view says that they are not the same as your saved Mod Options. **Read my Mod Options** reads the saved values again, for example after you changed them in the game. You can change the values, for example to search for the Map Options of a friend. Without a saved file, the fields start with the Legends defaults (50, 38, 85, 19, 3, No, No). With other values than in the game, the game makes a different map, and the seed does not match. The Map Options do not change the brothers (Deserters is the exception, read **Deserters** below). A search without map conditions does not use them (except a Deserters search). The base game has no Map Options: on the Vanilla setup the Map view shows only the conditions.
 
-**Speed.** One map takes about 40 seconds on one worker, with the default Map Options. A low Land Mass Ratio with a high Water value can make one map take many minutes. 8 workers make about 0.14 maps per second. Set brother conditions too: then the search builds a map only for the seeds whose brothers match. With map conditions alone, it builds a map for every seed. The estimate *Approximately 1 in N seeds matches* shows after 30 maps. With brother conditions, it also needs 100 tested seeds. Until it shows, a search with brother conditions says how often the brothers of a seed match, and how many maps are built. If no map meets the conditions in 100 maps, a notice says that such maps are rare. The search continues. Conditions that no map can meet (for example, more southern ports than the map has city states) are named before the search starts.
+**Speed.** One map takes about 25 seconds on one worker, with the default Map Options. A low Land Mass Ratio with a high Water value can make one map take many minutes. 8 workers make about 0.33 maps per second. Set brother conditions too: then the search builds a map only for the seeds whose brothers match. With map conditions alone, it builds a map for every seed. The estimate *Approximately 1 in N seeds matches* shows after 30 maps. With brother conditions, it also needs 100 tested seeds. Until it shows, a search with brother conditions says how often the brothers of a seed match, and how many maps are built. If no map meets the conditions in 100 maps, a notice says that such maps are rare. The search continues. Conditions that no map can meet (for example, more southern ports than the map has city states) are named before the search starts.
 
 **What to expect.** In a survey of 997 maps with the default Map Options, the median was 4 ports. 22.6 % of the maps had 5 or more ports, and 3.9 % had 6 or more. 39 % had at least one southern port. 22 % had at least one northern port (band 33 %). Every map had 6 strongholds. In the 40 maps of the base game that were checked in the game, a map had 19 to 22 towns. Every map had 6 strongholds and 3 city states.
 
@@ -99,7 +99,7 @@ Use them to search for seeds by their world map. They work with the **Legends** 
 
 The map depends on the seed, the Map Options, the game version and the mod versions. It does not depend on the origin; only the start star does. The brothers do not depend on the map. Deserters is the exception.
 
-**Deserters.** Deserters makes its brothers after it finds a start tile on the map. Thus the brothers depend on the seed AND on the map. BB Reroll builds the whole map for each Deserters seed: one seed takes about 50 seconds on one worker. Deserters is offered only on the two checked setups: game 1.5.2.3 with Legends 19.4.22 (Legends assets 19.4.3, MSU 1.9.0, Modern Hooks 0.6.0, no other mod), and game 1.5.2.3 with all DLCs and no mods. With Legends, the Map Options change the brothers: use the same Map Options in the game, and start the seed as your first campaign after you start the game. The seed post tells you both. The stars of the three Deserters are always the same, so set traits and backgrounds instead.
+**Deserters.** Deserters makes its brothers after it finds a start tile on the map. Thus the brothers depend on the seed AND on the map. BB Reroll builds the whole map for each Deserters seed: one seed takes about 25 seconds on one worker. Deserters is offered only on the two checked setups: game 1.5.2.3 with Legends 19.4.22 (Legends assets 19.4.3, MSU 1.9.0, Modern Hooks 0.6.0, no other mod), and game 1.5.2.3 with all DLCs and no mods. With Legends, the Map Options change the brothers: use the same Map Options in the game, and start the seed as your first campaign after you start the game. The seed post tells you both. The stars of the three Deserters are always the same, so set traits and backgrounds instead.
 
 **Legends: start the seed as your first campaign.** A seed gives this map when you start it as your first campaign after you start the game. Towns, ports and the land are the same in every campaign; other details can change. (Legends keeps a counter for the whole game session that changes some details after the roads are made. The base game has no such counter.)
 
@@ -130,7 +130,7 @@ python -m bbseed.search --profile legends --list-origins
 python -m bbseed.catalog --profile legends     # what each origin's brothers can get (stars, backgrounds), per slot
 python -m bbseed.search --profile legends --origin trader_scenario --ports 5 --ports-north 1 --towns city_state=3 --workers 8
 python -m bbseed.search --profile legends --origin trader_scenario --ports 4 --mod-setting mod_legends:Settlements=24 --mod-setting mod_legends:StackCitadels=true
-python -m bbseed.search --profile legends --map 1234567890 --svg map.svg     # the map of one seed (about 40 s): towns and ports as text, a picture as SVG
+python -m bbseed.search --profile legends --map 1234567890 --svg map.svg     # the map of one seed (about 25 s): towns and ports as text, a picture as SVG
 python -m bbseed.search --profile vanilla --origin trader_scenario --ports 4 --workers 8     # the base game (all DLCs): map conditions, no Map Options
 ```
 
@@ -150,7 +150,7 @@ Map conditions: `--ports N`, `--ports-south N`, `--ports-north N`, `--north-band
 - **The Map Options must match the game.** The program reads them from your saved Mod Options, but you can change the fields. With other values than in the game, the seed gives another map.
 - **No conditions on roads and names.** The roads, region names, faction names and city-state names match the game on the checked maps. The map shows the roads on the checked setups, but no condition uses roads or names.
 - **The start is a picture only.** The map window shows a star on the square where your company starts, on the two checked setups only, and no condition uses it. With Legends, the start is for the first campaign after you start the game.
-- **Maps are slow.** One map takes about 40 seconds on one worker, with the default Map Options. A low Land Mass Ratio with a high Water value can make one map take many minutes. A map search tests far fewer seeds than a search for brothers alone. Set brother conditions too.
+- **Maps are slow.** One map takes about 25 seconds on one worker, with the default Map Options. A low Land Mass Ratio with a high Water value can make one map take many minutes. A map search tests far fewer seeds than a search for brothers alone. Set brother conditions too.
 - **A few seeds stop the map step with an error** (3 of 1,000 in a survey). The program does not know if the game makes a map for these seeds. The search skips them.
 
 ---
