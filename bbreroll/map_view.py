@@ -23,15 +23,15 @@ from bbseed import mapdraw
 from bbseed.mapgen import (DEFAULT_NORTH_BAND, FIRST_CAMPAIGN, NOT_VERIFIED, VERIFIED_GAME,  # noqa: F401
                            VERIFIED_LEGENDS, verified_setup)
 
-# One map on one worker with Legends' default Map Options (bb_seedlab MODLOG "MAP SURVEY"); about 40 % more with 8
-# workers. A low Land Mass Ratio with a high Water value makes the generator reject far more land / sea attempts: one
+# One map with the default Map Options: mean 23.9 s with Legends, 21.9 s with the base game (Python 3.15, 8 workers,
+# 80 seeds, 2026-11-02). A low Land Mass Ratio with a high Water value makes the generator reject far more land / sea attempts: one
 # seed's map took 149 attempts and 352 s at Land Mass Ratio 45 with Water 42 (final review M1). There is no attempt
 # cap; the texts say so.
-MAP_SECONDS = 40
+MAP_SECONDS = 25
 MIN_MAPS = 30               # maps built before the "about 1 in N" estimate shows
-# Deserters: one whole map run on through the start (onSpawnPlayer) per seed, on one worker: mean 52 s with Legends,
-# 50 s with the base game, 18 workers running (bb_seedlab MODLOG "DESERTERS IN THE LAB").
-DESERTERS_SECONDS = 50
+# Deserters: one whole map run on through the start (onSpawnPlayer) per seed: mean 24.4 s with Legends, 21.9 s with
+# the base game (Python 3.15, 8 workers, 80 seeds, 2026-11-02).
+DESERTERS_SECONDS = 25
 MIN_TESTED = 100            # seeds tested before it shows (as for the brothers alone)
 
 # ------------------------------------------------------------------ the fields
@@ -402,7 +402,7 @@ def fields_open(setup, dlc_complete=True):
 # ------------------------------------------------------------------ the odds estimate while maps are built
 def estimate_ready(odds, map_run, map_first):
     """May "about 1 in N seeds" show? Without map conditions after 100 tested seeds (as always). With them after
-    MIN_MAPS maps (a map costs 40 s, so 100 would take most of ten minutes on 8 workers); when brother conditions
+    MIN_MAPS maps (a map costs 25 s, so 100 would take about five minutes on 8 workers); when brother conditions
     come first the seeds are cheap and the 100 are needed too (the brothers' own rates must be sound)."""
     tested, maps = odds.get("tested", 0), odds.get("maps", 0)
     if not map_run:

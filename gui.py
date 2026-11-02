@@ -624,7 +624,7 @@ class App(ctk.CTk):
         workers = _field(line_b, WORKERS, lambda p: _entry(p, self.workers_var, 60))
         _attach_tooltip(workers, f"The number of search processes that run at the same time. This computer has "
                                  f"{os.cpu_count() or 1} processor threads. With Legends, each process uses "
-                                 f"approximately 0.8 GB of memory and needs approximately 15 seconds to start.")
+                                 f"approximately 0.8 GB of memory and needs approximately 10 seconds to start.")
 
         # Conditions: stars or stat rolls (one grid at a time; both always count)
         cond = _panel(self, row=2, column=0, sticky="ew", padx=10, pady=4)
@@ -1741,7 +1741,7 @@ class App(ctk.CTk):
             "required_mode": self.required_mode_var.get(),
         }
         map_criteria = self._map_setup()[0]
-        if map_criteria:            # only a run with a map condition has the key (a map costs about 40 s)
+        if map_criteria:            # only a run with a map condition has the key (a map costs about 25 s)
             criteria["map"] = map_criteria
         return criteria
 
@@ -2014,7 +2014,7 @@ class App(ctk.CTk):
         self._run["never_map"] = bool(odds.get("never_map"))
 
     def _wait_text(self, odds):
-        """The note while the first maps are built (a map takes about 40 seconds); "" for other runs."""
+        """The note while the first maps are built (a map takes about 25 seconds); "" for other runs."""
         if self._run.get("deserters"):
             return map_view.deserters_wait_note(odds, self._run.get("workers") or 1)
         return map_view.wait_note(odds, self._setup_kind()) if self._run.get("map") else ""

@@ -1143,7 +1143,7 @@ def test_the_estimate_waits_for_the_first_maps_and_a_missing_chance_shows_nothin
     app._run = dict(RUN, map={"ports": 3}, map_first=True)
     odds = {"chance": None, "tested": 4, "maps": 4}
     assert app._odds_text(odds, 0.1) == ""
-    assert app._wait_text(odds) == ("Each map takes about 40 seconds with the default Map Options. "
+    assert app._wait_text(odds) == ("Each map takes about 25 seconds with the default Map Options. "
                                     "The estimate shows after 30 maps. Maps built: 4.")
     assert app._odds_text({"chance": None, "tested": 30, "maps": 30}, 0.1) == "", "no chance, no estimate"
     assert app._wait_text({"chance": None, "tested": 30, "maps": 30}) == ""
@@ -1167,7 +1167,7 @@ def test_the_progress_of_a_map_search_shows_the_wait_note_and_the_never_notice(m
     app._search_total = 1000
     app._ev_progress((6, 90.0, 0, {"chance": None, "never": [], "never_any": False, "never_map": False,
                                    "maps": 6, "tested": 6}))
-    assert app.status_var.get() == ("Each map takes about 40 seconds with the default Map Options. "
+    assert app.status_var.get() == ("Each map takes about 25 seconds with the default Map Options. "
                                     "The estimate shows after 30 maps. Maps built: 6.")
     never = lambda maps: {"chance": 0.0, "never": [], "never_any": False, "never_map": True,       # noqa: E731
                           "maps": maps, "tested": maps}
@@ -1264,13 +1264,13 @@ def test_brother_and_map_conditions_show_the_brothers_rate_until_30_maps_are_bui
     app._ev_progress((900, 20.0, 0, dict(odds, chance=0.0001, maps=7, tested=900)))
     assert "(from 900 seeds). Maps built: 7." in app.status_var.get()
     app._ev_progress((50, 5.0, 0, dict(odds, tested=50)))
-    assert app.status_var.get().startswith("Each map takes about 40 seconds with the default Map Options.")
+    assert app.status_var.get().startswith("Each map takes about 25 seconds with the default Map Options.")
     app._ev_progress((6000, 100.0, 0, dict(odds, chance=0.00004, tested=6000, maps=30)))
     assert app.status_var.get().startswith("Approximately 1 in 25,000 seeds matches (from 6,000 seeds, 30 maps).")
     # map conditions alone have no brothers' rate
     app._run = dict(RUN, map={"ports": 5}, map_first=True)
     app._ev_progress((500, 10.0, 0, odds))
-    assert app.status_var.get().startswith("Each map takes about 40 seconds")
+    assert app.status_var.get().startswith("Each map takes about 25 seconds")
 
 
 def labels_of(widget, kind=ctk.CTkLabel):
@@ -1489,7 +1489,7 @@ def test_the_base_game_map_texts_name_the_dlcs_and_no_map_options(map_app, calls
     app._search_total = 1000
     app._ev_progress((6, 90.0, 0, {"chance": None, "never": [], "never_any": False, "never_map": False,
                                    "maps": 6, "tested": 6}))
-    assert app.status_var.get() == ("Each map takes about 40 seconds. "
+    assert app.status_var.get() == ("Each map takes about 25 seconds. "
                                     "The estimate shows after 30 maps. Maps built: 6.")
     assert "Land Mass" not in app.grid_help.cget("text") and "default Map Options" not in app.status_var.get()
 
@@ -1582,7 +1582,7 @@ def test_a_deserters_search_always_sends_the_map_options_and_builds_every_map(de
     app.stars_vars[("1", "res")].set("1")
     app._on_search()
     assert "Deserters make their brothers on the map." in app.status_var.get()
-    assert "With 8 workers, the search tests about 9.6 seeds each minute." in app.status_var.get()
+    assert "With 8 workers, the search tests about 19.2 seeds each minute." in app.status_var.get()
     pump(app, lambda: calls and not app._searching)
     (call,) = calls
     assert call["origin"] == "deserters_scenario" and "map" not in call["criteria"] and call["workers"] == 8
@@ -1651,7 +1651,7 @@ def test_the_progress_of_a_deserters_search_waits_for_30_seeds(deserters_app):
     app._search_total = 1000
     app._ev_progress((6, 90.0, 0, {"chance": None, "never": [], "never_any": False, "never_map": False,
                                    "maps": 6, "tested": 6}))
-    assert app.status_var.get() == ("Each seed needs its whole map. A map takes about 50 seconds for each worker. "
+    assert app.status_var.get() == ("Each seed needs its whole map. A map takes about 25 seconds for each worker. "
                                     "The estimate of the odds shows after 30 seeds. Seeds tested: 6.")
     app._ev_progress((30, 600.0, 0, {"chance": 0.04, "never": [], "never_any": False, "never_map": False,
                                      "maps": 30, "tested": 30}))
@@ -1740,7 +1740,7 @@ def test_the_deserters_info_tells_a_legends_player_to_use_the_same_map_options(d
     assert "Map Options" not in map_view.DESERTERS_INFO_BASE, "the base game has no Map Options"
     assert map_view.deserters_info("Legends") == map_view.DESERTERS_INFO
     assert map_view.deserters_info("Vanilla") == map_view.DESERTERS_INFO_BASE
-    assert "about 50 seconds" in map_view.DESERTERS_INFO and "Use the same Map Options" in map_view.deserters_note(4)
+    assert "about 25 seconds" in map_view.DESERTERS_INFO and "Use the same Map Options" in map_view.deserters_note(4)
     assert "Map Options" not in map_view.deserters_note(4, "Vanilla")
     app = deserters_app
     assert map_view.DESERTERS_INFO in app.origin_info_var.get()

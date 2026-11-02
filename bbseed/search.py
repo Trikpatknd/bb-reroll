@@ -18,10 +18,10 @@ Criteria follow BB Reroll's model (and its config keys, see --criteria):
             recruit's background from a list (Free Company, Random Party, Militia ...) vary it.
   map       the world map's least ports / southern ports / northern ports (ports in the top --north-band
             percent of the rows that are not city states) / towns per type, e.g. --ports 5 --towns city_state=3.
-            A map takes about 40 s to build, so it is built only for seeds whose roster meets the rest
+            A map takes about 25 s to build, so it is built only for seeds whose roster meets the rest
             (with map conditions only: for every seed, and the roster only for the maps that meet them).
             The Map Options go in --mod-setting (mod_legends:Settlements=24 ...).
-  Deserters  its brothers are made after the map, so every seed needs its whole map (about 45 s) and the roster comes
+  Deserters  its brothers are made after the map, so every seed needs its whole map (about 25 s) and the roster comes
             from that one run (the Map Options change the brothers: pass them in --mod-setting). Only on a setup whose
             maps are verified (Legends 19.4.22 / the base game with all DLCs); start the seed as your first campaign
             after the game starts (Legends' black-market counter).
@@ -30,7 +30,7 @@ The seeds found are plain campaign seeds: typed into the new-campaign screen of 
 with the same game version, mods and mod settings, they give this roster. They are made
 of digits only, so the game's case-sensitive seed text cannot be mistyped.
 
-The world map of a seed (about 40 s): its towns and ports, and with --svg a picture, north at the top:
+The world map of a seed (about 25 s): its towns and ports, and with --svg a picture, north at the top:
 
     python -m bbseed.search --profile legends --map 1234567890 --svg map.svg
 """
@@ -428,7 +428,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     explicit seed list) and reports to the queue.
 
     The order per seed: with roster conditions (or none at all) the roster is rolled first on the reused world
-    state, and the map (about 40 s) is built only for a roster that meets them; with map conditions only, the map
+    state, and the map (about 25 s) is built only for a roster that meets them; with map conditions only, the map
     first, and the roster only for a map that meets them. Without map conditions no map is built. A seed that meets
     everything is confirmed: its roster rolled again on a new world state (with the perk trees), its map built
     again; "stable" says both are what the sift found. Deserters (DESERTERS_SCRIPT): the brothers are made on the map, so
@@ -877,7 +877,7 @@ def main(argv=None):
     ap.add_argument("--origin", help="origin script name, e.g. trader_scenario (see --list-origins)")
     ap.add_argument("--list-origins", action="store_true", help="list the origins of the profile and exit")
     ap.add_argument("--show", nargs="+", metavar="SEED", help="print the roster of these seeds and exit")
-    ap.add_argument("--map", metavar="SEED", help="build the world map of this seed (about 40 s), print its towns and "
+    ap.add_argument("--map", metavar="SEED", help="build the world map of this seed (about 25 s), print its towns and "
                                                   "ports and exit; the origin is trader_scenario unless --origin is given")
     ap.add_argument("--svg", metavar="PATH", help="with --map: also write the map as an SVG picture (north at the top)")
     ap.add_argument("--stars", nargs=2, action="append", metavar=("SLOT", "SPEC"), default=[],
@@ -893,7 +893,7 @@ def main(argv=None):
     ap.add_argument("--require-mode", choices=("any", "all"), default="any")
     ap.add_argument("--require-slots", type=int, nargs="+", metavar="SLOT", help="only these slots need the wanted traits")
     ap.add_argument("--criteria", metavar="FILE", help="JSON file with BB Reroll's keys: stars_by_slot, banned, required, required_mode")
-    ap.add_argument("--ports", type=int, metavar="N", help="map condition: at least N ports (about 40 s per map)")
+    ap.add_argument("--ports", type=int, metavar="N", help="map condition: at least N ports (about 25 s per map)")
     ap.add_argument("--ports-south", type=int, metavar="N", help="map condition: at least N southern ports (city states)")
     ap.add_argument("--ports-north", type=int, metavar="N",
                     help="map condition: at least N northern ports (ports in the north band that are not city states)")

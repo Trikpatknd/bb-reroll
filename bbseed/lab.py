@@ -252,7 +252,8 @@ class Lab:
         # leaves reference cycles behind that only a full collection frees. Freezing takes the
         # loaded scripts out of the collector's view, so collections stay quick and frequent.
         gc.collect()
-        gc.freeze()
+        if hasattr(gc, "freeze"):       # PyPy has none, and its memory stays flat without it (measured 2026-11-01)
+            gc.freeze()
         gc.collect()
 
     # ------------------------------------------------------------------ mod settings

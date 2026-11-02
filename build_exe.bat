@@ -5,13 +5,22 @@ REM Output: dist\bb_reroll_gui.exe
 setlocal
 cd /d "%~dp0"
 
-pip install -r requirements.txt >nul
+REM The exe holds the Python that builds it: 3.15 from python.org is about 1.6-1.9x faster than 3.10.
+set "PY=.venv\Scripts\python.exe"
+if not exist "%PY%" set "PY=python"
+"%PY%" -c "import sys; sys.exit(sys.version_info[:2] != (3, 15))"
+if errorlevel 1 (
+    echo This build needs Python 3.15 from python.org.
+    exit /b 1
+)
+
+"%PY%" -m pip install -r requirements.txt >nul
 if errorlevel 1 (
     echo Failed to install Python dependencies.
     exit /b 1
 )
 
-pyinstaller --noconfirm gui.spec
+"%PY%" -m PyInstaller --noconfirm gui.spec
 if errorlevel 1 (
     echo PyInstaller build failed.
     exit /b 1

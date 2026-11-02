@@ -1,5 +1,6 @@
 # Dev/test dependencies. Install with:  pip install -r requirements-dev.txt
 # Run the suite from the repo root with:  python -m pytest            (fast tier)
 #                                         python -m pytest --full -n 4  (everything, 4 worker processes)
-pytest
-pytest-xdist
+pytest==9.0.3       # 9.2.0: the suite's test groups do not reach pytest-xdist, GUI tests spread over the workers
+pytest-xdist==3.8.0
+pillow==13.0.0      # the self-test's screenshot

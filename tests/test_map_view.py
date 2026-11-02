@@ -432,7 +432,7 @@ def test_the_fields_stay_open_while_the_conditions_are_off_so_a_map_option_can_b
 @pytest.mark.core
 def test_the_help_text_names_the_map_time_and_the_map_options():
     assert V.HELP.startswith("Set the minimum number of ports and towns. A port lets you travel by ship. North band: "
-                             "the top part of the map, in percent. Each map takes about 40 seconds with the default "
+                             "the top part of the map, in percent. Each map takes about 25 seconds with the default "
                              "Map Options. Set brother conditions too, if you can. A low Land Mass Ratio with a high "
                              "Water value can make one map take many minutes.")
     assert V.SLOW_OPTIONS in V.HELP
@@ -442,9 +442,9 @@ def test_the_help_text_names_the_map_time_and_the_map_options():
 
 @pytest.mark.core
 def test_the_time_of_a_map_is_the_time_with_the_default_map_options():
-    """Final review M1: 40 s is with Legends' defaults; a low Land Mass Ratio with a high Water value took 352 s for
+    """Final review M1: 25 s is with Legends' defaults; a low Land Mass Ratio with a high Water value took 352 s for
     one map. Text only: there is no attempt cap."""
-    assert V.WAIT == "Each map takes about 40 seconds with the default Map Options."
+    assert V.WAIT == "Each map takes about 25 seconds with the default Map Options."
     assert "many minutes" in V.SLOW_OPTIONS and "Land Mass Ratio" in V.SLOW_OPTIONS and "Water" in V.SLOW_OPTIONS
 
 
@@ -458,15 +458,15 @@ def test_the_help_text_of_legends_has_no_base_game_sentence():
 def test_the_base_game_texts_name_no_map_options_and_need_the_dlcs():
     """Final review F3: the base game has no Map Options and no Land Mass Ratio; its map depends on the DLCs."""
     assert V.HELP_BASE == ("Set the minimum number of ports and towns. A port lets you travel by ship. North band: "
-                           "the top part of the map, in percent. Each map takes about 40 seconds. Set brother "
+                           "the top part of the map, in percent. Each map takes about 25 seconds. Set brother "
                            "conditions too, if you can.\n"
                            "The base game has no Map Options. Its map depends on the DLCs, so map conditions need "
                            "all DLCs. The map does not change the brothers.")
-    assert V.WAIT_BASE == "Each map takes about 40 seconds."
+    assert V.WAIT_BASE == "Each map takes about 25 seconds."
     assert V.help_text("Legends") == V.HELP and V.help_text("Vanilla") == V.HELP_BASE
     assert V.wait_text("Legends") == V.WAIT and V.wait_text("Vanilla") == V.WAIT_BASE
     assert "Land Mass" not in V.HELP_BASE + V.WAIT_BASE and "default Map Options" not in V.HELP_BASE + V.WAIT_BASE
-    assert V.wait_note({"maps": 0}, "Vanilla") == ("Each map takes about 40 seconds. "
+    assert V.wait_note({"maps": 0}, "Vanilla") == ("Each map takes about 25 seconds. "
                                                    "The estimate shows after 30 maps. Maps built: 0.")
     assert V.wait_note({"maps": 0}) == V.wait_note({"maps": 0}, "Legends")
 
@@ -513,11 +513,11 @@ def test_the_estimate_waits_for_maps_not_for_seeds_when_maps_are_all_there_is():
 
 @pytest.mark.core
 def test_the_note_while_the_first_maps_are_built():
-    assert V.wait_note({"maps": 0}) == ("Each map takes about 40 seconds with the default Map Options. "
+    assert V.wait_note({"maps": 0}) == ("Each map takes about 25 seconds with the default Map Options. "
                                         "The estimate shows after 30 maps. Maps built: 0.")
     assert V.wait_note({"maps": 12}).endswith("Maps built: 12.")
     assert V.wait_note({"maps": V.MIN_MAPS}) == ""
-    assert V.WAIT.startswith("Each map takes about 40 seconds")
+    assert V.WAIT.startswith("Each map takes about 25 seconds")
 
 
 @pytest.mark.edge
@@ -570,12 +570,12 @@ def test_the_picture_fits_a_screen_1440_pixels_high():
 @pytest.mark.core
 def test_the_deserters_note_names_the_map_the_speed_and_the_estimate():
     note = V.deserters_note(8)
-    assert "Each seed needs its whole map" in note and "about 50 seconds for each worker" in note
-    assert "With 8 workers, the search tests about 9.6 seeds each minute." in note
+    assert "Each seed needs its whole map" in note and "about 25 seconds for each worker" in note
+    assert "With 8 workers, the search tests about 19.2 seeds each minute." in note
     assert "The estimate of the odds shows after 30 seeds." in note
-    assert "With 1 worker, the search tests about 1.2 seeds each minute." in V.deserters_note(1)
+    assert "With 1 worker, the search tests about 2.4 seeds each minute." in V.deserters_note(1)
     assert "With 1 worker," in V.deserters_note(0), "no worker count counts as one"
-    assert V.deserters_speed(18) == pytest.approx(21.6) and V.deserters_speed(0) == V.deserters_speed(1)
+    assert V.deserters_speed(18) == pytest.approx(43.2) and V.deserters_speed(0) == V.deserters_speed(1)
     assert note.isascii() and all(len(s.split()) <= 25 for s in note.split(". "))
 
 
@@ -583,7 +583,7 @@ def test_the_deserters_note_names_the_map_the_speed_and_the_estimate():
 def test_the_deserters_wait_note_counts_the_seeds_until_the_estimate_shows():
     odds = {"tested": 4, "maps": 4}
     text = V.deserters_wait_note(odds, 8)
-    assert "Seeds tested: 4." in text and "shows after 30 seeds" in text and "50 seconds" in text
+    assert "Seeds tested: 4." in text and "shows after 30 seeds" in text and "25 seconds" in text
     assert V.deserters_wait_note({"tested": V.MIN_MAPS}, 8) == ""
     # a Deserters run is a map run that builds a map for every seed: the usual estimate rules
     assert not V.estimate_ready({"tested": 29, "maps": 29}, map_run=True, map_first=True)

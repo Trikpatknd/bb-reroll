@@ -307,7 +307,7 @@ def test_info_reports_the_map_options_at_legends_defaults(legends_lab):
 @pytest.mark.slow
 def test_real_search_finds_a_port_rich_map(town_maps):
     """search() with a map condition, in a real worker process (map-search Task 9). The seed is checked (seeds=[...]),
-    not searched for: a search would build a whole map (~40 s) per seed tested. A checked seed goes the whole map
+    not searched for: a search would build a whole map (~25 s) per seed tested. A checked seed goes the whole map
     path all the same — the sift map, the roster, the confirming roster and map, the stable flag, the payload — with
     two whole maps. TOWN_SEEDS[0] has 1 port at Legends' default Map Options (map-search Task 6); its map from this
     session's `town_maps` (the same default Map Options, black-market counter 0) must be the search's."""
