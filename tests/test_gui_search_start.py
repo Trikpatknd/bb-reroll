@@ -26,6 +26,7 @@ def app(tmp_path_factory):
     real_ensure_catalog = gui.App._ensure_catalog
     mp.setattr(gui.App, "_ensure_catalog", lambda self: None)       # no game, no catalog
     mp.setattr(gui.msu_settings, "read_map_options", lambda path=None: None)   # no test reads the player's file
+    mp.setattr(gui.worker_load, "memory", lambda: (256 << 30, 200 << 30))      # no test depends on this PC's free memory
     mp.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
     errors = []
     mp.setattr(gui.messagebox, "showerror", lambda *a, **k: errors.append(a))
@@ -1874,7 +1875,9 @@ def test_a_new_match_leaves_the_other_cards_alone(app):
 
 
 @pytest.mark.edge
-def test_two_hundred_results_can_be_removed_toggled_and_cleared(app):
+def test_two_hundred_results_can_be_removed_toggled_and_cleared(app, monkeypatch):
+    import gui
+    monkeypatch.setattr(gui, "MATCH_LIST_PIXELS", 100000)       # all 200 on the list (the limit has its own tests)
     roster = [dict(b, rolls={"hp": {"lo": 0, "hi": 9, "value": 5, "tier": "high"}}) for b in roster_of()]
     try:
         for n in range(200):
@@ -1943,6 +1946,7 @@ def test_many_matches_pull_the_window_forward_once_and_notify_once(app, monkeypa
     monkeypatch.setattr(app, "_surface_window", lambda: surfaced.append(1))
     monkeypatch.setattr(gui, "notification", type("N", (), {"notify": staticmethod(lambda **k: told.append(k))}))
     monkeypatch.setattr(app, "_announced", {}, raising=False)
+    monkeypatch.setattr(gui, "SURFACE_SECONDS", 1.5)        # (shorter than the notification's, so the two can be told apart)
     now = [1000.0]
     monkeypatch.setattr(gui.time, "time", lambda: now[0])
     app._run = {"origin": "Trading Caravan", "setup": "Legends", "checking": False}
@@ -2430,3 +2434,270 @@ def test_criteria_the_addon_check_cannot_read_stay_on_the_exes_python(pypy_app, 
     pypy_app._on_search()
     pump(pypy_app, lambda: calls and not pypy_app._searching)
     assert len(calls) == 1 and pypy_app._searching is False
+
+
+# ====================================================================== too many workers
+GIB = 1 << 30
+
+
+def load_for(app, monkeypatch, free_gb, total_gb=64, threads=24):
+    import gui
+    monkeypatch.setattr(gui.worker_load, "memory", lambda: (total_gb * GIB, int(free_gb * GIB)))
+    monkeypatch.setattr(gui.os, "cpu_count", lambda: threads)
+    app._refresh_load()
+
+
+@pytest.fixture()
+def load_app(map_app):
+    map_app.origin_var.set("Trading Caravan")
+    map_app._on_origin_change("Trading Caravan")
+    map_app.workers_var.set("18")
+    yield map_app
+    map_app.workers_var.set("2")
+    map_app._pypy = None
+    map_app.load_var.set("")
+
+
+@pytest.mark.core
+def test_the_window_warns_while_the_workers_field_is_too_high(load_app, monkeypatch):
+    load_for(load_app, monkeypatch, free_gb=10)
+    text = load_app.load_var.get()
+    assert "18 workers need approximately 18 GB" in text and "10 GB is free" in text and "Use 9 workers or less" in text
+    assert load_app.load_label.winfo_manager() != ""
+    load_app.workers_var.set("9")
+    load_app._refresh_load()
+    assert load_app.load_var.get() == "" and load_app.load_label.winfo_manager() == ""
+
+
+@pytest.mark.core
+def test_the_warning_uses_the_figure_of_the_setup(load_app, monkeypatch):
+    load_for(load_app, monkeypatch, free_gb=10)
+    assert load_app.load_var.get()
+    monkeypatch.setattr(load_app, "_setup_kind", lambda: "Vanilla")
+    load_app._refresh_load()
+    assert load_app.load_var.get() == "", "18 x 0.35 GB fits"
+
+
+@pytest.mark.core
+def test_the_warning_counts_pypy_only_when_this_search_uses_it(load_app, monkeypatch):
+    from bbreroll import pypy_addon
+    load_app._pypy = pypy_addon.Addon(Path("X:/addon"))
+    load_app.map_vars["ports"].set("4")
+    load_app._bulk_check("banned", False)
+    load_app._bulk_check("required", False)
+    load_for(load_app, monkeypatch, free_gb=22)
+    assert "27 GB" in load_app.load_var.get(), "18 x 1.5 GB in PyPy"
+    load_app.pypy_var.set(False)
+    load_app._refresh_load()
+    assert load_app.load_var.get() == "", "18 x 1 GB fits"
+    load_app.pypy_var.set(True)
+    load_app.stars_vars[("1", "res")].set("1")
+    load_app._refresh_load()
+    assert load_app.load_var.get() == "", "a condition on a brother: not in PyPy"
+
+
+@pytest.mark.core
+def test_search_asks_first_and_no_means_no_search(load_app, calls, monkeypatch):
+    load_for(load_app, monkeypatch, free_gb=10)
+    load_app._bulk_check("banned", True)
+    seen = asked(monkeypatch, answer=False)
+    assert len(search_now(load_app, calls)) == 0
+    assert [t for t, _m in seen] == ["Too many workers"]
+    assert "Use 9 workers or less" in seen[0][1]
+    seen.clear()
+    seen = asked(monkeypatch, answer=True)
+    assert len(search_now(load_app, calls)) == 1, "the player decides"
+
+
+@pytest.mark.edge
+def test_search_does_not_ask_when_it_fits(load_app, calls, monkeypatch):
+    load_for(load_app, monkeypatch, free_gb=40)
+    load_app._bulk_check("banned", True)
+    seen = asked(monkeypatch)
+    assert len(search_now(load_app, calls)) == 1 and seen == []
+
+
+@pytest.mark.edge
+def test_search_reads_the_free_memory_again_when_it_starts(load_app, calls, monkeypatch):
+    import gui
+    load_for(load_app, monkeypatch, free_gb=40)
+    assert load_app.load_var.get() == ""
+    monkeypatch.setattr(gui.worker_load, "memory", lambda: (64 * GIB, 5 * GIB))
+    load_app._bulk_check("banned", True)
+    seen = asked(monkeypatch, answer=False)
+    assert search_now(load_app, calls) == [] and [t for t, _m in seen] == ["Too many workers"]
+
+
+@pytest.mark.edge
+def test_a_checked_seed_does_not_ask(load_app, calls, monkeypatch):
+    load_for(load_app, monkeypatch, free_gb=0.5)
+    seen = asked(monkeypatch)
+    load_app.check_seed_var.set("1234567890")
+    load_app._on_check_seed()
+    pump(load_app, lambda: calls and not load_app._searching)
+    assert len(calls) == 1 and seen == [], "one worker, for one seed"
+
+
+@pytest.mark.core
+def test_a_running_search_is_told_once_when_the_memory_is_almost_full(load_app, monkeypatch):
+    load_for(load_app, monkeypatch, free_gb=2)
+    load_app._run = dict(RUN)
+    load_app._searching = True
+    try:
+        load_app._load_warned = False
+        load_app._refresh_load()
+        assert "almost full" in load_app.notice_var.get()
+        assert load_app.load_var.get() == "", "the workers of the search itself use the memory now"
+        load_app._clear_notice()
+        load_app._refresh_load()
+        assert load_app.notice_var.get() == "", "one time for each search"
+    finally:
+        load_app._searching = False
+        load_app._clear_notice()
+
+
+@pytest.mark.edge
+def test_a_running_search_with_free_memory_shows_nothing(load_app, monkeypatch):
+    load_for(load_app, monkeypatch, free_gb=30)
+    load_app._run = dict(RUN)
+    load_app._searching = True
+    try:
+        load_app._load_warned = False
+        load_app._refresh_load()
+        assert load_app.notice_var.get() == ""
+    finally:
+        load_app._searching = False
+
+
+@pytest.mark.dirty
+def test_a_failure_in_the_load_check_leaves_the_search_alone(load_app, calls, monkeypatch):
+    import gui
+
+    def broken():
+        raise OSError("no")
+    monkeypatch.setattr(gui.worker_load, "memory", broken)
+    load_app._bulk_check("banned", True)
+    seen = asked(monkeypatch)
+    load_app._refresh_load()
+    assert load_app.load_var.get() == ""
+    assert len(search_now(load_app, calls)) == 1 and seen == []
+
+
+# ====================================================================== a very long list
+# Found by driving the real window: a window on Windows can be 32767 pixels high. At about 300 cards the list went blank, with
+# "457 matches" in the status line. Counting cards does not show this: only the height does.
+def _long_list(app, count, brothers=3):
+    roster = roster_of(brothers)
+    for n in range(count):
+        _checked_match(app, "%010d" % n, roster)
+    app.update_idletasks()
+
+
+@pytest.mark.edge
+def test_a_very_long_list_stays_inside_what_a_window_can_be(app):
+    try:
+        _long_list(app, 400)
+        assert app.match_list.winfo_reqheight() < 32000
+        cards = _cards(app)
+        assert len(app._matches) == 400, "every result is kept"
+        assert 50 < len(cards) < 400
+        assert cards == [m["card"] for m in app._matches[:len(cards)]], "the newest ones, in order"
+        assert all(m["card"] is None for m in app._matches[len(cards):])
+        assert app.match_title.cget("text") == "RESULTS: THE NEWEST", "and the title says so"
+    finally:
+        app._clear_matches()
+    assert app.match_title.cget("text") == "RESULTS" and _cards(app) == []
+
+
+@pytest.mark.edge
+def test_big_cards_reach_the_limit_sooner(app):
+    try:
+        _long_list(app, 150, brothers=12)
+        assert app.match_list.winfo_reqheight() < 32000 and len(_cards(app)) < 150
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.edge
+def test_details_on_a_long_list_stay_inside_the_limit_and_in_order(app):
+    roster = [dict(b, rolls={"hp": {"lo": 0, "hi": 9, "value": 5, "tier": "high"}}) for b in roster_of(3)]
+    try:
+        for n in range(260):
+            _checked_match(app, "%010d" % n, roster)
+        for entry in app._matches[:60]:
+            if entry["card"] is not None:       # (only a card on the list has a button)
+                app._toggle_perks(entry)
+        app.update_idletasks()
+        assert app.match_list.winfo_reqheight() < 32000
+        cards = _cards(app)
+        assert cards == [m["card"] for m in app._matches[:len(cards)]]
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.edge
+def test_removing_a_card_shows_the_next_one_that_was_left_out(app):
+    try:
+        _long_list(app, 300)
+        cards = _cards(app)
+        shown = len(cards)
+        assert shown < 300
+        next_entry = app._matches[shown]
+        app._dismiss_match(app._matches[5])
+        assert len(_cards(app)) == shown and next_entry["card"] is not None, "the list is full again"
+        assert _cards(app)[-1] is next_entry["card"]
+        assert len(app._matches) == 299
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.edge
+def test_the_same_seed_again_when_its_card_was_left_out(app):
+    try:
+        _long_list(app, 300)
+        old = app._matches[-1]
+        assert old["card"] is None
+        new = _checked_match(app, old["seed"])
+        assert new["card"] is _cards(app)[0] and len(app._matches) == 300, "no crash, no second entry"
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.edge
+def test_a_full_rebuild_keeps_the_limit(app):
+    try:
+        _long_list(app, 300)
+        app._render_match_list()
+        app.update_idletasks()
+        assert app.match_list.winfo_reqheight() < 32000 and len(_cards(app)) < 300
+    finally:
+        app._clear_matches()
+
+
+# ====================================================================== found by the user's test of the exe
+@pytest.mark.edge
+def test_a_long_status_text_wraps_beside_the_watch_text(app):
+    from bbreroll import map_view
+    text = map_view.brother_estimate({"chance_brothers": 1 / 109088, "maps": 1, "tested": 109088}, True, False)
+    assert text.endswith("after %d maps." % map_view.MIN_MAPS)
+    before, watch = app.status_var.get(), app.watch_var.get()
+    app.deiconify()
+    app.geometry("1000x940+40+40")
+    try:
+        app.status_var.set(text)
+        app.watch_var.set("Searching: 109,088 of 10,000,000 seeds, 255/s, 10h47m or less to go")
+        pump(app, lambda: False, 0.3)
+        room = app.winfo_width() - app.watch_label.winfo_reqwidth() - app.watch_dot.winfo_reqwidth()
+        assert app.status_label.winfo_reqwidth() <= room, "the whole text shows, on two lines if it must"
+    finally:
+        app.status_var.set(before)
+        app.watch_var.set(watch)
+        app.withdraw()
+
+
+@pytest.mark.edge
+def test_nothing_covers_the_near_cards_bottom_border(near_app):
+    near_app._ev_near(near_payload())
+    card = near_app._near["card"]
+    assert card.grid_slaves(row=5) == [], "a spacer at the bottom painted over the border"
+    assert card.grid_rowconfigure(5)["minsize"] > 0, "the room under the text stays"

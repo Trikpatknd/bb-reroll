@@ -70,6 +70,7 @@ from bbreroll import map_conditions
 from bbreroll import map_view
 from bbreroll import near_view
 from bbreroll import pypy_addon
+from bbreroll import worker_load
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
     explain_failure, roster_lines, sanitize_trait, to_int,
@@ -126,10 +127,16 @@ def default_workers() -> int:
 SEEDS_TO_TEST = "Seeds to test"
 MATCHES_TO_FIND = "Matches to find"
 WORKERS = "Workers"
-# Many matches at once (A New Company: 1 in 8 seeds): the time one match keeps the window on top, and a notification's.
-SURFACE_SECONDS = 1.5
+# Many matches at once (A New Company: 1 in 8 seeds): how often a match pulls the window forward (it takes 0.7 s with a long list,
+# and takes the focus from whatever the player does), and how often a notification shows.
+SURFACE_SECONDS = 10
 NOTIFY_SECONDS = 10
 DRAIN_SECONDS = 0.1       # the most one turn of the event queue takes: the window has its own events, Stop is one
+# A window on Windows can be 32767 pixels high: past that the results list goes blank (about 300 cards of 3 brothers). The list
+# shows the newest cards up to this height, by _card_height's estimate; every result stays in App._matches.
+MATCH_LIST_PIXELS = 12000
+MATCH_LIST_PARTLY = "RESULTS: THE NEWEST"
+LOAD_CHECK_MS = 1000      # how often the window looks at the workers field and the free memory
 MAP_PICTURE_COPIED = "The map picture is copied. Paste it into Discord after the seed post."
 
 
@@ -544,6 +551,7 @@ class App(ctk.CTk):
         self._run = {}
         self._matches: list[dict] = []   # session-level list of results, newest first
         self._announced: dict[str, float] = {}   # when a match last pulled the window forward / made a notification
+        self._load_warned = False                # this search was told that the memory is almost full
         self._pypy = None                        # the optional PyPy download next to the exe (_find_pypy)
         self._pypy_reason = ""                   # why a folder that is there cannot be used
         self._near: dict | None = None           # the closest seed's card while no seed matches (search event "near")
@@ -582,6 +590,7 @@ class App(ctk.CTk):
         # (a search runs for a while) or parked on a different-DPI second monitor.
         self.after(1000, self._repaint_tick)
         self.after(100, self._drain_events)
+        self.after(LOAD_CHECK_MS, self._watch_load)
         self.after(1500, self._ensure_catalog)     # after a self-test spec, if any, is known
 
     # ── UI build ──
@@ -638,7 +647,12 @@ class App(ctk.CTk):
         workers = _field(line_b, WORKERS, lambda p: _entry(p, self.workers_var, 60))
         _attach_tooltip(workers, f"The number of search processes that run at the same time. This computer has "
                                  f"{os.cpu_count() or 1} processor threads. With Legends, each process uses "
-                                 f"approximately 0.8 GB of memory and needs approximately 10 seconds to start.")
+                                 f"approximately {worker_load.GB_LEGENDS:g} GB of memory, with the base game "
+                                 f"{worker_load.GB_VANILLA:g} GB. Each process needs approximately 10 seconds to start.")
+        # filled by _refresh_load when the workers do not fit this computer
+        self.load_var = ctk.StringVar(value="")
+        self.load_label = ctk.CTkLabel(line_b, textvariable=self.load_var, font=(FONT, 11), text_color=PALETTE["star"],
+                                       justify="left", anchor="w", wraplength=560)
 
         # Conditions: stars or stat rolls (one grid at a time; both always count)
         cond = _panel(self, row=2, column=0, sticky="ew", padx=10, pady=4)
@@ -735,7 +749,8 @@ class App(ctk.CTk):
             row=0, column=3, sticky="e")
         _attach_tooltip(self.match_title, "These are normal campaign seeds. Start a new campaign with the same game "
                                           "version, mods, origin and recruit Mod Options. Then write the seed exactly "
-                                          "as shown.")
+                                          "as shown. With very many results, the list shows only the newest. The status "
+                                          "line gives the number of all matches.")
         self.match_list = ctk.CTkScrollableFrame(self.match_pane, height=140, fg_color="transparent")
         self.match_list.grid(row=2, column=0, sticky="nsew", padx=8, pady=(4, 8))
         self.match_pane.grid_remove()
@@ -763,13 +778,16 @@ class App(ctk.CTk):
         status = ctk.CTkFrame(self, fg_color="transparent")
         status.grid(row=7, column=0, sticky="ew", padx=14, pady=(2, 8))
         status.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(status, textvariable=self.status_var, anchor="w", font=(FONT, 12),
-                     text_color=PALETTE["text"]).grid(row=0, column=0, sticky="ew")
+        # wraps: a long estimate next to the watch text ran under it
+        self.status_label = ctk.CTkLabel(status, textvariable=self.status_var, anchor="w", justify="left", font=(FONT, 12),
+                                         text_color=PALETTE["text"], wraplength=540)
+        self.status_label.grid(row=0, column=0, sticky="ew")
         right = ctk.CTkFrame(status, fg_color="transparent")
         right.grid(row=0, column=1, sticky="e")
         self.watch_dot = ctk.CTkLabel(right, text="●", font=(FONT, 14), text_color="#6a6e76", width=14)
         self.watch_dot.pack(side="left", padx=(0, 6))
-        ctk.CTkLabel(right, textvariable=self.watch_var, font=(FONT, 12), text_color=PALETTE["muted"]).pack(side="left")
+        self.watch_label = ctk.CTkLabel(right, textvariable=self.watch_var, font=(FONT, 12), text_color=PALETTE["muted"])
+        self.watch_label.pack(side="left")
 
     def _build_trait_pane(self, parent, col, title, help_text, known_list, vars_dict, kind):
         pane = _panel(parent)
@@ -1285,6 +1303,55 @@ class App(ctk.CTk):
         self._pypy, self._pypy_reason = pypy_addon.find(exe_dir, APP_VERSION)
         self.pypy_switch.grid() if self._pypy is not None else self.pypy_switch.grid_remove()
         self._apply_map_state()
+
+    def _in_pypy(self, criteria, scenario, seeds=None) -> bool:
+        """Does this search run in the optional PyPy download?"""
+        try:
+            return bool(self._pypy is not None and not seeds and self.pypy_var.get()
+                        and pypy_addon.applies(criteria, scenario))
+        except ValueError:      # the search in this Python says what is wrong with the conditions
+            return False
+
+    @staticmethod
+    def _found_memory():
+        try:
+            return worker_load.memory()
+        except Exception:       # (only a warning depends on it)
+            return None
+
+    def _load_lines(self):
+        """Why the workers in the field do not fit this computer, for the search the fields describe; [] when they do."""
+        criteria = self._gather_criteria()
+        per_worker = worker_load.gb_per_worker(self._setup_kind() == "Vanilla",
+                                               self._in_pypy(criteria, O.SCENARIO.get(self.origin_var.get())))
+        return worker_load.problems(to_int(self.workers_var.get()), os.cpu_count() or 1, per_worker, self._found_memory())
+
+    def _refresh_load(self):
+        """The line beside the Workers field. During a search the workers use the memory themselves, so that line goes away,
+        and the search is told one time when the memory is almost full."""
+        if self._searching:
+            text = ""
+            low = worker_load.memory_is_low(self._found_memory())
+            if low and not self._load_warned:
+                self._load_warned = True
+                self._show_notice(low, kind="error")
+        else:
+            text = "\n".join(self._load_lines())
+        if text != self.load_var.get():
+            self.load_var.set(text)
+        shown = self.load_label.winfo_manager() != ""
+        if text and not shown:
+            self.load_label.pack(side="left", fill="x", pady=(14, 0))
+        elif shown and not text:
+            self.load_label.pack_forget()
+
+    def _watch_load(self):
+        try:
+            self._refresh_load()
+        except Exception:       # (a warning must not stop the window: a grid that is being rebuilt, for example)
+            pass
+        finally:
+            self.after(LOAD_CHECK_MS, self._watch_load)
 
     def _setup_kind(self) -> str:
         """The setup as the Map view sees it: a map_view.SETUP_KINDS value. A research Vanilla setup is "Vanilla"."""
@@ -1871,6 +1938,9 @@ class App(ctk.CTk):
                     f"{lines}\n\nNo seed can match. Search?",
                 ):
                     return
+        load = self._load_lines()       # (the free memory as it is now)
+        if load and not messagebox.askyesno(worker_load.DIALOG_TITLE, "\n".join(load) + "\n\nSearch?"):
+            return
         self._launch(criteria, numbers, seeds=None)
 
     def _deserters_problems(self):
@@ -1948,11 +2018,8 @@ class App(ctk.CTk):
                                f" {map_view.wait_text(self._setup_kind())}" if map_criteria else ""))
         put = self._events.put
         start = (self._selftest or {}).get("start")      # (a self-test can compare two runs of one seed range)
-        try:
-            in_pypy = (self._pypy is not None and not seeds and self.pypy_var.get()
-                       and pypy_addon.applies(criteria, scenario))
-        except ValueError:      # the search in this Python says what is wrong with the conditions
-            in_pypy = False
+        in_pypy = self._in_pypy(criteria, scenario, seeds)
+        self._load_warned = False
         self._run["pypy"] = in_pypy
 
         def run():
@@ -2094,6 +2161,7 @@ class App(ctk.CTk):
             self._drop_near()       # an exact match: the closest seed no longer matters
         self._fit_match_list()
         self._add_match_card(entry)
+        self._fill_match_list()
         self.match_pane.grid()
         if not entry["checked"]:
             if self._announce("surface", SURFACE_SECONDS):
@@ -2303,8 +2371,7 @@ class App(ctk.CTk):
         self._fit_match_list()
         if self._near is not None:
             self._add_near_card()
-        for entry in self._matches:
-            self._add_match_card(entry, front=False)
+        self._fill_match_list()
 
     def _fit_match_list(self):
         # the results row stretches only while it is shown (an empty row with weight takes space too).
@@ -2318,18 +2385,42 @@ class App(ctk.CTk):
             self.match_pane.grid_remove()
             return
         # as tall as its content needs, up to a limit (it scrolls beyond that)
-        wanted = 0
-        if self._near is not None:
-            wanted += 84 + 16 * (len(self._near["roster"] or ()) + len(self._near["differences"]))
+        wanted = self._near_height()
         for m in self._matches:
-            wanted += (64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1) + (34 if m.get("map") else 0)
-                       + (20 if map_view.first_campaign_line(O.is_deserters(m["origin"]),
-                                                             (m.get("info") or {}).get("legends")) else 0))
+            wanted += self._card_height(m)
             if wanted >= 300:
                 break
         height = max(90, min(300, wanted))
         if self.match_list.cget("height") != height:
             self.match_list.configure(height=height)
+
+    def _near_height(self):
+        return 84 + 16 * (len(self._near["roster"] or ()) + len(self._near["differences"])) if self._near is not None else 0
+
+    @staticmethod
+    def _card_height(m):
+        """About how high a result's card is, in pixels."""
+        return (64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1) + (34 if m.get("map") else 0)
+                + (20 if map_view.first_campaign_line(O.is_deserters(m["origin"]), (m.get("info") or {}).get("legends")) else 0))
+
+    def _fill_match_list(self):
+        """The newest cards up to MATCH_LIST_PIXELS: a card that is over it goes away and one that fits comes back."""
+        used = self._near_height()
+        shown = 0
+        for m in self._matches:
+            used += self._card_height(m)
+            if used <= MATCH_LIST_PIXELS or not shown:
+                shown += 1
+                if m.get("card") is None:
+                    self._add_match_card(m, front=False)
+            elif m.get("card") is not None:
+                m["card"].destroy()
+                m["card"] = None
+            elif used > 2 * MATCH_LIST_PIXELS:
+                break       # (the older ones have no card already)
+        title = "RESULTS" if shown == len(self._matches) else MATCH_LIST_PARTLY     # (no count: it moved the row on every match)
+        if self.match_title.cget("text") != title:
+            self.match_title.configure(text=title)
 
     def _ev_near(self, payload):
         """The closest seed so far (bbseed/search.py). A seed the player removed stays away until a nearer one comes."""
@@ -2427,7 +2518,7 @@ class App(ctk.CTk):
         if first_line:
             ctk.CTkLabel(card, text=first_line, font=(FONT, 12), justify="left", anchor="w", wraplength=880,
                          text_color=PALETTE["muted"]).grid(row=4, column=0, columnspan=2, sticky="w", padx=12, pady=(4, 0))
-        ctk.CTkFrame(card, fg_color="transparent", height=8).grid(row=5, column=0)
+        card.grid_rowconfigure(5, minsize=8)        # room under the text (a spacer widget there painted over the border)
         near["card"] = card
         return card
 
@@ -2439,11 +2530,6 @@ class App(ctk.CTk):
         card = ctk.CTkFrame(self.match_list, corner_radius=8, border_width=1,
                             fg_color=PALETTE["card"] if ok else PALETTE["card_other"],
                             border_color=PALETTE["card_border"] if ok else PALETTE["card_other_border"])
-        card.pack(fill="x", padx=2, pady=3)
-        if front and before is None:
-            before = next((m["card"] for m in self._matches if m is not entry and m.get("card") is not None), None)
-        if before is not None:      # not through CTk's pack: it would replay the argument on a scale change,
-            tk.Frame.pack_configure(card, before=before)    # when that card may be gone
         card.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(card, text=f"Seed {entry['seed']}", font=(FONT, 14, "bold"), text_color=PALETTE["text"]).grid(
             row=0, column=0, sticky="w", padx=(12, 8), pady=(8, 0))
@@ -2501,6 +2587,12 @@ class App(ctk.CTk):
             ctk.CTkLabel(card, text="\n".join(lines), font=(FONT, 11), justify="left", anchor="w", wraplength=880,
                          text_color=PALETTE["muted"]).grid(row=3, column=0, columnspan=3, sticky="w",
                                                            padx=12, pady=(0, 10))
+        # On the screen only now that it is built: a card placed first shows as an empty frame during a run of many matches.
+        card.pack(fill="x", padx=2, pady=3)
+        if front and before is None:
+            before = next((m["card"] for m in self._matches if m is not entry and m.get("card") is not None), None)
+        if before is not None:      # not through CTk's pack: it would replay the argument on a scale change,
+            tk.Frame.pack_configure(card, before=before)    # when that card may be gone
         entry["card"] = card
         return card
 
@@ -2584,10 +2676,11 @@ class App(ctk.CTk):
     def _toggle_perks(self, entry: dict):
         entry["show_perks"] = not entry.get("show_perks")
         place = self._matches.index(entry) + 1
-        below = self._matches[place]["card"] if place < len(self._matches) else None
+        below = self._matches[place].get("card") if place < len(self._matches) else None
         entry["card"].destroy()
         self._add_match_card(entry, front=False, before=below)
         self._fit_match_list()
+        self._fill_match_list()
 
     def _drop_match(self, entry: dict):
         self._matches = [m for m in self._matches if m is not entry]
@@ -2597,6 +2690,7 @@ class App(ctk.CTk):
     def _dismiss_match(self, entry: dict):
         self._drop_match(entry)
         self._fit_match_list()
+        self._fill_match_list()
 
     def _clear_matches(self):
         self._matches.clear()
