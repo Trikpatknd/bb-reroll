@@ -107,6 +107,42 @@ return out;
 """
 STAT_ORDER = ("hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf")      # order of the `base` / `shown` lists
 
+# A brother is complete when the NEXT brother's setStartValuesEx starts: origins create all recruits first and configure them
+# after that (bros[0].setStartValuesEx(...) after the create loop, MODLOG "EARLY EXIT"), so create says nothing. vargv[0]: the
+# player class and the copies derived classes hold. It reads, it draws nothing.
+_BROTHER_WRAP = """
+foreach (c in vargv[0])
+{
+    if ("BBR_BrotherWrapped" in c) continue;
+    local start = c.setStartValuesEx;
+    c.BBR_BrotherWrapped <- true;
+    c.setStartValuesEx <- function (...)
+    {
+        ::BBR_BrotherStarts(this);
+        local args = [this];
+        args.extend(vargv);
+        return start.acall(args);
+    };
+}
+"""
+_ROLL_LOG_CLEAR = "if (\"BBR_RollLog\" in ::getroottable()) ::BBR_RollLog.clear();"
+_ROLL_PEEK = """
+local out = [];
+foreach (bro in vargv[0])
+{
+    local found = null;
+    local background = bro.getBackground();
+    foreach (e in ::BBR_RollLog)
+        if (e[0] == background) found = [e[1], e[2]];
+    out.push(found);
+}
+return out;
+"""
+
+
+class _RosterStopped(Exception):
+    """stop_after said the seed is decided: leaves the campaign start from inside the scripts (Lab.roster catches it)."""
+
 # The Map Options of Legends' MSU page "Map Options" that change the generated map (mod_legends/register/modsettings.nut;
 # the page's DebugMap only reveals the map), by their setting ids, in the order of the seed post.
 # bbreroll/seed_report.py lists the same keys with their labels: a test keeps both lists equal (bbseed never
@@ -242,6 +278,7 @@ class Lab:
         self._maps = None               # mapgen.MapRun, made by the first world_map()
         self._blackmarket = None        # the compiled _BLACKMARKET, made with it
         self._no_map = None             # mapgen.NoMapStart, made by the first deserters_start()
+        self._brother_watch = None      # Lab._watch_brothers: what happens when a brother starts
         self._state_spent = False       # a map run used the world state: the next roster needs a new one
         self._stash_capacity = eng.vm.compile("return ::World.Assets.getStash().getCapacity();", "lab_cap").invoke(eng.root, ())
         for key, value in (mod_settings or {}).items():
@@ -329,19 +366,76 @@ class Lab:
         return installed_mods(registered, zips)
 
     # ------------------------------------------------------------------ rosters
-    def roster(self, seed, origin, fresh=True, probe=None):
+    def _watch_brothers(self):
+        """The hook on setStartValuesEx, once per lab; returns its state: "members" (the player roster's list), "started"
+        (the slots that started in this roster, 0 = first), "on_complete"."""
+        if self._brother_watch is None:
+            from .rolls import _copies
+            eng = self.eng
+            watch = {"started": [], "on_complete": None, "members": self.world.roster("player").members}
+            roster = self.world.roster("player")
+
+            def starts(_this, bro):
+                if watch["on_complete"] is None:
+                    return None
+                for i, member in enumerate(roster.members):
+                    if member is bro:
+                        if i not in watch["started"]:
+                            before = watch["started"][-1] if watch["started"] else None
+                            watch["started"].append(i)
+                            if before is not None:
+                                watch["on_complete"](before + 1, roster.members[before])
+                        break
+                return None
+            eng.root.d["BBR_BrotherStarts"] = NativeFn(starts, "BBR_BrotherStarts")
+            cls = eng.class_table("scripts/entity/tactical/player")
+            eng.vm.compile(_BROTHER_WRAP, "lab_brother_wrap").invoke(eng.root, ([cls] + _copies(eng, cls.get("ClassName")),))
+            watch["report"] = eng.vm.compile(_REPORT.replace("foreach (bro in ::World.getPlayerRoster().getAll())",
+                                                             "foreach (bro in vargv[0])"), "lab_brother_report")
+            watch["peek"] = eng.vm.compile(_ROLL_PEEK, "lab_brother_peek")
+            watch["clear"] = eng.vm.compile(_ROLL_LOG_CLEAR, "lab_brother_clear")
+            self._brother_watch = watch
+        return self._brother_watch
+
+    def _brother_view(self, entity):
+        """What one complete brother looks like now, as in a roster (with his rolls when they are watched); None when
+        he cannot be read yet (Gladiators' stars come later: such an origin never stops, talents.survey)."""
+        watch, eng = self._brother_watch, self.eng
+        depth = len(eng.vm.stack)
+        try:
+            bro = self._bro(watch["report"].invoke(eng.root, ([entity],))[0])
+            if self._rolls is not None:
+                self._rolls.attach([bro], watch["peek"].invoke(eng.root, ([entity],)))
+            return bro
+        except (SqError, IndexError, KeyError, TypeError):
+            del eng.vm.stack[depth:]
+            return None
+
+    def roster(self, seed, origin, fresh=True, probe=None, stop_after=None, stop_slots=None):
         """The starting roster of a campaign with this seed text and origin.
 
         fresh=True builds a new world state first, like the game does for every new
         campaign — the authoritative answer. fresh=False reuses the current one after a
         quick reset: much faster, used to sift seeds; confirm anything it finds.
         probe: a compiled script run while the recruits still exist; then the result is
-        (roster, what the probe returned)."""
+        (roster, what the probe returned).
+        stop_after(slot, bro): called each time a brother is complete (slot 1 = first), when the next one starts, with
+        his view (None when he cannot be read yet); the last brother is not asked: the roster is complete then. True
+        ends the roster there: it cleans up as after a full one and returns None. stop_slots: only these slots are asked
+        (a view costs a little); None: all of them. Whether a slot's view is the final one is talents.survey's question."""
         eng = self.eng
         if fresh or self._state_spent:
             self.world.build_state()
             self.world.add_placeholder_settlements()
             self._state_spent = False
+        if stop_after is not None:
+            watch = self._watch_brothers()
+            del watch["started"][:]
+
+            def complete(slot, entity):
+                if (stop_slots is None or slot in stop_slots) and stop_after(slot, self._brother_view(entity)):
+                    raise _RosterStopped()
+            watch["on_complete"] = complete
         try:
             scenario = self.scenario(origin)
             self._start.invoke(eng.root, (seed, scenario))
@@ -352,6 +446,11 @@ class Lab:
             if self._rolls is not None:
                 self._rolls.attach(bros, self._rolls.probe.invoke(eng.root, ()))
             probed = probe.invoke(eng.root, ()) if probe is not None else None
+        except _RosterStopped:
+            del eng.vm.stack[:]
+            self._cleanup.invoke(eng.root, (self._stash_capacity,))
+            self._brother_watch["clear"].invoke(eng.root, ())
+            return None
         except SqError as e:
             eng.vm.note_trace(0)
             trace = " > ".join(eng.vm.last_trace[-6:])
@@ -361,6 +460,9 @@ class Lab:
             except SqError:
                 del eng.vm.stack[:]
             raise LabError("seed %r, origin %r: %s (at %s)" % (seed, origin, tostring(e.value), trace))
+        finally:
+            if stop_after is not None:
+                self._brother_watch["on_complete"] = None
         self._cleanup.invoke(eng.root, (self._stash_capacity,))
         return bros if probe is None else (bros, probed)
 

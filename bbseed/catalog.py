@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import gamedata, profiles
 
-CATALOG_VERSION = 6
+CATALOG_VERSION = 7
 
 # not surveyed: the tutorial and the random-origin picker are not origins of their own. Deserters is surveyed with
 # the start loop lengths of talents.DESERTERS_LOOPS (its recruits depend on the map through that length)

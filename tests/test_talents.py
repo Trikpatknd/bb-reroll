@@ -140,3 +140,131 @@ def test_brothers_that_share_a_list_share_every_list():
     share_lists([one, five, solo])
     assert one.summary()["choices"] == ["background.a", "background.b", "background.c"]
     assert solo.summary()["choices"] == ["background.d", "background.e"]
+
+
+# ====================================================================== which brothers are final (early exit)
+early_group = pytest.mark.xdist_group("early_labs")
+
+
+@pytest.fixture(scope="module")
+def labs():
+    """Altered labs (the rolls watched, the brother hook on): their own, not the session's (conftest.py)."""
+    from bbseed import profiles
+    from bbseed.lab import Lab, big_stack
+    found = profiles.installed_summary()
+    if not found or found["game_version"] != "1.5.2.3" or not any("mod_legends-19.4.22" in m for m in found["mods"]):
+        pytest.skip("Battle Brothers 1.5.2.3 with Legends 19.4.22 is not installed")
+    return {"legends": big_stack(lambda: Lab("legends").watch_rolls()),
+            "vanilla": big_stack(lambda: Lab("vanilla").watch_rolls())}
+
+
+def _final_from(lab, origin, seeds=40):
+    from bbseed.lab import big_stack
+    from bbseed.talents import FinalWatch
+    final = FinalWatch()
+
+    def run():
+        for n in range(seeds):
+            final.finish(lab.roster(str(5000000 + n).zfill(10), origin, fresh=n == 0, stop_after=final.look))
+    big_stack(run)
+    return final.final_from()
+
+
+@pytest.mark.slow
+@pytest.mark.core
+@early_group
+def test_trading_caravan_brother_1_is_final(labs):
+    assert _final_from(labs["legends"], "trader_scenario") == 1
+    assert _final_from(labs["vanilla"], "trader_scenario") == 1
+
+
+@pytest.mark.slow
+@pytest.mark.core
+@early_group
+def test_a_new_company_is_final_too(labs):
+    """The plan expected no early final slot here. Measured over 200 seeds (MODLOG "EARLY EXIT"): its fixed stars come before
+    the next brother starts, so every brother is final by then."""
+    assert _final_from(labs["legends"], "early_access_scenario") == 1
+
+
+@pytest.mark.slow
+@pytest.mark.edge
+@early_group
+def test_legends_militia_changes_its_brothers_later(labs):
+    assert _final_from(labs["legends"], "militia_scenario", 8) == 12
+    assert _final_from(labs["vanilla"], "militia_scenario", 8) == 1
+
+
+@pytest.mark.slow
+@pytest.mark.edge
+@early_group
+def test_gladiators_cannot_be_read_when_the_next_one_starts(labs):
+    assert _final_from(labs["legends"], "gladiators_scenario", 4) == 3
+
+
+@pytest.mark.slow
+@pytest.mark.core
+@early_group
+def test_a_stopped_roster_leaves_the_state_like_a_full_one(labs):
+    """The next seed's roster equals one on a fresh state, whatever was stopped before it."""
+    from bbseed.lab import big_stack
+    lab = labs["legends"]
+    results = {}
+
+    def run():
+        for seed in ("0000000011", "0000000012", "0000000013", "0000000014"):
+            first = lab.roster(seed, "trader_scenario", fresh=True)
+            stopped = lab.roster("0000000099", "trader_scenario", fresh=False, stop_after=lambda slot, bro: True)
+            again = lab.roster(seed, "trader_scenario", fresh=False)
+            results[seed] = (first, stopped, again)
+        full = lab.roster("0000000099", "trader_scenario", fresh=True)
+        seen = []
+        lab.roster("0000000099", "trader_scenario", fresh=False, stop_after=lambda slot, bro: seen.append((slot, bro)) or True)
+        results["seen"] = (full, seen)
+        looked = []
+        results["slots"] = lab.roster("0000000099", "trader_scenario", fresh=False, stop_slots={7},
+                                      stop_after=lambda slot, bro: looked.append(slot) or True), looked
+    big_stack(run)
+    for seed in ("0000000011", "0000000012", "0000000013", "0000000014"):
+        first, stopped, again = results[seed]
+        assert stopped is None
+        assert first == again, seed
+    full, seen = results["seen"]
+    assert [slot for slot, _bro in seen] == [1], "stopped at the first question"
+    assert seen[0][1]["stars"] == full[0]["stars"] and seen[0][1]["rolls"] == full[0]["rolls"]
+    assert results["slots"][1] == [] and results["slots"][0] is not None, "a slot that is not asked does not stop"
+
+
+class _SurveyWatch:
+    """TalentWatch's roll for talents.survey: `size` brothers, brother 1 changes after he is complete when `changes`."""
+    names = {}
+
+    def __init__(self, size, changes=False, unread=False):
+        self.size, self.changes, self.unread = size, changes, unread
+
+    def roll(self, seed, origin, loop=None, stop_after=None):
+        roster = [{"stars": {"hp": 1}, "traits": ["brave"], "background": "background.monk"} for _ in range(self.size)]
+        for slot in range(1, self.size):
+            if stop_after is not None:
+                seen = dict(roster[slot - 1], traits=["later"] if self.changes and slot == 1 else ["brave"])
+                assert stop_after(slot, None if self.unread else seen) is False
+        split = [([], [], ())] * self.size
+        return roster, split, [None] * self.size
+
+
+@pytest.mark.core
+def test_a_survey_says_from_which_slot_on_the_brothers_are_final():
+    from bbseed.talents import FINAL_SAMPLES, survey
+    found = survey(_SurveyWatch(3), "trader_scenario")
+    assert found["final_from"] == 1 and found["samples"] == FINAL_SAMPLES, "2 or more brothers: enough rosters to tell"
+    assert survey(_SurveyWatch(3, changes=True), "trader_scenario")["final_from"] == 2
+    assert survey(_SurveyWatch(3, unread=True), "trader_scenario")["final_from"] == 3
+    one = survey(_SurveyWatch(1), "lone_wolf_scenario")
+    assert one["final_from"] == 1 and one["samples"] < FINAL_SAMPLES, "one brother: nothing to tell, no extra rosters"
+    assert survey(_SurveyWatch(2), "deserters_scenario")["final_from"] is None, "its search never stops early"
+
+
+@pytest.mark.edge
+def test_a_catalog_from_before_final_from_is_built_again():
+    from bbseed.catalog import CATALOG_VERSION
+    assert CATALOG_VERSION == 7

@@ -251,12 +251,12 @@ class TalentWatch:
                 self.names.setdefault(tostring(bid), _plain_name(tostring(name)))
         return [self._ids[s] for s in scripts]
 
-    def roll(self, seed, origin, loop=None):
+    def roll(self, seed, origin, loop=None, stop_after=None):
         """(roster, [(rolled, fixed, can_roll) per recruit], [background ids each recruit picked
         from, or None, per recruit]). loop: for Deserters only, how many times its start loop runs (the roster
-        depends on it: Lab.deserters_start)."""
+        depends on it: Lab.deserters_start). stop_after: as in Lab.roster, here only to look (it must answer False)."""
         if loop is None:
-            roster, taken = self.lab.roster(seed, origin, fresh=False, probe=self._take)
+            roster, taken = self.lab.roster(seed, origin, fresh=False, probe=self._take, stop_after=stop_after)
         else:
             found = self.lab.deserters_start(seed, loop, fresh=False, probe=self._take)
             roster, taken = found["roster"], found["probe"]
@@ -295,6 +295,36 @@ def survey_seeds():
 # The recruits' kind of stars does not change with N, only the stream they draw from, so a spread is enough.
 DESERTERS_SCRIPT = "deserters_scenario"
 DESERTERS_LOOPS = (1, 4, 7, 10, 14, 18, 25, 34, 42, 56, 80, 132, 181, 197)
+FINAL_SAMPLES = 40          # rosters that decide final_from for an origin with 2 or more brothers
+
+
+def _final_part(bro):
+    """What a condition reads of a brother (search.slot_failure): it must not change once he is complete."""
+    return (bro["stars"], sorted(bro["traits"]), bro["background"],
+            {stat: r["tier"] for stat, r in (bro.get("rolls") or {}).items()})
+
+
+class FinalWatch:
+    """Compares, over several rosters of one origin, each brother's view at the moment he is complete with the finished
+    roster. final_from(): the first slot whose view is final and stays final for all later slots. An origin that changes a
+    brother later (Legends' Militia adds traits) or whose brother cannot be read yet (Gladiators) has a later slot."""
+
+    def __init__(self):
+        self.bad, self.views, self.size = set(), [], 0
+
+    def look(self, slot, bro):
+        self.views.append((slot, bro))
+        return False
+
+    def finish(self, roster):
+        self.size = max(self.size, len(roster))
+        for slot, bro in self.views:
+            if bro is None or _final_part(bro) != _final_part(roster[slot - 1]):
+                self.bad.add(slot)
+        del self.views[:]
+
+    def final_from(self):
+        return max(self.bad) + 1 if self.bad else 1
 
 
 def survey(watch, origin, least=12, most=100, calm=8, calm_varied=25):
@@ -302,11 +332,17 @@ def survey(watch, origin, least=12, most=100, calm=8, calm_varied=25):
     when a slot has shown more than one background: its other backgrounds must get a chance to
     show up); at least `least`, at most `most` samples. Returns {"samples", "sizes": [roster sizes seen],
     "slots": [SlotFacts.summary() per slot], "background_names": {id: name} of every background in
-    the slots' choices}. Raises LabError if the origin cannot be rolled."""
+    the slots' choices, "final_from": the first slot from which on a brother is final when the next one starts, and no
+    roster part after it changes him (FinalWatch; Deserters: None, its search never stops early)}. A multi-brother
+    origin gets FINAL_SAMPLES rosters at least. Raises LabError if the origin cannot be rolled."""
     slots, sizes, quiet = [], set(), 0
+    final = FinalWatch() if origin != DESERTERS_SCRIPT else None
     for n, seed in enumerate(survey_seeds(), 1):
         roster, split, pools = watch.roll(seed, origin, DESERTERS_LOOPS[(n - 1) % len(DESERTERS_LOOPS)]
-                                          if origin == DESERTERS_SCRIPT else None)
+                                          if origin == DESERTERS_SCRIPT else None,
+                                          stop_after=final.look if final is not None else None)
+        if final is not None:
+            final.finish(roster)
         before = (frozenset(sizes), tuple(s.signature() for s in slots))
         sizes.add(len(split))
         while len(slots) < len(split):
@@ -315,9 +351,11 @@ def survey(watch, origin, least=12, most=100, calm=8, calm_varied=25):
             facts.add(bro["background"], bro["stars"], can_roll, bro.get("rolls"), pool)
         quiet = quiet + 1 if (frozenset(sizes), tuple(s.signature() for s in slots)) == before else 0
         varied = len(sizes) > 1 or any(len(s.backgrounds) > 1 or any(len(p) > 1 for p in s.lists) for s in slots)
-        if n >= most or (n >= least and quiet >= (calm_varied if varied else calm)):
+        settled = n >= most or (n >= least and quiet >= (calm_varied if varied else calm))
+        if settled and (final is None or n >= FINAL_SAMPLES or final.size < 2):
             share_lists(slots)
             summaries = [s.summary() for s in slots]
             ids = {b for s in summaries for b in s["choices"]}
             return {"samples": n, "sizes": sorted(sizes), "slots": summaries,
-                    "background_names": {b: watch.names.get(b, b) for b in sorted(ids)}}
+                    "background_names": {b: watch.names.get(b, b) for b in sorted(ids)},
+                    "final_from": final.final_from() if final is not None else None}
