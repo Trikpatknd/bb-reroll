@@ -39,7 +39,7 @@ Other versions are read the same way and will usually just work, but they are un
 - Windows 10/11
 - Battle Brothers installed (Steam installs are found automatically; otherwise point the GUI at the game folder)
 - To build: Python 3.15 from python.org (see `requirements.txt`). Dev mode also runs on Python 3.10 or later, but slower
-- About 0.8 GB of memory per search worker with Legends (less for the unmodded game)
+- About 1 GB of memory per search worker with Legends, about 0.35 GB with the unmodded game (1.5 GB and 0.55 GB in PyPy). The window warns when the workers do not fit the free memory or use all processor threads. You decide.
 
 ## Install
 
@@ -99,7 +99,7 @@ Use them to search for seeds by their world map. They work with the **Legends** 
 
 **What to expect.** In a survey of 997 maps with the default Map Options, the median was 4 ports. 22.6 % of the maps had 5 or more ports, and 3.9 % had 6 or more. 39 % had at least one southern port. 22 % had at least one northern port (band 33 %). Every map had 6 strongholds. In the 40 maps of the base game that were checked in the game, a map had 19 to 22 towns. Every map had 6 strongholds and 3 city states.
 
-**Results.** **Show map** on a result opens the map of the seed: terrain, roads, towns and ports. North is at the top. A ring marks a port. A dashed line marks the north band. Thin lines show the roads, and a yellow star marks the square where your company starts (both on the checked setups only). Point at a town to read its name and type. On a setup that was not checked, the names of city states say that they are not verified. **Copy map picture** copies the map as a picture: paste it into Discord after the seed post. **Save map picture** saves it as a PNG file. The picture shows the seed and the origin under the map. **Copy seed post** adds a Map line and the Map Options to the post (the base game has none). **Check a seed** with a map condition builds the map of that seed too. If the map cannot be built, the result shows the brothers and says why.
+**Results.** **Show map** on a result opens the map of the seed: terrain, roads, towns and ports. North is at the top. A ring marks a port. A dashed line marks the north band. Thin lines show the roads, and a yellow star marks the square where your company starts (both on the checked setups only). Point at a town to read its name and type. On a setup that was not checked, the names of city states say that they are not verified. **Copy map picture** copies the map as a picture: paste it into Discord after the seed post. **Save map picture** saves it as a PNG file. The picture shows the seed and the origin under the map. With very many results, the list shows only the newest ones, and the status line gives the number of all matches. **Copy seed post** adds a Map line and the Map Options to the post (the base game has none). **Check a seed** with a map condition builds the map of that seed too. If the map cannot be built, the result shows the brothers and says why.
 
 The map depends on the seed, the Map Options, the game version and the mod versions. It does not depend on the origin; only the start star does. The brothers do not depend on the map. Deserters is the exception.
 
