@@ -1068,3 +1068,232 @@ def test_cli_map_prints_the_start_and_draws_it_only_on_a_verified_setup(monkeypa
     S.main(["--map", "1234567890"])
     out = capsys.readouterr().out
     assert "Start:" not in out and "map of seed 1234567890" in out and len(calls) == 2
+
+
+# ====================================================================== the nearest seed
+class NearLab(FakeLab):
+    """Seed n: brother 1 has hp[n] HP stars (0 when n is not in the table)."""
+
+    def __init__(self, hp=None, fresh_hp=None, **kw):
+        super().__init__(**kw)
+        self.hp, self.fresh_hp = hp or {}, fresh_hp or {}
+        self.fresh_rolls = []
+
+    def _roster_of(self, stars):
+        return [bro(["brave"], hp=stars)] + [bro() for _ in range(ROSTER_SIZE - 1)]
+
+    def _bros(self, seed):
+        return self._roster_of(self.hp.get(int(seed), 0))
+
+    def roster(self, seed, origin, fresh=True, probe=None):
+        FakeLab.roster_calls += 1
+        if fresh:
+            self.fresh_rolls.append(seed)
+            return self._roster_of(self.fresh_hp.get(int(seed), self.hp.get(int(seed), 0)))
+        return self._bros(seed)
+
+
+HP3 = {"stars_by_slot": {"1": {"hp": 3}}}
+
+
+@pytest.fixture()
+def quick_near(monkeypatch):
+    """Every seed reports its progress at once, so the limits are reached where a test says."""
+    monkeypatch.setattr(S, "PROGRESS_SECONDS", 0.0)
+    monkeypatch.setattr(S, "NEAR_SEEDS", 10)
+    monkeypatch.setattr(S, "NEAR_MAPS", 5)
+
+
+def near_events(events):
+    return [p for k, p in events if k == "near"]
+
+
+def count_before_first_near(events):
+    tested = 0
+    for kind, payload in events:
+        if kind == "near":
+            return tested
+        if kind == "progress":
+            tested = payload[0]
+    return None
+
+
+@pytest.mark.core
+def test_the_limits_are_as_the_plan_says():
+    assert S.NEAR_SEEDS == 35000 and S.NEAR_MAPS == 100
+
+
+@pytest.mark.core
+def test_the_nearest_seed_shows_at_the_limit_and_not_before(monkeypatch, quick_near):
+    found, events = run_search(monkeypatch, lambda: NearLab(hp={3: 2}), HP3, workers=1, max_seeds=40)
+    assert found == []
+    (near,) = near_events(events)
+    assert near["seed"] == "0000000003" and near["distance"] == (0, 1, 0) and near["confirmed"] is True
+    assert near["differences"] == [{"slot": 1, "kind": "stars", "name": "hp", "have": 2, "want": 3}]
+    assert near["map"] is None and near["roster"][0]["stars"]["hp"] == 2
+    assert count_before_first_near(events) >= 10
+
+
+@pytest.mark.core
+def test_a_nearer_seed_replaces_it(monkeypatch, quick_near):
+    _found, events = run_search(monkeypatch, lambda: NearLab(hp={3: 1, 15: 2}), HP3, workers=1, max_seeds=40)
+    assert [n["seed"] for n in near_events(events)] == ["0000000003", "0000000015"]
+
+
+@pytest.mark.core
+def test_an_equally_near_seed_does_not_replace_it(monkeypatch, quick_near):
+    _found, events = run_search(monkeypatch, lambda: NearLab(hp={3: 2, 15: 2}), HP3, workers=1, max_seeds=40)
+    assert [n["seed"] for n in near_events(events)] == ["0000000003"]
+
+
+@pytest.mark.core
+def test_stop_before_the_limit_with_no_match_shows_the_closest(monkeypatch):
+    monkeypatch.setattr(S, "PROGRESS_SECONDS", 0.0)
+    lab = NearLab(hp={3: 2})
+    _found, events = run_search(monkeypatch, lambda: lab, HP3, workers=1, max_seeds=4000,
+                                should_stop=lambda: FakeLab.roster_calls > 5)
+    assert [k for k, _p in events][-2:] == ["near", "finished"], "shown, also with no progress event after it"
+    assert near_events(events)[0]["seed"] == "0000000003"
+    assert near_events(events)[0]["confirmed"] is False, "not rolled again before the limit: the card says so"
+    assert events[-1][1][3] is True, "stopped"
+
+
+@pytest.mark.core
+def test_seeds_to_test_ending_early_shows_the_closest(monkeypatch):
+    _found, events = run_search(monkeypatch, lambda: NearLab(hp={3: 2}), HP3, workers=2, max_seeds=6)
+    (near,) = near_events(events)
+    assert near["seed"] == "0000000003" and near["confirmed"] is True, "the end of a run rolls it again"
+    assert [k for k, _p in events][-1] == "finished"
+
+
+@pytest.mark.core
+def test_an_exact_match_ends_the_near_reports(monkeypatch, quick_near):
+    _found, events = run_search(monkeypatch, lambda: NearLab(hp={1: 1, 20: 3, 22: 2}), HP3, workers=1, max_seeds=40, count=5)
+    kinds = [k for k, _p in events]
+    assert kinds.index("near") < kinds.index("match")
+    assert "near" not in kinds[kinds.index("match"):], "seed 22 is nearer than seed 1, and it is too late"
+    assert len(near_events(events)) == 1
+
+
+@pytest.mark.edge
+def test_an_exact_match_before_the_limit_shows_no_near_seed(monkeypatch, quick_near):
+    _found, events = run_search(monkeypatch, lambda: NearLab(hp={1: 2, 4: 3}), HP3, workers=1, max_seeds=40, count=5)
+    assert near_events(events) == []
+
+
+@pytest.mark.core
+def test_a_map_per_seed_search_uses_100_maps(monkeypatch, quick_near):
+    monkeypatch.setattr(S, "NEAR_SEEDS", 1)     # the seed limit must not count here
+    _found, events = run_search(monkeypatch, FakeLab, {"map": {"ports": 11}}, workers=1, max_seeds=9)
+    near = near_events(events)
+    assert count_before_first_near(events) >= 5
+    assert near[0]["confirmed"] is False and near[0]["roster"] is None
+    assert near[-1]["seed"] == "0000000008" and near[-1]["distance"] == (0, 0, 3)
+    assert near[-1]["differences"] == [{"slot": None, "kind": "map", "name": "ports", "have": 8, "want": 11}]
+    assert near[-1]["map"]["towns"], "the map that was built comes along"
+
+
+@pytest.mark.edge
+def test_a_near_search_builds_no_extra_map(monkeypatch):
+    # brother 1 passes on odd seeds; only those get a map, near or not, and no map is built again
+    events = run_worker(monkeypatch, FakeLab(), {"stars_by_slot": {"1": {"hp": 1}}, "map": {"ports": 11}}, limit=30)
+    near = [p for k, _i, p in events if k == "near"]
+    assert near and near[-1]["seed"] == "0000000009" and near[-1]["distance"] == (0, 0, 2)
+    assert FakeLab.world_map_calls == 15
+    assert near[0]["seed"] == "0000000000" and near[0]["map"] is None, "a near roster has no map"
+    assert near[1]["map"] is not None, "an exact roster has the map it was tested on"
+
+
+@pytest.mark.edge
+def test_no_conditions_reports_no_near_seed(monkeypatch):
+    events = run_worker(monkeypatch, FakeLab(), {}, limit=5)
+    assert "near" not in [k for k, _i, _p in events]
+
+
+@pytest.mark.edge
+def test_a_checked_seed_is_no_near_seed(monkeypatch):
+    events = run_worker(monkeypatch, NearLab(hp={1: 2}), HP3, seeds=["0000000001"])
+    assert "near" not in [k for k, _i, _p in events] and len(matches_of(events)) == 1
+
+
+@pytest.mark.core
+def test_a_worker_sends_only_improvements_and_rolls_only_those_again(monkeypatch):
+    monkeypatch.setattr(S, "NEAR_SEEDS", 0)     # past the limit from the first seed
+    lab = NearLab(hp={3: 1, 5: 1, 7: 2})
+    events = run_worker(monkeypatch, lab, HP3, limit=10)
+    assert [p["seed"] for k, _i, p in events if k == "near"] == ["0000000000", "0000000003", "0000000007"]
+    assert lab.fresh_rolls == ["0000000000", "0000000003", "0000000007"]
+
+
+@pytest.mark.dirty
+def test_a_near_seed_that_differs_on_a_fresh_roll_is_not_reported(monkeypatch):
+    monkeypatch.setattr(S, "NEAR_SEEDS", 0)
+    lab = NearLab(hp={3: 2, 8: 2}, fresh_hp={3: 0})
+    events = run_worker(monkeypatch, lab, HP3, limit=10)
+    assert [p["seed"] for k, _i, p in events if k == "near"] == ["0000000000", "0000000008"]
+
+
+@pytest.mark.core
+def test_a_near_seed_is_rolled_again_only_near_the_limit_or_at_the_end(monkeypatch):
+    monkeypatch.setattr(S, "NEAR_SEEDS", 10)        # 9 seeds: NEAR_CONFIRM_SHARE of it
+    lab = NearLab(hp={3: 1, 5: 2})
+    events = run_worker(monkeypatch, lab, HP3, limit=8)
+    near = [p for k, _i, p in events if k == "near"]
+    assert [(n["seed"], n["confirmed"]) for n in near] == [
+        ("0000000000", False), ("0000000003", False), ("0000000005", False), ("0000000005", True)]
+    assert lab.fresh_rolls == ["0000000005"], "the end of the run: one roll, of the nearest"
+    lab = NearLab(hp={3: 1, 11: 2})
+    events = run_worker(monkeypatch, lab, HP3, limit=20)
+    near = [p for k, _i, p in events if k == "near"]
+    assert [(n["seed"], n["confirmed"]) for n in near] == [
+        ("0000000000", False), ("0000000003", False), ("0000000003", True), ("0000000011", True)]
+    assert lab.fresh_rolls == ["0000000003", "0000000011"]
+
+
+@pytest.mark.dirty
+def test_a_held_near_seed_that_differs_later_is_no_longer_the_workers_nearest(monkeypatch):
+    monkeypatch.setattr(S, "NEAR_SEEDS", 5)         # 4.5 seeds: the roll comes after seed 4
+    lab = NearLab(hp={2: 2, 7: 1}, fresh_hp={2: 0})
+    events = run_worker(monkeypatch, lab, HP3, limit=10)
+    near = [(p["seed"], p["confirmed"]) for k, _i, p in events if k == "near"]
+    assert near == [("0000000000", False), ("0000000002", False), ("0000000005", True), ("0000000007", True)]
+
+
+@pytest.mark.edge
+def test_a_worker_with_an_exact_match_rolls_no_near_seed_again(monkeypatch):
+    lab = NearLab(hp={2: 1, 4: 3})
+    events = run_worker(monkeypatch, lab, HP3, limit=8)
+    assert lab.fresh_rolls == []
+    assert [p["seed"] for k, _i, p in events if k == "near"] == ["0000000000", "0000000002"]
+
+
+@pytest.mark.core
+def test_the_checked_copy_of_a_near_seed_replaces_its_unchecked_copy(monkeypatch, quick_near):
+    monkeypatch.setattr(S, "NEAR_CONFIRM_SHARE", 2.0)      # the roll comes after the limit, so the card shows both copies
+    _found, events = run_search(monkeypatch, lambda: NearLab(hp={3: 2}), HP3, workers=1, max_seeds=30)
+    assert [(n["seed"], n["confirmed"]) for n in near_events(events)] == [("0000000003", False), ("0000000003", True)]
+
+
+@pytest.mark.core
+def test_deserters_near_seeds_are_not_checked_yet_and_build_no_other_map(monkeypatch):
+    class Lab(DesertersLab):
+        def _bros(self, seed):
+            return [bro(["brave"], hp=int(seed) % 3)] + [bro() for _ in range(ROSTER_SIZE - 1)]
+    lab = Lab()
+    monkeypatch.setattr(S, "_setup_note", lambda info, exact=False: None)
+    events = run_worker(monkeypatch, lab, HP3, limit=6, origin=S.DESERTERS_SCRIPT)
+    near = [p for k, _i, p in events if k == "near"]
+    assert [n["seed"] for n in near] == ["0000000000", "0000000001", "0000000002"]
+    assert all(n["confirmed"] is False and n["roster"] and n["map"] for n in near)
+    assert FakeLab.world_map_calls == 6
+
+
+@pytest.mark.core
+def test_cli_near_prints_the_differences(monkeypatch, capsys):
+    near = {"seed": "0000000003", "roster": [bro(hp=2)], "map": None, "distance": (0, 1, 0), "confirmed": True,
+            "differences": [{"slot": 1, "kind": "stars", "name": "hp", "have": 2, "want": 3}]}
+    argv = ["--profile", "legends", "--origin", "trader_scenario", "--stars", "1", "hp3"]
+    without = run_cli_events(monkeypatch, capsys, [("near", near)], argv)
+    assert "0000000003" not in without
+    printed = run_cli_events(monkeypatch, capsys, [("near", near)], argv + ["--near"])
+    assert "0000000003" in printed and "hp" in printed and "(0, 1, 0)" in printed

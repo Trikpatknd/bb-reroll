@@ -44,6 +44,8 @@ import sys
 import time
 import traceback
 
+from .nearness import differences as near_differences, distance as near_distance
+
 STATS = ("hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf")
 
 
@@ -389,6 +391,15 @@ MAP_NEVER_MAPS = 100
 # on it; only what comes after the roads does.
 SEARCH_BLACKMARKET = 0
 
+# With no exact match after this many tested seeds (searches with a map per seed: maps built), or at the end of a run with
+# none, the search shows the nearest seed it has seen (nearness.py), and after that each nearer one.
+NEAR_SEEDS = 35000
+NEAR_MAPS = 100
+# A worker rolls a near seed again on a new world state (1 s) only from this share of NEAR_SEEDS on, and at the end of its
+# run: early on the nearest seed changes often and nobody sees it, and those rolls cost 4 % of a 4,000-seed search.
+NEAR_CONFIRM_SHARE = 0.9
+PROGRESS_SECONDS = 1.0      # how often a worker reports its count
+
 # The town fields of a map summary that the real game was checked against (CLAUDE.md engine fact 16): the confirming
 # map of a match must have the sift map's towns in these.
 _STABLE_TOWN_KEYS = ("script", "x", "y", "size", "port", "southern", "military")
@@ -452,7 +463,9 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     fatal_text = DESERTERS_FATAL + DESERTERS_MAP_FAILED if deserters else MAP_FATAL
     map_first = want_map is not None and not roster_conditions(criteria)
     checking = seeds is not None
-    state = {"tested": 0, "last": 0.0, "maps_work": False, "first_map_error": None, "map_error": None, "seed": None}
+    state = {"tested": 0, "last": 0.0, "maps_work": False, "first_map_error": None, "map_error": None, "seed": None,
+             "near": None, "held": None, "seen": 0, "exact": False}
+    want_near = not checking and (want_map is not None or roster_conditions(criteria))
 
     def numbered():
         n = start + index
@@ -534,6 +547,43 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             found = build_run(seed)
             return None if found is None else found["map"]
 
+        def send_near(seed, roster, summary, found, confirmed):
+            out.put(("near", index, {"seed": seed, "roster": roster, "map": summary, "distance": found, "confirmed": confirmed,
+                                     "differences": near_differences(roster, summary, criteria)}))
+
+        def confirm_near(seed, roster, summary, found):
+            """Roll a near seed again on a new world state; True when it gives the same brothers (and it is sent)."""
+            again = lab.roster(seed, origin, fresh=True)
+            if without_perks(again) != without_perks(roster):
+                return False
+            send_near(seed, again, summary, found, True)
+            return True
+
+        def near_seed(seed, roster, summary):
+            """A seed that does not match: reported when it is nearer than this worker's nearest so far (search() keeps the
+            nearest of all). With a map per seed (`deserters`, `map_first`) nothing is rolled again: a second map would cost
+            a seed's time, and the card says "Not checked yet". Otherwise it is rolled again from NEAR_CONFIRM_SHARE on;
+            before that it is sent as not checked, so a Stop still has it, and held for confirm_held. After an exact match
+            of this worker its results no longer show."""
+            if not want_near or state["exact"]:
+                return
+            found = near_distance(roster, summary, criteria)
+            if found == (0, 0, 0) or (state["near"] is not None and found >= state["near"]):
+                return      # (0, 0, 0): exact on the reused world state and not on a new one: that error is reported
+            if deserters or map_first or state["seen"] < NEAR_SEEDS * NEAR_CONFIRM_SHARE / workers:
+                state["near"] = found
+                send_near(seed, roster, summary, found, False)
+                if not (deserters or map_first):
+                    state["held"] = (seed, roster, summary, found)
+            elif confirm_near(seed, roster, summary, found):
+                state["near"], state["held"] = found, None
+
+        def confirm_held():
+            """The held near seed is rolled again now. One that differs is no longer this worker's nearest."""
+            held, state["held"] = state["held"], None
+            if held is not None and not state["exact"] and not confirm_near(*held):
+                state["near"] = None
+
         def sift(seed):
             """(roster, map summary or None, why there is no map or None) of a seed to confirm, or None. A checked
             seed whose map run failed still has its roster: the map is None and the reason is the third part.
@@ -547,6 +597,8 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 ok = first_failure(roster, criteria) is None
                 map_ok = True if want_map is None else map_fails(summary) is None
                 odds.add_roster(roster, criteria, map=map_ok)       # (no map condition: every map counts as met)
+                if not (ok and map_ok):
+                    near_seed(seed, roster, summary)
                 return (roster, summary, None) if (ok and map_ok) or checking else None
             if map_first:
                 summary = build_map(seed)
@@ -556,6 +608,8 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                     return lab.roster(seed, origin, fresh=True), None, state["map_error"]
                 ok = map_fails(summary) is None
                 odds.add([], map=ok)
+                if not ok:
+                    near_seed(seed, None, summary)
                 if not (ok or checking):
                     return None
                 # the sift roll (kept for the stable flag); after a map run the lab builds a new world state anyway
@@ -565,6 +619,8 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             ok = first_failure(roster, criteria) is None
             if want_map is None or not (ok or checking):
                 odds.add_roster(roster, criteria)
+                if not ok:
+                    near_seed(seed, roster, None)
                 return (roster, None, None) if ok or checking else None
             summary = build_map(seed)
             if summary is None:
@@ -572,6 +628,8 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 return (roster, None, state["map_error"]) if checking else None
             map_ok = map_fails(summary) is None
             odds.add_roster(roster, criteria, map=map_ok)
+            if ok and not map_ok:
+                near_seed(seed, roster, summary)
             return (roster, summary, None) if (ok and map_ok) or checking else None
 
         def confirm(seed, roster, summary, map_error=None):
@@ -591,6 +649,8 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 failure = map_fails(confirmed_map)
             if failure is None and map_error is not None:       # a checked seed: the roster is shown without a map
                 failure = MAP_NOT_BUILT + map_error
+            if failure is None:
+                state["exact"] = True
             if checking or failure is None:
                 stable = without_perks(confirmed) == without_perks(roster) and (
                     summary is None or _towns_key(confirmed_map) == _towns_key(summary))
@@ -605,17 +665,24 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
 
         for seed in (seeds[index::workers] if checking else numbered()):
             state["tested"] += 1
+            state["seen"] += 1
             state["seed"] = seed
             try:
                 found = sift(seed)
                 if found is not None:
                     confirm(seed, *found)
+                if state["held"] is not None and state["seen"] >= NEAR_SEEDS * NEAR_CONFIRM_SHARE / workers:
+                    confirm_held()
             except LabError as e:
                 out.put(("error", index, str(e)))
-            if time.time() - state["last"] >= 1.0:
+            if time.time() - state["last"] >= PROGRESS_SECONDS:
                 progress()
         if state["first_map_error"] is not None and not state["maps_work"]:
             out.put(("error", index, state["first_map_error"]))     # the worker's only map run failed
+        try:
+            confirm_held()
+        except LabError as e:
+            out.put(("error", index, str(e)))
         progress()
         out.put(("done", index, None))
 
@@ -649,6 +716,11 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
     "match" (dict: seed, roster, stable, failure, map: the map summary (mapgen.summary) when there are map
     conditions, else None; a checked seed whose map run failed has map None and, when its roster meets the rest,
     the failure mapgen.MAP_NOT_BUILT + the reason),
+    "near" (dict: seed, roster (None: a map-first search rolled none), map (the map built for it, or None), distance,
+    differences (nearness.py), confirmed (the roster was rolled again on a new world state: False after a Stop before the
+    limit, and always with a map per seed)): the nearest seed so far, while
+    no seed matches: at NEAR_SEEDS tested seeds (a map per seed: NEAR_MAPS maps), on each nearer seed after that, and at the
+    end of a run with no match,
     "error" / "fatal" (text), "finished" (seeds tested, seconds, matches, stopped early?).
     A fatal event that starts with MAP_FATAL (the lab cannot build maps of this game setup) ends the search: it is
     sent once, however many workers find it.
@@ -681,6 +753,21 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
         p.start()
     matches, tested, running, t0, ready, stopped = [], 0, workers, None, 0, False
     odds = Odds(map_wanted=criteria["map"] is not None)
+    map_per_seed = origin == DESERTERS_SCRIPT or (criteria["map"] is not None and not roster_conditions(criteria))
+    near = {"best": None, "shown": None}
+
+    def take_near(payload):
+        best = near["best"]
+        if (best is None or tuple(payload["distance"]) < tuple(best["distance"])
+                or (payload["seed"] == best["seed"] and payload["confirmed"] and not best["confirmed"])):
+            near["best"] = payload
+
+    def show_near(at_end=False):
+        due = at_end or (odds.maps() >= NEAR_MAPS if map_per_seed else tested >= NEAR_SEEDS)
+        if due and not matches and near["best"] is not near["shown"]:
+            near["shown"] = near["best"]
+            emit("near", near["best"])
+
     try:
         while running and len(matches) < count:
             if should_stop is not None and should_stop():
@@ -702,6 +789,10 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
                                   {"chance": odds.chance(), "chance_brothers": odds.brothers_chance(),
                                    "never": odds.never(), "never_any": odds.team_never(),
                                    "never_map": odds.map_never(), "maps": odds.maps(), "tested": odds.tested}))
+                show_near()
+            elif kind == "near":
+                take_near(payload)
+                show_near()
             elif kind == "match":
                 matches.append(payload)
                 emit("match", payload)
@@ -713,10 +804,18 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
                     emit("fatal", payload)
                     if payload.startswith((MAP_FATAL, DESERTERS_FATAL)):      # no worker can build a map: nothing can match
                         break
+        while stopped:      # what the workers sent before the Stop: the closest seed may be in it
+            try:
+                kind, index, payload = out.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "near":
+                take_near(payload)
     finally:
         for p in procs:
             if p.is_alive():
                 p.terminate()
+    show_near(at_end=True)
     emit("finished", (tested, time.time() - (t0 or time.time()), len(matches), stopped))
     return matches
 
@@ -906,6 +1005,7 @@ def main(argv=None):
                     help="a Mod Options value that differs from the mod's default, e.g. mod_legends:GenderEquality=Disabled; "
                          "also the Map Options, e.g. mod_legends:Settlements=24")
     ap.add_argument("--count", type=int, default=1, help="stop after this many matches (default 1)")
+    ap.add_argument("--near", action="store_true", help="print the nearest seed so far and how it differs, while no seed matches")
     ap.add_argument("--max-seeds", type=int, default=None, help="give up after testing this many seeds")
     ap.add_argument("--workers", type=int, default=None, help="parallel processes (default: half the CPU threads, at most 8)")
     ap.add_argument("--start", type=int, default=None, help="first seed number (default: random)")
@@ -961,6 +1061,7 @@ def main(argv=None):
 
     from .lab import describe
     from .mapgen import FIRST_CAMPAIGN, counts
+    show_near_seeds = args.near
 
     noted = []
     setup_info = []         # the first worker's "ready" info
@@ -1007,6 +1108,13 @@ def main(argv=None):
                       "%d villages, %d towns, %d cities" % (
                           c["ports"], c["ports_south"], c["ports_north"], band,
                           t["city_state"], t["military"], t["size1"], t["size2"], t["size3"]))
+            print(flush=True)
+        elif kind == "near" and show_near_seeds:
+            print("\n*** NEAREST SEED SO FAR: %s, distance %s%s" % (payload["seed"], tuple(payload["distance"]),
+                                                                  "" if payload["confirmed"] else ", not checked yet"))
+            for d in payload["differences"]:
+                print("   %s%s %s: has %s, the condition is %s" % (
+                    "brother %d: " % d["slot"] if d["slot"] else "", d["kind"], d["name"], d["have"], d["want"]))
             print(flush=True)
         elif kind in ("error", "fatal"):
             print("%s: %s" % (kind.upper(), payload), flush=True)
