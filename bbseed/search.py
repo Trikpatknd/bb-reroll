@@ -41,6 +41,7 @@ import os
 import queue
 import random
 import sys
+import threading
 import time
 import traceback
 
@@ -1077,6 +1078,24 @@ def _print_map(profile, origin, seed, svg_path=None, mod_settings=None):
         print("\npicture written to %s" % svg_path)
 
 
+def _search_for_a_program(args, criteria, mod_settings):
+    """--events-json: the search for another program (bbreroll/external_search.py). stdout holds one JSON line per event and
+    nothing else. A line on stdin ends the search as a Stop does; so does the end of stdin: the program that started this
+    process is gone."""
+    stop = threading.Event()
+
+    def wait_for_stop():
+        sys.stdin.readline()
+        stop.set()
+
+    def on_event(kind, payload):
+        sys.stdout.write(json.dumps({"kind": kind, "payload": payload}) + "\n")
+        sys.stdout.flush()
+    threading.Thread(target=wait_for_stop, daemon=True).start()
+    search(args.profile, args.origin, criteria, workers=args.workers, count=args.count, max_seeds=args.max_seeds,
+           start=args.start, on_event=on_event, mod_settings=mod_settings, should_stop=stop.is_set)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m bbseed.search", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1116,6 +1135,8 @@ def main(argv=None):
                          "also the Map Options, e.g. mod_legends:Settlements=24")
     ap.add_argument("--count", type=int, default=1, help="stop after this many matches (default 1)")
     ap.add_argument("--near", action="store_true", help="print the nearest seed so far and how it differs, while no seed matches")
+    ap.add_argument("--events-json", action="store_true",
+                    help="for another program: one JSON line per search event on stdout; a line on stdin stops the search")
     ap.add_argument("--max-seeds", type=int, default=None, help="give up after testing this many seeds")
     ap.add_argument("--workers", type=int, default=None, help="parallel processes (default: half the CPU threads, at most 8)")
     ap.add_argument("--start", type=int, default=None, help="first seed number (default: random)")
@@ -1167,6 +1188,8 @@ def main(argv=None):
         criteria = normalize(criteria)
     except ValueError as e:
         ap.error(str(e))
+    if args.events_json:
+        return _search_for_a_program(args, criteria, mod_settings)
     print("criteria:", json.dumps(criteria))
 
     from .lab import describe
