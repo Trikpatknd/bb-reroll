@@ -442,12 +442,12 @@ def wait_note(odds, setup="Legends"):
 
 # ------------------------------------------------------------------ the picture
 MIN_SCALE = 0.3
-_RESERVE = 250              # title bar, the two text lines and the taskbar
+_RESERVE = 284              # title bar, the two text lines, the picture buttons and the taskbar
 
 
 def canvas_scale(summary, screen_height):
     """The scale (1.0 = mapdraw's own size, 7 x 8 pixels a tile) of the map window's picture: as big as fits a
     screen of that height, at most 1.0 and at least MIN_SCALE. On a 1440-pixel screen the Legends map (140 x 170
-    tiles) is about 1190 pixels high."""
+    tiles) is about 1156 pixels high."""
     _w, height = mapdraw.picture_size(summary, 1)
     return min(1.0, max(MIN_SCALE, (screen_height - _RESERVE) / height))
