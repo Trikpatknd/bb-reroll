@@ -1499,3 +1499,75 @@ def test_a_checked_seed_is_rolled_in_full(monkeypatch):
     lab = StopLab()
     events = run_worker(monkeypatch, lab, RARE, seeds=["0000000005"], final_from=1)
     assert len(matches_of(events)) == 1 and lab.stopped_rolls == 0 and not any(lab.asked.values())
+import time
+
+
+# ====================================================================== the final review's findings
+@pytest.mark.dirty
+def test_a_worker_that_dies_without_a_word_is_a_fatal_and_the_search_ends(monkeypatch):
+    """A worker's import can fail (a damaged PyPy add-on), or the process can die hard. search() waited for it forever."""
+    real = S._worker
+
+    def dies_or_works(index, *args):
+        if index == 0:
+            return
+        real(index, *args)
+    monkeypatch.setattr(S, "_worker", dies_or_works)
+    began = time.time()
+    _found, events = run_search(monkeypatch, FakeLab, {"stars_by_slot": {"1": {"hp": 1}}}, workers=2, max_seeds=4, count=99)
+    assert time.time() - began < 20
+    kinds = [k for k, _p in events]
+    assert kinds.count("fatal") == 1 and kinds[-1] == "finished"
+    assert S.WORKER_DIED.split("%")[0] in [p for k, p in events if k == "fatal"][0]
+    assert events[-1][1][0] == 2, "the other worker tested its seeds"
+
+
+@pytest.mark.dirty
+def test_all_workers_dying_before_they_are_ready_ends_the_search(monkeypatch):
+    monkeypatch.setattr(S, "_worker", lambda *args: None)
+    began = time.time()
+    _found, events = run_search(monkeypatch, FakeLab, {"stars_by_slot": {"1": {"hp": 1}}}, workers=2, max_seeds=4)
+    assert time.time() - began < 20
+    assert [k for k, _p in events].count("fatal") == 2 and events[-1][0] == "finished"
+
+
+@pytest.mark.core
+def test_a_brother_few_seeds_reached_is_not_named_as_one_that_never_matches():
+    odds = Odds()
+    for _ in range(280):
+        odds.add([False])                   # brother 1 stops most seeds
+    for _ in range(20):
+        odds.add([True, False])             # brother 2: 20 seeds, no pass yet
+    assert odds.never() == [2], "without a limit: every slot with no pass"
+    assert odds.never(least=300) == []
+    assert odds.never(least=100) == []
+    for _ in range(300):
+        odds.add([True, False])
+    assert odds.never(least=300) == [2], "320 seeds reached him"
+
+
+@pytest.mark.core
+def test_the_never_notice_counts_the_seeds_that_reached_the_brother(monkeypatch):
+    monkeypatch.setattr(S, "PROGRESS_SECONDS", 0.0)
+    monkeypatch.setattr(S, "NEVER_SLOT_SEEDS", 20)
+
+    class NoStarsLater(StopLab):
+        def _bros(self, seed):
+            n = int(seed)
+            first = bro(hp=3 if n % 4 == 0 else 0)
+            return [first] + [bro() for _ in range(self.size - 1)]
+    monkeypatch.setattr(S, "_final_from", lambda profile, origin: 1)
+    criteria = {"stars_by_slot": {"1": {"hp": 3}, "2": {"msk": 3}}}
+    _found, events = run_search(monkeypatch, NoStarsLater, criteria, workers=1, max_seeds=200)
+    last = [p[3] for k, p in events if k == "progress"][-1]
+    assert last["tested"] == 200 and last["never"] == [2]
+    assert 20 <= last["never_tested"] < 200, "the count of the brother, not of the search"
+
+
+@pytest.mark.dirty
+def test_a_near_seed_that_fails_its_roll_stops_being_the_best(monkeypatch):
+    monkeypatch.setattr(S, "NEAR_SEEDS", 5)         # the held seed is rolled after seed 4
+    _found, events = run_search(monkeypatch, lambda: NearLab(hp={2: 2, 7: 1}, fresh_hp={2: 0}), HP3, workers=1, max_seeds=10)
+    near = near_events(events)
+    assert near[-1]["seed"] == "0000000007" and near[-1]["confirmed"] is True, "seed 7 is farther than the false seed 2"
+    assert near[-1]["distance"] == (0, 2, 0)

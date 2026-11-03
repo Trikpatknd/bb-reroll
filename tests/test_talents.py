@@ -268,3 +268,15 @@ def test_a_survey_says_from_which_slot_on_the_brothers_are_final():
 def test_a_catalog_from_before_final_from_is_built_again():
     from bbseed.catalog import CATALOG_VERSION
     assert CATALOG_VERSION == 7
+
+
+@pytest.mark.dirty
+def test_a_brother_who_leaves_the_roster_later_is_not_final():
+    """An origin (of a mod) can remove a brother after he is complete. That crashed the catalog's worker, and its build waited for ever."""
+    from bbseed.talents import FinalWatch
+    final = FinalWatch()
+    bro = {"stars": {"hp": 1}, "traits": [], "background": "background.monk"}
+    final.look(1, bro)
+    final.look(3, bro)
+    final.finish([bro, bro])
+    assert final.final_from() == 4

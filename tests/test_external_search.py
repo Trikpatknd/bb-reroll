@@ -211,3 +211,53 @@ def test_a_broken_line_of_output_gives_a_fatal_event(tmp_path):
 def test_a_program_that_cannot_start_raises_for_the_caller(tmp_path):
     with pytest.raises(external_search.CannotStart):
         run([str(tmp_path / "no such program.exe")])
+
+
+@pytest.mark.core
+def test_the_stop_folder_goes_away_when_this_program_ends_during_a_search(tmp_path):
+    """The run's thread is a daemon: its own clean-up does not run when the window closes."""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    pid_file = tmp_path / "pid.txt"
+    child = child_script(tmp_path, """
+        import json, os, time
+        open(%r, "w").write(str(os.getpid()))
+        print(json.dumps({"kind": "ready", "payload": [1, 1, {}]}), flush=True)
+        time.sleep(120)
+    """ % str(pid_file))
+    parent = tmp_path / "parent.py"
+    parent.write_text(textwrap.dedent("""
+        import os, sys, threading, time
+        from pathlib import Path
+        sys.path.insert(0, %r)
+        from bbreroll import external_search
+
+        def go():
+            external_search.run(%r, dict(os.environ), lambda k, p: None)
+        threading.Thread(target=go, daemon=True).start()
+        pid = Path(%r)
+        end = time.time() + 30
+        while time.time() < end and not (pid.exists() and pid.read_text()):
+            time.sleep(0.05)
+        time.sleep(0.5)
+    """ % (REPO, child, str(pid_file))), encoding="utf-8")
+    subprocess.run([sys.executable, str(parent)], env=dict(os.environ, PYTHONPATH=REPO, TEMP=str(temp), TMP=str(temp)), timeout=60)
+    assert not alive(int(pid_file.read_text()))
+    assert list(temp.glob("bb_reroll_stop_*")) == []
+
+
+@pytest.mark.core
+def test_two_runs_at_once_keep_their_own_clean_up(tmp_path):
+    """One run's end must not take away the clean-up of another."""
+    import atexit
+    calls = []
+    real_register, real_unregister = atexit.register, atexit.unregister
+    registered = []
+    try:
+        atexit.register = lambda f, *a: registered.append(f)
+        atexit.unregister = lambda f: calls.append(f)
+        run(child_script(tmp_path, "pass"))
+    finally:
+        atexit.register, atexit.unregister = real_register, real_unregister
+    assert len(registered) == 1 and calls == registered, "the function of this run, not one shared by all runs"
+    assert registered[0] is not external_search._end_tree

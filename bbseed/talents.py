@@ -319,7 +319,7 @@ class FinalWatch:
     def finish(self, roster):
         self.size = max(self.size, len(roster))
         for slot, bro in self.views:
-            if bro is None or _final_part(bro) != _final_part(roster[slot - 1]):
+            if bro is None or slot > len(roster) or _final_part(bro) != _final_part(roster[slot - 1]):
                 self.bad.add(slot)
         del self.views[:]
 

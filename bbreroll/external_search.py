@@ -11,6 +11,7 @@ import atexit
 import json
 import os
 import queue
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -55,7 +56,10 @@ def run(command, env, on_event, should_stop=None, cwd=None):
     except OSError as e:
         os.rmdir(folder)
         raise CannotStart(str(e)) from e
-    atexit.register(_end_tree, child.pid)
+    def at_exit():      # (the thread of this run is a daemon: its `finally` does not run when the program ends)
+        _end_tree(child.pid)
+        shutil.rmtree(folder, ignore_errors=True)
+    atexit.register(at_exit)
     lines = queue.Queue()
     threading.Thread(target=_read_lines, args=(child.stdout, lines), daemon=True).start()
     tested, secs, found, finished = 0, 0.0, 0, False
@@ -88,11 +92,10 @@ def run(command, env, on_event, should_stop=None, cwd=None):
                 found += 1
             on_event(kind, payload)
     finally:
-        atexit.unregister(_end_tree)
+        atexit.unregister(at_exit)
         _end_tree(child.pid)
         child.wait()
-        stop_file.unlink(missing_ok=True)
-        os.rmdir(folder)
+        shutil.rmtree(folder, ignore_errors=True)
     if finished:
         return
     if failure is None and stop_asked is None:

@@ -232,3 +232,69 @@ def test_the_tool_fetches_the_zip_it_checks(tmp_path, monkeypatch):
     target = tool.fetch(tmp_path / "z.zip")
     assert asked == [tool.PYPY_URL] and target.read_bytes() == data
     assert tool.sha256(target) == hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.dirty
+def test_a_worker_that_cannot_load_counts_as_a_failed_start(tmp_path):
+    """Damage that find() cannot see: a file of bbseed is missing. The real search's workers die at their import; it says so."""
+    import shutil
+    from pathlib import Path as P2
+    from bbseed import search as real
+    copy = tmp_path / "addon"
+    shutil.copytree(P2(real.__file__).parent, copy / "bbseed", ignore=shutil.ignore_patterns("__pycache__", "world.py"))
+
+    class Damaged(ScriptAddon):
+        def __init__(self):
+            self.folder = copy
+
+        def command(self, args):
+            return [sys.executable, "-m", "bbseed.search"] + list(args)
+
+        def env(self):
+            import os
+            return dict(os.environ, PYTHONPATH=str(copy), PYTHONIOENCODING="utf-8")
+    got = []
+    why = P.search(Damaged(), "legends", "trader_scenario", {"map": {"ports": 4}}, 2, 1, 4, None, lambda k, p: got.append((k, p)))
+    assert why and "PyPy did not start" in why
+    assert [k for k, _p in got if k != "preparing"] == []
+
+
+@pytest.mark.core
+def test_the_criteria_file_goes_away_when_this_program_ends_during_a_search(tmp_path):
+    import subprocess
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    started = tmp_path / "started.txt"
+    child = tmp_path / "child.py"
+    child.write_text(textwrap.dedent("""
+        import json, time
+        open(%r, "w").write("x")
+        print(json.dumps({"kind": "ready", "payload": [1, 1, {}]}), flush=True)
+        time.sleep(120)
+    """ % str(started)), encoding="utf-8")
+    parent = tmp_path / "parent.py"
+    repo = str(Path(__file__).resolve().parent.parent)
+    parent.write_text(textwrap.dedent("""
+        import os, sys, threading, time
+        from pathlib import Path
+        sys.path.insert(0, %r)
+        from bbreroll import pypy_addon
+
+        class Script:
+            folder = Path(%r)
+            def command(self, args):
+                return [sys.executable, %r] + list(args)
+            def env(self):
+                return dict(os.environ)
+
+        def go():
+            pypy_addon.search(Script(), "legends", "x", {}, 1, 1, 1, None, lambda k, p: None)
+        threading.Thread(target=go, daemon=True).start()
+        end = time.time() + 30
+        while time.time() < end and not Path(%r).exists():
+            time.sleep(0.05)
+        time.sleep(0.5)
+    """ % (repo, str(tmp_path), str(child), str(started))), encoding="utf-8")
+    import os
+    subprocess.run([sys.executable, str(parent)], env=dict(os.environ, PYTHONPATH=repo, TEMP=str(temp), TMP=str(temp)), timeout=60)
+    assert started.exists() and list(temp.glob("bb_reroll_*")) == []

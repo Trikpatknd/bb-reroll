@@ -366,9 +366,13 @@ class Odds:
         """How many maps were built (and tested against the map conditions)."""
         return 0 if self.map is None else self.map[0]
 
-    def never(self):
-        """Slots (1 = first) that have not passed once."""
-        return [i + 1 for i, n in enumerate(self.passed) if n == 0 and self.slot_tested[i]]
+    def never(self, least=1):
+        """Slots (1 = first) that have not passed once, on at least `least` seeds that got as far as them."""
+        return [i + 1 for i, n in enumerate(self.passed) if n == 0 and self.slot_tested[i] >= max(1, least)]
+
+    def never_tested(self, slots):
+        """The fewest seeds that reached one of these slots (1 = first); 0 without slots."""
+        return min((self.slot_tested[slot - 1] for slot in slots), default=0)
 
 
 # ---------------------------------------------------------------------- seeds
@@ -414,8 +418,12 @@ STOP_FILE_VARIABLE = "BBSEED_STOP_FILE"     # --events-json: the file that stops
 # Early exit (Lab.roster's stop_after): every this many seeds a worker rolls the roster in full and compares what the stop
 # read with the finished roster. A difference turns early exit off for the rest of the worker's run.
 EARLY_AUDIT_SEEDS = 200
-EARLY_EXIT_OFF = ("A brother changed after BB Reroll read him. The search goes on without the early stop for this origin: "
-                  "it is slower, and the results stay correct.")
+EARLY_EXIT_OFF = ("A brother changed after BB Reroll read him. The search goes on without the early stop for this origin, and it "
+                  "is slower. Matches that it stopped before this message can be missing from the results.")
+WORKER_DIED = "A search process ended without a result (exit code %s)."
+# A brother is named as one that never meets his conditions only when this many seeds got as far as him (a seed can stop early,
+# so a later brother can be reached on few seeds): the same count the GUI waits for with a brother who is reached on every seed.
+NEVER_SLOT_SEEDS = 300
 
 
 def prune(distance_so_far, best):
@@ -654,6 +662,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             held, state["held"] = state["held"], None
             if held is not None and not state["exact"] and not confirm_near(*held):
                 state["near"] = None
+                out.put(("near_void", index, held[0]))
 
         def stopping_roster(seed):
             """A sift roster that may stop early: the roster, or None after a stop (the seed is counted here)."""
@@ -814,7 +823,8 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
     "ready" (workers loaded, workers total, setup info),
     "progress" (seeds tested, seconds, matches, odds: {"chance": estimated chance a seed matches,
     "chance_brothers": the brothers' part of it (no map factor; None before a seed was tested),
-    "never": [roster slots that have not met their criteria once], "never_any": the "any brother" backgrounds
+    "never": [roster slots that have not met their criteria once, on NEVER_SLOT_SEEDS seeds or all so far], "never_tested": the
+    fewest seeds that reached one of them, "never_any": the "any brother" backgrounds
     have not been met once, "never_map": maps were built and none met the map conditions, "maps": maps built,
     "tested"}),
     "match" (dict: seed, roster, stable, failure, map: the map summary (mapgen.summary) when there are map
@@ -862,6 +872,7 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
     map_per_seed = origin == DESERTERS_SCRIPT or (criteria["map"] is not None and not roster_conditions(criteria))
     near = {"best": None, "shown": None}
     noticed = set()
+    ended = set()       # the workers whose last event came, or that were found dead
 
     def take_near(payload):
         best = near["best"]
@@ -871,7 +882,7 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
 
     def show_near(at_end=False):
         due = at_end or (odds.maps() >= NEAR_MAPS if map_per_seed else tested >= NEAR_SEEDS)
-        if due and not matches and near["best"] is not near["shown"]:
+        if due and not matches and near["best"] is not None and near["best"] is not near["shown"]:
             near["shown"] = near["best"]
             emit("near", near["best"])
 
@@ -883,6 +894,12 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
             try:
                 kind, index, payload = out.get(timeout=0.25)
             except queue.Empty:
+                # A worker can die with no last event: an import that fails (a damaged PyPy add-on), a crash of the interpreter.
+                for i, p in enumerate(procs):
+                    if i not in ended and not p.is_alive():
+                        ended.add(i)
+                        running -= 1
+                        emit("fatal", WORKER_DIED % getattr(p, "exitcode", None))
                 continue
             if kind == "ready":
                 ready += 1
@@ -892,14 +909,18 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
             elif kind == "progress":
                 tested += payload[0]
                 odds.merge(*payload[1])
+                never = odds.never(least=min(odds.tested, NEVER_SLOT_SEEDS))
                 emit("progress", (tested, time.time() - (t0 or time.time()), len(matches),
                                   {"chance": odds.chance(), "chance_brothers": odds.brothers_chance(),
-                                   "never": odds.never(), "never_any": odds.team_never(),
+                                   "never": never, "never_tested": odds.never_tested(never), "never_any": odds.team_never(),
                                    "never_map": odds.map_never(), "maps": odds.maps(), "tested": odds.tested}))
                 show_near()
             elif kind == "near":
                 take_near(payload)
                 show_near()
+            elif kind == "near_void":       # a new world state gives that seed other brothers: it is no longer the nearest
+                if near["best"] is not None and near["best"]["seed"] == payload and not near["best"]["confirmed"]:
+                    near["best"] = None
             elif kind == "match":
                 matches.append(payload)
                 emit("match", payload)
@@ -911,6 +932,7 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
                     emit("notice", payload)
             elif kind in ("done", "fatal"):
                 running -= 1
+                ended.add(index)
                 if kind == "fatal":
                     emit("fatal", payload)
                     if payload.startswith((MAP_FATAL, DESERTERS_FATAL)):      # no worker can build a map: nothing can match
@@ -922,6 +944,8 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
                 break
             if kind == "near":
                 take_near(payload)
+            elif kind == "near_void" and near["best"] is not None and near["best"]["seed"] == payload:
+                near["best"] = None
     finally:
         for p in procs:
             if p.is_alive():

@@ -1948,8 +1948,11 @@ class App(ctk.CTk):
                                f" {map_view.wait_text(self._setup_kind())}" if map_criteria else ""))
         put = self._events.put
         start = (self._selftest or {}).get("start")      # (a self-test can compare two runs of one seed range)
-        in_pypy = (self._pypy is not None and not seeds and self.pypy_var.get()
-                   and pypy_addon.applies(criteria, scenario))
+        try:
+            in_pypy = (self._pypy is not None and not seeds and self.pypy_var.get()
+                       and pypy_addon.applies(criteria, scenario))
+        except ValueError:      # the search in this Python says what is wrong with the conditions
+            in_pypy = False
         self._run["pypy"] = in_pypy
 
         def run():
@@ -2043,7 +2046,7 @@ class App(ctk.CTk):
         if never and odds.get("tested", 0) >= 300 and not self._run.get("warned_never"):
             self._run["warned_never"] = True
             who = ", ".join(str(n) for n in never)
-            self._show_notice(f"Brother {who} did not match the conditions in {odds['tested']:,} seeds. "
+            self._show_notice(f"Brother {who} did not match the conditions in {odds.get('never_tested') or odds['tested']:,} seeds. "
                               f"Possibly no seed matches. Use easier conditions for "
                               f"{'this brother' if len(never) == 1 else 'these brothers'}.", kind="info")
         elif odds.get("never_any") and odds.get("tested", 0) >= 300 and not self._run.get("warned_never"):
@@ -2365,6 +2368,9 @@ class App(ctk.CTk):
         """The Check a seed path for the seed on the card: with map conditions it builds that one map."""
         if self._searching:
             self.status_var.set("Stop the search first. Then check this seed.")
+            return
+        if (near["origin"], near["setup"]) != (self.origin_var.get(), self.setup_var.get()):
+            self.status_var.set(f"This seed is for {near['origin']} ({near['setup']}). Select them first. Then check this seed.")
             return
         self.check_seed_var.set(near["seed"])
         self._on_check_seed()

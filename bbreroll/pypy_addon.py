@@ -9,6 +9,7 @@ runs only the searches that build a map per seed. No tkinter. tools/build_pypy_a
 find(exe_dir, version) -> (Addon or None, reason): the reason says why a folder that is there cannot be used ("" when there
 is no folder, or when it can). The window then says it, and the search runs in the exe's own Python.
 """
+import atexit
 import json
 import os
 import tempfile
@@ -22,7 +23,8 @@ NURSERY = "2M"              # PYPY_GC_NURSERY: Windows' default of 4 MB is 0.6 t
 MEMORY_TEXT = "about 1.5 GB"
 SWITCH_TEXT = "Search with PyPy"
 SWITCH_TIP = ("PyPy builds maps about 2.7 times as fast. It uses %s of memory for each worker. It is used only when the "
-              "search needs a map for each seed." % MEMORY_TEXT)
+              "search needs a map for each seed: map conditions and no condition on the brothers (a ticked trait is a "
+              "condition), or Deserters." % MEMORY_TEXT)
 OTHER_VERSION = "The %s folder is for BB Reroll %s, and this is %s. BB Reroll does not use it. Download the file for this version."
 DAMAGED = "The %s folder is damaged: %s is missing. BB Reroll does not use it. Download the file again."
 NO_START = "PyPy did not start: %s. The search runs without PyPy."
@@ -92,6 +94,13 @@ def search(addon, profile, origin, criteria, workers, count, max_seeds, mod_sett
     held = []
     state = {"ready": False}
 
+    def remove_file():
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    atexit.register(remove_file)    # (the search's thread is a daemon: its `finally` does not run when the program ends)
+
     def relay(kind, payload):
         if kind == "ready":
             state["ready"] = True
@@ -108,10 +117,8 @@ def search(addon, profile, origin, criteria, workers, count, max_seeds, mod_sett
         except external_search.CannotStart as e:
             return NO_START % e
     finally:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+        atexit.unregister(remove_file)
+        remove_file()
     stopped = should_stop is not None and should_stop()
     fatal = next((payload for kind, payload in held if kind == "fatal"), None)
     if not state["ready"] and fatal is not None and not stopped:

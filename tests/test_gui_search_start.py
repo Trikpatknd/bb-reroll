@@ -2395,3 +2395,38 @@ def test_a_checked_seed_never_uses_pypy(pypy_app, calls, monkeypatch):
     pypy_app._on_check_seed()
     pump(pypy_app, lambda: calls and not pypy_app._searching)
     assert len(calls) == 1
+
+
+# ====================================================================== the final review's findings
+@pytest.mark.edge
+def test_check_this_seed_says_so_when_the_menus_show_another_origin(near_app, calls):
+    near_app.origin_var.set("Trading Caravan")
+    near_app._on_origin_change("Trading Caravan")
+    near_app._run = dict(RUN, map={"ports": 4})
+    near_app.map_vars["ports"].set("4")
+    near_app._ev_near(near_payload())
+    near_app.origin_var.set("Peasant Militia")
+    near_app._on_origin_change("Peasant Militia")
+    try:
+        _press(near_app._near["card"], "Build map")
+        assert calls == [], "no check of the seed on another origin"
+        assert "Trading Caravan" in near_app.status_var.get()
+    finally:
+        near_app.origin_var.set("Trading Caravan")
+        near_app._on_origin_change("Trading Caravan")
+
+
+@pytest.mark.dirty
+def test_criteria_the_addon_check_cannot_read_stay_on_the_exes_python(pypy_app, calls, monkeypatch):
+    from bbreroll import pypy_addon
+    pypy_app._pypy = pypy_addon.Addon(Path("X:/addon"))
+
+    def refuses(criteria, origin):
+        raise ValueError("no")
+    monkeypatch.setattr(pypy_addon, "applies", refuses)
+    pypy_app.origin_var.set("Trading Caravan")
+    pypy_app._on_origin_change("Trading Caravan")
+    pypy_app.map_vars["ports"].set("4")
+    pypy_app._on_search()
+    pump(pypy_app, lambda: calls and not pypy_app._searching)
+    assert len(calls) == 1 and pypy_app._searching is False
