@@ -1977,3 +1977,107 @@ def test_a_long_queue_of_events_leaves_the_window_time_for_stop(app, monkeypatch
     pump(app, lambda: left and app._events.empty(), 10.0)
     assert app._events.empty(), "every event is handled"
     assert left and left[0] > 0, "the window had its turn before the queue was empty"
+
+
+# ====================================================================== the map as a picture
+def _buttons_of(widget):
+    return [w for w in _walk(widget) if isinstance(w, ctk.CTkButton)]
+
+
+def _walk(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _walk(child)
+
+
+def _press(widget, text):
+    (button,) = [b for b in _buttons_of(widget) if b.cget("text") == text]
+    button.invoke()
+
+
+@pytest.mark.core
+def test_the_map_window_copies_its_picture(map_app):
+    from bbreroll import map_picture
+    entry = result(map_app, "1111111111", small_map())
+    try:
+        map_app._show_map(entry)
+        window = map_app._map_windows[(entry["setup"], entry["origin"], entry["seed"])]
+        map_app.update()
+        _press(window, "Copy map picture")
+        map_app.update()
+        assert map_picture.clipboard_picture_size() == map_app._map_picture(entry).size
+        assert map_app.status_var.get() == gui_text().MAP_PICTURE_COPIED
+        assert window.info_var.get() == gui_text().MAP_PICTURE_COPIED
+        window.destroy()
+    finally:
+        map_app._clear_matches()
+
+
+def gui_text():
+    import gui
+    return gui
+
+
+@pytest.mark.core
+def test_a_result_with_a_map_copies_and_saves_its_picture(map_app, monkeypatch, tmp_path):
+    from PIL import Image
+    from bbreroll import map_picture
+    entry = result(map_app, "1111111111", small_map())
+    try:
+        _press(entry["card"], "Copy map picture")
+        assert map_picture.clipboard_picture_size() == map_app._map_picture(entry).size
+        path = tmp_path / "picture.png"
+        asked_for = []
+
+        def ask(**kw):
+            asked_for.append(kw)
+            return str(path)
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", ask)
+        _press(entry["card"], "Save map picture")
+        assert asked_for[0]["initialfile"] == "map_1111111111.png"
+        with Image.open(path) as back:
+            assert back.size == map_app._map_picture(entry).size
+        assert str(path) in map_app.status_var.get()
+    finally:
+        map_app._clear_matches()
+
+
+@pytest.mark.edge
+def test_a_result_without_a_map_has_no_picture_button(map_app):
+    entry = result(map_app, "1111111111")
+    try:
+        texts = [b.cget("text") for b in _buttons_of(entry["card"])]
+        assert "Copy map picture" not in texts and "Save map picture" not in texts
+    finally:
+        map_app._clear_matches()
+
+
+@pytest.mark.edge
+def test_a_cancelled_save_changes_nothing(map_app, monkeypatch):
+    entry = result(map_app, "1111111111", small_map())
+    try:
+        map_app.status_var.set("before")
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **kw: "")
+        _press(entry["card"], "Save map picture")
+        assert map_app.status_var.get() == "before"
+    finally:
+        map_app._clear_matches()
+
+
+@pytest.mark.dirty
+def test_a_failed_copy_or_save_says_why_in_the_status_line(map_app, monkeypatch, tmp_path):
+    from bbreroll import map_picture
+    entry = result(map_app, "1111111111", small_map())
+    try:
+        monkeypatch.setattr(map_picture, "copy_to_clipboard", lambda image: map_picture.NO_CLIPBOARD)
+        _press(entry["card"], "Copy map picture")
+        assert map_app.status_var.get() == map_picture.NO_CLIPBOARD
+        monkeypatch.setattr(map_picture, "save_png", lambda image, path: "Cannot save the map picture: no.")
+        monkeypatch.setattr("tkinter.filedialog.asksaveasfilename", lambda **kw: str(tmp_path / "x.png"))
+        _press(entry["card"], "Save map picture")
+        assert map_app.status_var.get() == "Cannot save the map picture: no."
+        monkeypatch.setattr(map_picture, "render", lambda *a, **k: (_ for _ in ()).throw(ValueError("damaged")))
+        _press(entry["card"], "Copy map picture")
+        assert "damaged" in map_app.status_var.get()
+    finally:
+        map_app._clear_matches()

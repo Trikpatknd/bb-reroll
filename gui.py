@@ -128,6 +128,7 @@ WORKERS = "Workers"
 SURFACE_SECONDS = 1.5
 NOTIFY_SECONDS = 10
 DRAIN_SECONDS = 0.1       # the most one turn of the event queue takes: the window has its own events, Stop is one
+MAP_PICTURE_COPIED = "The map picture is copied. Paste it into Discord after the seed post."
 
 
 # ─────────────────────── look ───────────────────────
@@ -373,6 +374,7 @@ class _MapWindow(ctk.CTkToplevel):
         self.canvas.pack(padx=12)
         self._draw(summary, band, round(width))
         self._legend(band)
+        app._map_picture_buttons(self, entry, window=self).pack(fill="x", padx=12, pady=(0, 8))
         self.bind("<Destroy>", self._forget, add="+")
         # beside the main window, and not lower than the screen allows
         self.update_idletasks()
@@ -2270,7 +2272,7 @@ class App(ctk.CTk):
         # as tall as its content needs, up to a limit (it scrolls beyond that)
         wanted = 0
         for m in self._matches:
-            wanted += (64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1)
+            wanted += (64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1) + (34 if m.get("map") else 0)
                        + (20 if map_view.first_campaign_line(O.is_deserters(m["origin"]),
                                                              (m.get("info") or {}).get("legends")) else 0))
             if wanted >= 300:
@@ -2338,6 +2340,8 @@ class App(ctk.CTk):
             ctk.CTkLabel(card, text=first, font=(FONT, 12), justify="left", anchor="w", wraplength=880,
                          text_color=PALETTE["muted"]).grid(row=4, column=0, columnspan=3, sticky="w",
                                                            padx=12, pady=(0, 8))
+        if entry.get("map"):
+            self._map_picture_buttons(card, entry).grid(row=5, column=0, columnspan=3, sticky="w", padx=12, pady=(0, 8))
         if has_details and entry.get("show_perks"):
             lines = []
             for i, b in enumerate(entry["roster"], 1):
@@ -2380,6 +2384,52 @@ class App(ctk.CTk):
                 if isinstance(child, _MapWindow) and child not in known:
                     child.destroy()
             self.status_var.set(f"Cannot draw the map: {type(e).__name__}: {e}")
+
+    def _map_picture_buttons(self, parent, entry, window=None):
+        """The two buttons of the map picture, in a frame for the caller to place. `window`: the map window they are in."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        copy = _button(row, "Copy map picture", lambda: self._copy_map_picture(entry, window), width=120, height=26,
+                       font=(FONT, 11))
+        copy.pack(side="left", padx=(0, 4))
+        _attach_tooltip(copy, "Paste the picture into Discord after the seed post.")
+        save = _button(row, "Save map picture", lambda: self._save_map_picture(entry, window), width=120, height=26,
+                       font=(FONT, 11))
+        save.pack(side="left")
+        _attach_tooltip(save, "Save the picture as a PNG file.")
+        return row
+
+    def _map_picture(self, entry: dict):
+        from bbreroll import map_picture
+        return map_picture.render(entry["map"], verified=map_view.result_verified(entry.get("info")),
+                                  north_band=entry.get("north_band"),
+                                  footer=map_picture.footer_text(entry["seed"], entry["origin"]))
+
+    def _map_picture_result(self, message, window):
+        self.status_var.set(message)
+        if window is not None:      # the map window can cover the status line
+            window.info_var.set(message)
+
+    def _copy_map_picture(self, entry: dict, window=None):
+        from bbreroll import map_picture
+        try:
+            problem = map_picture.copy_to_clipboard(self._map_picture(entry))
+        except Exception as e:
+            problem = f"Cannot draw the map picture: {e}"
+        self._map_picture_result(problem or MAP_PICTURE_COPIED, window)
+
+    def _save_map_picture(self, entry: dict, window=None):
+        from tkinter import filedialog
+        from bbreroll import map_picture
+        path = filedialog.asksaveasfilename(parent=window or self, title="Save map picture", defaultextension=".png",
+                                            initialfile=f"map_{entry['seed']}.png",
+                                            filetypes=[("PNG picture", "*.png")])
+        if not path:
+            return
+        try:
+            problem = map_picture.save_png(self._map_picture(entry), path)
+        except Exception as e:
+            problem = f"Cannot draw the map picture: {e}"
+        self._map_picture_result(problem or f"The map picture is saved: {path}", window)
 
     def _toggle_perks(self, entry: dict):
         entry["show_perks"] = not entry.get("show_perks")
@@ -2594,6 +2644,12 @@ class App(ctk.CTk):
                                 if m.get("map") else None} for m in self._matches],
             "share": None if not self._matches else self._share_report(self._matches[0]),
         }
+        pictured = next((m for m in self._matches if m.get("map")), None) if spec.get("copy_picture") else None
+        if pictured is not None:            # the frozen program really copies a picture (Pillow, its font, the clipboard)
+            from bbreroll import map_picture
+            self._copy_map_picture(pictured)
+            report["copy_picture"] = {"status": self.status_var.get(), "drawn": list(self._map_picture(pictured).size),
+                                      "clipboard": map_picture.clipboard_picture_size()}
         Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
         if spec.get("screenshot"):          # a picture of the window, to check the layout unattended
             self._grab(self, spec["screenshot"])
