@@ -3,4 +3,3 @@
 #                                         python -m pytest --full -n 4  (everything, 4 worker processes)
 pytest==9.0.3       # 9.2.0: the suite's test groups do not reach pytest-xdist, GUI tests spread over the workers
 pytest-xdist==3.8.0
-pillow==13.0.0      # the self-test's screenshot
