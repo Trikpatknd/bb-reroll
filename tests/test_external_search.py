@@ -56,23 +56,87 @@ def test_the_events_are_the_same_through_json(tmp_path):
 
 
 @pytest.mark.core
-def test_events_json_passes_the_stop_on_stdin_to_the_search(monkeypatch, capsys):
-    import io
+def test_events_json_stops_when_the_stop_file_is_there(monkeypatch, capsys, tmp_path):
     seen = []
 
     def fake_search(profile, origin, criteria, **kw):
-        end = time.time() + 5
-        while time.time() < end and not kw["should_stop"]():
-            time.sleep(0.01)
+        seen.append(kw["should_stop"]())
+        (tmp_path / "stop").write_text("x")
         seen.append(kw["should_stop"]())
         kw["on_event"]("finished", (0, 0.0, 0, True))
         return []
     monkeypatch.setattr(S, "search", fake_search)
-    monkeypatch.setattr(sys, "stdin", io.StringIO("stop\n"))
+    monkeypatch.setenv(S.STOP_FILE_VARIABLE, str(tmp_path / "stop"))
     S.main(["--profile", "legends", "--origin", "trader_scenario", "--events-json"])
-    assert seen == [True]
+    assert seen == [False, True]
     assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == [
         {"kind": "finished", "payload": [0, 0.0, 0, True]}]
+
+
+@pytest.mark.core
+def test_a_worker_process_really_starts_under_events_json(tmp_path):
+    """2026-11-03: a thread reading stdin made every spawned worker hang at its start on Windows (and only with real workers:
+    the stand-in search has none). The search reported nothing until the stop."""
+    command = child_script(tmp_path, """
+        import multiprocessing as mp, sys
+        from bbseed import search as S
+
+        def worker(out):
+            out.put("started")
+
+        def fake_search(profile, origin, criteria, **kw):
+            ctx = mp.get_context("spawn")
+            out = ctx.Queue()
+            p = ctx.Process(target=worker, args=(out,), daemon=True)
+            p.start()
+            kw["on_event"]("notice", out.get(timeout=60))
+            p.join(30)
+            kw["on_event"]("finished", (0, 0.0, 0, False))
+            return []
+
+        if __name__ == "__main__":
+            S.search = fake_search
+            S.main(["--profile", "legends", "--origin", "trader_scenario", "--events-json"])
+    """)
+    began = time.time()
+    got = run(command)
+    assert [k for k, _p in got] == ["notice", "finished"] and got[0][1] == "started"
+    assert time.time() - began < 60
+
+
+@pytest.mark.core
+def test_the_child_ends_when_this_program_ends(tmp_path):
+    """The window closed during a search: no search goes on without it (a worker takes 1.5 GB)."""
+    pid_file = tmp_path / "pid.txt"
+    child = child_script(tmp_path, """
+        import json, os, time
+        open(%r, "w").write(str(os.getpid()))
+        print(json.dumps({"kind": "ready", "payload": [1, 1, {}]}), flush=True)
+        time.sleep(120)
+    """ % str(pid_file))
+    parent = tmp_path / "parent.py"
+    parent.write_text(textwrap.dedent("""
+        import os, sys, threading
+        from pathlib import Path
+        sys.path.insert(0, %r)
+        from bbreroll import external_search
+
+        def go():
+            external_search.run(%r, dict(os.environ), lambda k, p: None)
+        threading.Thread(target=go, daemon=True).start()
+        pid = Path(%r)
+        import time
+        end = time.time() + 30
+        while time.time() < end and not (pid.exists() and pid.read_text()):
+            time.sleep(0.05)
+        time.sleep(0.5)
+    """ % (REPO, child, str(pid_file))), encoding="utf-8")
+    subprocess.run([sys.executable, str(parent)], env=dict(os.environ, PYTHONPATH=REPO), timeout=60)
+    deadline = time.time() + 10
+    pid = int(pid_file.read_text())
+    while time.time() < deadline and alive(pid):
+        time.sleep(0.1)
+    assert not alive(pid)
 
 
 def alive(pid):
@@ -105,10 +169,11 @@ def test_stop_ends_the_child_and_its_workers(tmp_path, monkeypatch):
 def test_a_child_that_answers_the_stop_ends_as_a_search_does(tmp_path):
     ready = tmp_path / "ready.txt"
     command = child_script(tmp_path, """
-        import json, sys
+        import json, os, time
         print(json.dumps({"kind": "ready", "payload": [1, 1, {}]}), flush=True)
         open(%r, "w").write("x")
-        sys.stdin.readline()
+        while not os.path.exists(os.environ["BBSEED_STOP_FILE"]):
+            time.sleep(0.02)
         print(json.dumps({"kind": "near", "payload": {"seed": "1"}}), flush=True)
         print(json.dumps({"kind": "finished", "payload": [7, 1.0, 0, True]}), flush=True)
     """ % str(ready))

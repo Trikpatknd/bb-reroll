@@ -41,7 +41,6 @@ import os
 import queue
 import random
 import sys
-import threading
 import time
 import traceback
 
@@ -411,6 +410,7 @@ NEAR_MAPS = 100
 # run: early on the nearest seed changes often and nobody sees it, and those rolls cost 4 % of a 4,000-seed search.
 NEAR_CONFIRM_SHARE = 0.9
 PROGRESS_SECONDS = 1.0      # how often a worker reports its count
+STOP_FILE_VARIABLE = "BBSEED_STOP_FILE"     # --events-json: the file that stops the search when it is there
 # Early exit (Lab.roster's stop_after): every this many seeds a worker rolls the roster in full and compares what the stop
 # read with the finished roster. A difference turns early exit off for the rest of the worker's run.
 EARLY_AUDIT_SEEDS = 200
@@ -1080,20 +1080,17 @@ def _print_map(profile, origin, seed, svg_path=None, mod_settings=None):
 
 def _search_for_a_program(args, criteria, mod_settings):
     """--events-json: the search for another program (bbreroll/external_search.py). stdout holds one JSON line per event and
-    nothing else. A line on stdin ends the search as a Stop does; so does the end of stdin: the program that started this
-    process is gone."""
-    stop = threading.Event()
-
-    def wait_for_stop():
-        sys.stdin.readline()
-        stop.set()
+    nothing else. The file named by STOP_FILE_VARIABLE, once it is there, ends the search as a Stop does. Not a line on stdin:
+    on Windows a thread waiting on stdin makes every spawned worker hang at its start. When the other program is gone, the
+    next event cannot be written, and that ends the search and its workers."""
+    stop_file = os.environ.get(STOP_FILE_VARIABLE)
 
     def on_event(kind, payload):
         sys.stdout.write(json.dumps({"kind": kind, "payload": payload}) + "\n")
         sys.stdout.flush()
-    threading.Thread(target=wait_for_stop, daemon=True).start()
     search(args.profile, args.origin, criteria, workers=args.workers, count=args.count, max_seeds=args.max_seeds,
-           start=args.start, on_event=on_event, mod_settings=mod_settings, should_stop=stop.is_set)
+           start=args.start, on_event=on_event, mod_settings=mod_settings,
+           should_stop=(lambda: os.path.exists(stop_file)) if stop_file else None)
 
 
 def main(argv=None):
@@ -1136,7 +1133,8 @@ def main(argv=None):
     ap.add_argument("--count", type=int, default=1, help="stop after this many matches (default 1)")
     ap.add_argument("--near", action="store_true", help="print the nearest seed so far and how it differs, while no seed matches")
     ap.add_argument("--events-json", action="store_true",
-                    help="for another program: one JSON line per search event on stdout; a line on stdin stops the search")
+                    help="for another program: one JSON line per search event on stdout; the file named by the environment "
+                         "variable BBSEED_STOP_FILE stops the search")
     ap.add_argument("--max-seeds", type=int, default=None, help="give up after testing this many seeds")
     ap.add_argument("--workers", type=int, default=None, help="parallel processes (default: half the CPU threads, at most 8)")
     ap.add_argument("--start", type=int, default=None, help="first seed number (default: random)")
