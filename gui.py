@@ -69,6 +69,7 @@ from bbreroll import backgrounds as background_limits
 from bbreroll import map_conditions
 from bbreroll import map_view
 from bbreroll import near_view
+from bbreroll import pypy_addon
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
     explain_failure, roster_lines, sanitize_trait, to_int,
@@ -543,6 +544,8 @@ class App(ctk.CTk):
         self._run = {}
         self._matches: list[dict] = []   # session-level list of results, newest first
         self._announced: dict[str, float] = {}   # when a match last pulled the window forward / made a notification
+        self._pypy = None                        # the optional PyPy download next to the exe (_find_pypy)
+        self._pypy_reason = ""                   # why a folder that is there cannot be used
         self._near: dict | None = None           # the closest seed's card while no seed matches (search event "near")
         self._near_dismissed = None              # the distance of a near card the player removed in this search
         self._report_info: dict = {"version": None, "build_name": None,
@@ -1269,6 +1272,19 @@ class App(ctk.CTk):
                 entry(box, f"{label} ({low}-{high})", self.map_option_vars, key, options[key])
             # a changed Map Option turns map conditions on again after a map fatal
             self.map_option_vars[key].trace_add("write", self._lift_map_lockout)
+        self.pypy_var = ctk.BooleanVar(value=True)
+        self.pypy_switch = ctk.CTkSwitch(frame, text=pypy_addon.SWITCH_TEXT, variable=self.pypy_var, font=(FONT, 12),
+                                         text_color=PALETTE["text"], progress_color=PALETTE["accent"])
+        self.pypy_switch.grid(row=5, column=0, sticky="w", padx=4, pady=(6, 0))
+        _attach_tooltip(self.pypy_switch, pypy_addon.SWITCH_TIP)
+        self._find_pypy(APP_DIR)
+
+    def _find_pypy(self, exe_dir):
+        """The optional PyPy download next to the exe: the switch shows only when it can be used, and a folder that cannot
+        be used is named in the Map view's note."""
+        self._pypy, self._pypy_reason = pypy_addon.find(exe_dir, APP_VERSION)
+        self.pypy_switch.grid() if self._pypy is not None else self.pypy_switch.grid_remove()
+        self._apply_map_state()
 
     def _setup_kind(self) -> str:
         """The setup as the Map view sees it: a map_view.SETUP_KINDS value. A research Vanilla setup is "Vanilla"."""
@@ -1332,6 +1348,8 @@ class App(ctk.CTk):
             lines.append(self._options_note)
         if usable and not self._map_verified():
             lines.append(map_view.NOT_VERIFIED)
+        if self._pypy_reason:
+            lines.append(self._pypy_reason)
         if self.grid_mode_var.get() == "Map":      # the Map view's help names the setup (grid_help exists by now)
             self.grid_help.configure(text=map_view.help_text(kind))
         self.map_note_var.set("\n".join(lines))
@@ -1929,11 +1947,23 @@ class App(ctk.CTk):
                                if deserters else
                                f" {map_view.wait_text(self._setup_kind())}" if map_criteria else ""))
         put = self._events.put
+        start = (self._selftest or {}).get("start")      # (a self-test can compare two runs of one seed range)
+        in_pypy = (self._pypy is not None and not seeds and self.pypy_var.get()
+                   and pypy_addon.applies(criteria, scenario))
+        self._run["pypy"] = in_pypy
 
         def run():
             try:
+                if in_pypy:
+                    why = pypy_addon.search(self._pypy, profile, scenario, criteria, workers, numbers[MATCHES_TO_FIND] or 1,
+                                            numbers[SEEDS_TO_TEST], mod_settings or None,
+                                            lambda kind, payload: put((kind, payload)), self._stop.is_set, start)
+                    if why is None:
+                        return
+                    put(("notice", why))        # on with the exe's own Python
+                    self._run["pypy"] = False
                 search(profile, scenario, criteria, workers=workers, count=numbers[MATCHES_TO_FIND] or 1,
-                       max_seeds=None if seeds else numbers[SEEDS_TO_TEST], seeds=seeds,
+                       max_seeds=None if seeds else numbers[SEEDS_TO_TEST], seeds=seeds, start=start,
                        mod_settings=mod_settings or None,
                        on_event=lambda kind, payload: put((kind, payload)), should_stop=self._stop.is_set)
             except Exception as e:      # report instead of dying silently in the thread
@@ -2754,6 +2784,7 @@ class App(ctk.CTk):
             "backgrounds": {slot: len(ids) for slot, ids in self._background_ids.items()},
             "criteria": self._gather_criteria(),
             "map_note": self.map_note_var.get(),
+            "searched_in_pypy": bool(self._run.get("pypy")),
             "matches": [{"seed": m["seed"], "origin": m["origin"], "stable": m["stable"], "failure": m["failure"],
                          "checked": m["checked"], "lines": roster_lines(m["roster"]),
                          "map": map_conditions.map_line(m["map"], m.get("north_band") or map_view.DEFAULT_NORTH_BAND)

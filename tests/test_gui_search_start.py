@@ -2278,3 +2278,120 @@ def test_a_notice_of_the_search_shows_in_the_banner(app):
         assert app.notice_var.get() == EARLY_EXIT_OFF
     finally:
         app._clear_notice()
+
+
+# ====================================================================== the optional PyPy download
+@pytest.fixture()
+def pypy_app(map_app):
+    from bbreroll import pypy_addon
+    yield map_app
+    map_app._find_pypy(Path("X:/no such folder"))
+    map_app.pypy_var.set(True)
+
+
+def _addon_folder(tmp_path, version):
+    from bbreroll import pypy_addon
+    folder = tmp_path / pypy_addon.FOLDER
+    for parts in pypy_addon._NEEDED:
+        path = folder.joinpath(*parts)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+    (folder / "VERSION").write_text(version, encoding="utf-8")
+    return folder
+
+
+@pytest.mark.core
+def test_the_option_shows_only_when_found(pypy_app, tmp_path):
+    import gui
+    pypy_app.grid_mode_var.set("Map")
+    pypy_app._on_grid_mode()
+    pypy_app._find_pypy(tmp_path)
+    assert pypy_app._pypy is None and pypy_app.pypy_switch.winfo_manager() == ""
+    assert pypy_app.map_note_var.get() == "" or "PyPy" not in pypy_app.map_note_var.get()
+    _addon_folder(tmp_path, gui.APP_VERSION)
+    pypy_app._find_pypy(tmp_path)
+    assert pypy_app._pypy is not None and pypy_app.pypy_switch.winfo_manager() == "grid"
+    assert pypy_app.pypy_var.get() is True, "on when found"
+
+
+@pytest.mark.dirty
+def test_a_folder_of_another_version_says_why_in_the_map_view(pypy_app, tmp_path):
+    _addon_folder(tmp_path, "0.0.1")
+    pypy_app._find_pypy(tmp_path)
+    assert pypy_app._pypy is None and pypy_app.pypy_switch.winfo_manager() == ""
+    assert "0.0.1" in pypy_app.map_note_var.get()
+
+
+def _search_with_addon(pypy_app, calls, monkeypatch, why=None, map_ports="4", star=False, banned=False):
+    """A search with the add-on found; returns the arguments the add-on's search got (None: it was not used)."""
+    from bbreroll import pypy_addon
+    pypy_app._pypy = pypy_addon.Addon(Path("X:/addon"))
+    used = []
+
+    def fake(addon, profile, origin, criteria, workers, count, max_seeds, mod_settings, on_event, should_stop=None, start=None):
+        used.append(dict(profile=profile, origin=origin, criteria=criteria, workers=workers, count=count, max_seeds=max_seeds,
+                         mod_settings=mod_settings))
+        if why:
+            return why
+        on_event("finished", [0, 0.0, 0, False])
+        return None
+    monkeypatch.setattr(pypy_addon, "search", fake)
+    pypy_app.origin_var.set("Trading Caravan")
+    pypy_app._on_origin_change("Trading Caravan")
+    pypy_app._bulk_check("banned", banned)      # (a ticked trait is a condition on the brothers)
+    pypy_app._bulk_check("required", False)
+    pypy_app.map_vars["ports"].set(map_ports)
+    if star:
+        pypy_app.stars_vars[("1", "res")].set("1")
+    pypy_app._on_search()
+    pump(pypy_app, lambda: (used or calls) and not pypy_app._searching)
+    return used
+
+
+@pytest.mark.core
+def test_a_map_only_search_runs_in_pypy(pypy_app, calls, monkeypatch):
+    used = _search_with_addon(pypy_app, calls, monkeypatch)
+    assert len(used) == 1 and calls == [], "PyPy, and not the exe's Python"
+    assert used[0]["origin"] == "trader_scenario" and used[0]["criteria"]["map"]["ports"] == 4
+    assert set(used[0]["mod_settings"]) >= {"mod_legends:Settlements"}, "the Map Options go along"
+
+
+@pytest.mark.core
+def test_a_search_with_brothers_stays_on_the_exes_python(pypy_app, calls, monkeypatch):
+    used = _search_with_addon(pypy_app, calls, monkeypatch, star=True)
+    assert used == [] and len(calls) == 1
+
+
+@pytest.mark.core
+def test_a_ticked_trait_is_a_search_with_brothers(pypy_app, calls, monkeypatch):
+    used = _search_with_addon(pypy_app, calls, monkeypatch, banned=True)
+    assert used == [] and len(calls) == 1
+
+
+@pytest.mark.edge
+def test_the_switch_turned_off_stays_on_the_exes_python(pypy_app, calls, monkeypatch):
+    pypy_app.pypy_var.set(False)
+    used = _search_with_addon(pypy_app, calls, monkeypatch)
+    assert used == [] and len(calls) == 1
+
+
+@pytest.mark.dirty
+def test_a_failed_pypy_start_searches_on_in_the_window(pypy_app, calls, monkeypatch):
+    used = _search_with_addon(pypy_app, calls, monkeypatch, why="PyPy did not start: no. The search runs without PyPy.")
+    assert len(used) == 1 and len(calls) == 1, "tried, then on with the exe's Python"
+    pump(pypy_app, lambda: "PyPy did not start" in pypy_app.notice_var.get(), 2.0)
+    assert "PyPy did not start" in pypy_app.notice_var.get()
+
+
+@pytest.mark.edge
+def test_a_checked_seed_never_uses_pypy(pypy_app, calls, monkeypatch):
+    from bbreroll import pypy_addon
+    pypy_app._pypy = pypy_addon.Addon(Path("X:/addon"))
+    monkeypatch.setattr(pypy_addon, "search", lambda *a, **k: pytest.fail("a check rolls one seed: no PyPy"))
+    pypy_app.origin_var.set("Trading Caravan")
+    pypy_app._on_origin_change("Trading Caravan")
+    pypy_app.map_vars["ports"].set("4")
+    pypy_app.check_seed_var.set("1234567890")
+    pypy_app._on_check_seed()
+    pump(pypy_app, lambda: calls and not pypy_app._searching)
+    assert len(calls) == 1
