@@ -95,7 +95,7 @@ Use them to search for seeds by their world map. They work with the **Legends** 
 
 **What to expect.** In a survey of 997 maps with the default Map Options, the median was 4 ports. 22.6 % of the maps had 5 or more ports, and 3.9 % had 6 or more. 39 % had at least one southern port. 22 % had at least one northern port (band 33 %). Every map had 6 strongholds. In the 40 maps of the base game that were checked in the game, a map had 19 to 22 towns. Every map had 6 strongholds and 3 city states.
 
-**Results.** **Show map** on a result opens the map of the seed: terrain, roads, towns and ports. North is at the top. A ring marks a port. A dashed line marks the north band. Thin lines show the roads, and a yellow star marks the square where your company starts (both on the checked setups only). Point at a town to read its name and type. On a setup that was not checked, the names of city states say that they are not verified. **Copy seed post** adds a Map line and the Map Options to the post (the base game has none). **Check a seed** with a map condition builds the map of that seed too. If the map cannot be built, the result shows the brothers and says why.
+**Results.** **Show map** on a result opens the map of the seed: terrain, roads, towns and ports. North is at the top. A ring marks a port. A dashed line marks the north band. Thin lines show the roads, and a yellow star marks the square where your company starts (both on the checked setups only). Point at a town to read its name and type. On a setup that was not checked, the names of city states say that they are not verified. **Copy map picture** copies the map as a picture: paste it into Discord after the seed post. **Save map picture** saves it as a PNG file. The picture shows the seed and the origin under the map. **Copy seed post** adds a Map line and the Map Options to the post (the base game has none). **Check a seed** with a map condition builds the map of that seed too. If the map cannot be built, the result shows the brothers and says why.
 
 The map depends on the seed, the Map Options, the game version and the mod versions. It does not depend on the origin; only the start star does. The brothers do not depend on the map. Deserters is the exception.
 
@@ -174,6 +174,7 @@ bb_reroll/
 │   ├── seed_report.py            #   Discord seed-share post formatter (with the map and the Map Options)
 │   ├── map_conditions.py         #   map conditions: labels, what a map can have at most, impossible conditions, the post's map line
 │   ├── map_view.py               #   the Map view without tkinter: fields, checks, settings, Map Options, saved Mod Options
+│   ├── map_picture.py            #   the map as a PNG picture (Pillow): the clipboard, a file
 │   └── trait_names.py            #   trait ID → display name
 ├── bbseed/                       # the search: the game's campaign-start scripts, run without the game
 │   ├── rng.py                    #   the game's seeded random generator
