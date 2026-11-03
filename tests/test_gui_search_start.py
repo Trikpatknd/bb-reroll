@@ -9,6 +9,8 @@ import pytest
 
 ctk = pytest.importorskip("customtkinter")
 
+from bbreroll import screens
+
 
 @pytest.fixture(scope="module")
 def app(tmp_path_factory):
@@ -31,6 +33,7 @@ def app(tmp_path_factory):
     errors = []
     mp.setattr(gui.messagebox, "showerror", lambda *a, **k: errors.append(a))
     O.refresh()
+    ctk.deactivate_automatic_dpi_awareness()        # as gui.main(): one scale on every monitor
     try:
         window = gui.App()
     except Exception as e:
@@ -40,6 +43,7 @@ def app(tmp_path_factory):
         if isinstance(e, tk.TclError):  # no display at all; any other error is a bug and must fail the tests
             pytest.skip("no display: %s" % e)
         raise
+    window.geometry(screens.window_position())        # never over the work on the main monitor
     window.withdraw()
     window.errors = errors
     window.real_ensure_catalog = real_ensure_catalog      # for the tests of the catalog build itself
@@ -147,7 +151,7 @@ def test_the_last_result_can_be_scrolled_into_view(app):
     app.origin_var.set("The Free Company")
     app._on_origin_change("The Free Company")
     app.deiconify()
-    app.geometry("980x940+40+40")
+    app.geometry("980x940" + screens.window_position())
     roster = [{"name": "Bro %d" % i, "background": "background.sellsword", "background_name": "Sellsword",
                "stars": {"hp": 1}, "trait_names": [], "traits": []} for i in range(5)]
     try:
@@ -886,7 +890,7 @@ def test_the_map_window_opens_on_top_of_the_main_window(map_app):
     app = map_app
     app._run = dict(RUN, north_band=33)
     app.deiconify()
-    app.geometry("980x940+40+40")
+    app.geometry("980x940" + screens.window_position())
     try:
         entry = result(app, "2222222222", small_map())
         pump(app, lambda: False, 1.7)       # a match keeps the main window topmost for 1.5 s (_surface_window)
@@ -1929,7 +1933,7 @@ def test_the_long_deserters_note_wraps_inside_the_window(app):
     from bbreroll import map_view
     before = app.origin_info_var.get()
     app.deiconify()
-    app.geometry("980x940+40+40")
+    app.geometry("980x940" + screens.window_position())
     try:
         app.origin_info_var.set(map_view.DESERTERS_INFO + " " + map_view.DESERTERS_INFO)
         pump(app, lambda: False, 0.3)
@@ -2727,7 +2731,7 @@ def test_a_long_status_text_wraps_beside_the_watch_text(app):
     assert text.endswith("after %d maps." % map_view.MIN_MAPS)
     before, watch = app.status_var.get(), app.watch_var.get()
     app.deiconify()
-    app.geometry("1000x940+40+40")
+    app.geometry("1000x940" + screens.window_position())
     try:
         app.status_var.set(text)
         app.watch_var.set("Searching: 109,088 of 10,000,000 seeds, 255/s, 10h47m or less to go")

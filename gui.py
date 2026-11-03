@@ -70,6 +70,7 @@ from bbreroll import map_conditions
 from bbreroll import map_view
 from bbreroll import near_view
 from bbreroll import pypy_addon
+from bbreroll import screens
 from bbreroll import worker_load
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
@@ -2828,6 +2829,7 @@ class App(ctk.CTk):
         """Drive one search without a human: set the fields from `spec`, press Search,
         write what happened to spec["out"], optionally close. For automated checks of the
         GUI and of the built .exe; nothing in normal use reaches this."""
+        self.geometry(screens.window_position())      # never over the work on the main monitor
         self._selftest = spec
         self._save_settings = lambda: None      # a self-test must not overwrite the player's settings
 
@@ -2953,12 +2955,8 @@ class App(ctk.CTk):
             window.update()
             x, y = window.winfo_rootx(), window.winfo_rooty()
             box = (x, y, x + window.winfo_width(), y + window.winfo_height())
-            try:        # this process is not DPI aware (see main): Tk's pixels are scaled screen pixels
-                import ctypes
-                scale = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100.0
-            except Exception:
-                scale = 1.0
-            ImageGrab.grab(bbox=tuple(int(v * scale) for v in box)).save(path)
+            scale = screens.scale_at(x, y)      # this process is not DPI aware (see main): Tk's pixels are scaled screen pixels
+            ImageGrab.grab(bbox=tuple(int(v * scale) for v in box), all_screens=True).save(path)
         except Exception:
             pass
 
