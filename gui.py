@@ -68,6 +68,7 @@ from bbreroll import star_limits
 from bbreroll import backgrounds as background_limits
 from bbreroll import map_conditions
 from bbreroll import map_view
+from bbreroll import near_view
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
     explain_failure, roster_lines, sanitize_trait, to_int,
@@ -149,6 +150,7 @@ PALETTE = {
     "full": "#29303d", "full_text": "#73839c",            # all his random stars are in use
     "roll": "#3aa596", "roll_btn": "#2f897c",
     "card": "#202a24", "card_border": "#2f7a4b", "card_other": "#25272b", "card_other_border": "#4a4e55",
+    "card_near": "#2c2719", "card_near_border": "#c79430",
     "tooltip": "#26282c", "tooltip_border": "#4a4e55",
     "good": "#6fd38a", "bad": "#ff8a7a",
 }
@@ -541,6 +543,8 @@ class App(ctk.CTk):
         self._run = {}
         self._matches: list[dict] = []   # session-level list of results, newest first
         self._announced: dict[str, float] = {}   # when a match last pulled the window forward / made a notification
+        self._near: dict | None = None           # the closest seed's card while no seed matches (search event "near")
+        self._near_dismissed = None              # the distance of a near card the player removed in this search
         self._report_info: dict = {"version": None, "build_name": None,
                                    "battle_sisters": None, "origin": None,
                                    "map_options": {}}
@@ -1878,6 +1882,8 @@ class App(ctk.CTk):
 
     def _launch(self, criteria, numbers, seeds):
         from bbseed.search import normalize, roster_conditions, search
+        if not seeds:       # a new search: "closest so far" starts again (a checked seed leaves the card)
+            self._forget_near()
         setup, origin = self.setup_var.get(), self.origin_var.get()
         profile = O.SETUPS[setup][0]
         scenario = O.SCENARIO[origin]
@@ -2051,6 +2057,8 @@ class App(ctk.CTk):
                      checked=self._run["checking"], info=dict(self._report_info),
                      north_band=self._run.get("north_band"))     # the band of this run: the map's ports count by it
         self._matches.insert(0, entry)
+        if not entry["checked"] and entry.get("failure") is None:
+            self._drop_near()       # an exact match: the closest seed no longer matters
         self._fit_match_list()
         self._add_match_card(entry)
         self.match_pane.grid()
@@ -2254,7 +2262,11 @@ class App(ctk.CTk):
         click changes one card (_add_match_card): rebuilding the list for each match kept the window busy."""
         for w in self.match_list.winfo_children():
             w.destroy()
+        for m in self._matches:
+            m["card"] = None
         self._fit_match_list()
+        if self._near is not None:
+            self._add_near_card()
         for entry in self._matches:
             self._add_match_card(entry, front=False)
 
@@ -2263,14 +2275,16 @@ class App(ctk.CTk):
         # When the window is too short for everything, grid takes the missing height from the rows
         # with weight, in proportion to it: the traits row (weight 4) gives up most of it, down to its
         # title line — Clear gives it back — so the results keep a usable list.
-        shown = bool(self._matches)
+        shown = bool(self._matches or self._near)
         self.grid_rowconfigure(3, weight=4 if shown else 1, minsize=60 if shown else 170)
         self.grid_rowconfigure(5, weight=1 if shown else 0)
-        if not self._matches:
+        if not shown:
             self.match_pane.grid_remove()
             return
         # as tall as its content needs, up to a limit (it scrolls beyond that)
         wanted = 0
+        if self._near is not None:
+            wanted += 84 + 16 * (len(self._near["roster"] or ()) + len(self._near["differences"]))
         for m in self._matches:
             wanted += (64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1) + (34 if m.get("map") else 0)
                        + (20 if map_view.first_campaign_line(O.is_deserters(m["origin"]),
@@ -2280,6 +2294,103 @@ class App(ctk.CTk):
         height = max(90, min(300, wanted))
         if self.match_list.cget("height") != height:
             self.match_list.configure(height=height)
+
+    def _ev_near(self, payload):
+        """The closest seed so far (bbseed/search.py). A seed the player removed stays away until a nearer one comes."""
+        distance = tuple(payload["distance"])
+        if self._near_dismissed is not None and distance >= self._near_dismissed:
+            return
+        self._drop_near()
+        self._near = dict(payload, distance=distance, ts=time.time(), origin=self._run["origin"], setup=self._run["setup"],
+                          checked=False, stable=True, failure=None, info=dict(self._report_info),
+                          north_band=self._run.get("north_band"),
+                          map_wanted=bool(self._run.get("map")))
+        self._fit_match_list()
+        self._add_near_card()
+        self.match_pane.grid()
+
+    def _drop_near(self):
+        near, self._near = self._near, None
+        if near is not None and near.get("card") is not None:
+            near["card"].destroy()
+
+    def _forget_near(self):
+        self._drop_near()
+        self._near_dismissed = None
+        self._fit_match_list()
+
+    def _dismiss_near(self):
+        if self._near is not None:
+            self._near_dismissed = self._near["distance"]
+        self._drop_near()
+        self._fit_match_list()
+
+    def _near_lines(self, near):
+        return near_view.lines(near["differences"], self._display_for, self._background_names())
+
+    def _check_near_seed(self, near):
+        """The Check a seed path for the seed on the card: with map conditions it builds that one map."""
+        if self._searching:
+            self.status_var.set("Stop the search first. Then check this seed.")
+            return
+        self.check_seed_var.set(near["seed"])
+        self._on_check_seed()
+
+    def _add_near_card(self):
+        """The amber card above the results: what the closest seed is, and how it differs."""
+        near = self._near
+        card = ctk.CTkFrame(self.match_list, corner_radius=8, border_width=1, fg_color=PALETTE["card_near"],
+                            border_color=PALETTE["card_near_border"])
+        card.pack(fill="x", padx=2, pady=3)
+        first = next((m["card"] for m in self._matches if m.get("card") is not None), None)
+        if first is not None:
+            import tkinter as tk
+            tk.Frame.pack_configure(card, before=first)     # (as in _add_match_card)
+        card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(card, text=near_view.TITLE, font=(FONT, 13, "bold"), text_color=PALETTE["star"], anchor="w").grid(
+            row=0, column=0, sticky="w", padx=12, pady=(8, 0))
+        sub = f"Seed {near['seed']} · {near['origin']} · {near['setup']}"
+        if not near["confirmed"]:
+            sub += f"  ·  {near_view.NOT_CHECKED}"
+        sub_label = ctk.CTkLabel(card, text=sub, font=(FONT, 12), text_color=PALETTE["text"], anchor="w")
+        sub_label.grid(row=1, column=0, columnspan=2, sticky="w", padx=12)
+        if not near["confirmed"]:
+            _attach_tooltip(sub_label, near_view.NOT_CHECKED_TIP)
+        buttons = ctk.CTkFrame(card, fg_color="transparent")
+        buttons.grid(row=0, column=1, sticky="e", padx=(4, 8), pady=(8, 0))
+        small = dict(height=26, font=(FONT, 11))
+        _button(buttons, "Copy seed", lambda s=near["seed"]: self._copy_to_clipboard(s), width=84, **small).pack(
+            side="left", padx=2)
+        if near["roster"]:
+            _button(buttons, "Copy roster", lambda e=near: self._copy_roster(e), width=90, **small).pack(side="left", padx=2)
+        _button(buttons, "Copy seed post", lambda e=near: self._copy_seed_share(e), width=108, **small).pack(
+            side="left", padx=2)
+        if near["map"]:
+            _button(buttons, "Show map", lambda e=near: self._show_map(e), width=84, **small).pack(side="left", padx=2)
+        if not near["confirmed"]:
+            _button(buttons, "Check this seed", lambda e=near: self._check_near_seed(e), width=108, **small).pack(
+                side="left", padx=2)
+        elif near["map_wanted"] and not near["map"]:
+            build = _button(buttons, "Build map", lambda e=near: self._check_near_seed(e), width=84, **small)
+            build.pack(side="left", padx=2)
+            _attach_tooltip(build, "Build the map of this seed (about 25 s).")
+        remove = _button(buttons, "✕", self._dismiss_near, kind="ghost", width=28, height=26, font=(FONT, 11))
+        remove.pack(side="left", padx=(6, 0))
+        _attach_tooltip(remove, "Remove this seed from the list. A nearer seed can still show.")
+        ctk.CTkLabel(card, text="\n".join(self._near_lines(near)), font=(FONT, 12), justify="left", anchor="w",
+                     wraplength=880, text_color=PALETTE["star"]).grid(row=2, column=0, columnspan=2, sticky="w", padx=12,
+                                                                      pady=(4, 0))
+        if near["roster"]:
+            ctk.CTkLabel(card, text="\n".join(roster_lines(near["roster"])), font=("Consolas", 11), justify="left",
+                         anchor="w", text_color=PALETTE["text"]).grid(row=3, column=0, columnspan=2, sticky="w", padx=12,
+                                                                      pady=(4, 0))
+        first_line = map_view.first_campaign_line(O.is_deserters(near["origin"]), (near.get("info") or {}).get("legends"))
+        if first_line:
+            ctk.CTkLabel(card, text=first_line, font=(FONT, 12), justify="left", anchor="w", wraplength=880,
+                         text_color=PALETTE["muted"]).grid(row=4, column=0, columnspan=2, sticky="w", padx=12, pady=(4, 0))
+        ctk.CTkFrame(card, fg_color="transparent", height=8).grid(row=5, column=0)
+        near["card"] = card
+        return card
 
     def _add_match_card(self, entry, front=True, before=None):
         """One result's card. front: above the other cards; else at the end of the list, or above the card before."""
@@ -2450,6 +2561,7 @@ class App(ctk.CTk):
 
     def _clear_matches(self):
         self._matches.clear()
+        self._dismiss_near()    # while the search runs, a nearer seed can still show
         self._render_match_list()
         self._dismiss_notice()   # users reach for Clear to dismiss banners too
 
@@ -2478,6 +2590,7 @@ class App(ctk.CTk):
             roster=entry.get("roster"),
             game_map=entry.get("map") or None,      # None, never {}: a post without a map stays as it was
             north_band=entry.get("north_band") or map_view.DEFAULT_NORTH_BAND,
+            not_exact=self._near_lines(entry) if "differences" in entry else None,
         )
 
     def _copy_seed_share(self, entry: dict):
@@ -2644,6 +2757,10 @@ class App(ctk.CTk):
                                 if m.get("map") else None} for m in self._matches],
             "share": None if not self._matches else self._share_report(self._matches[0]),
         }
+        if self._near is not None:
+            report["near"] = {"seed": self._near["seed"], "distance": list(self._near["distance"]),
+                              "confirmed": self._near["confirmed"], "lines": self._near_lines(self._near),
+                              "share": self._share_report(self._near)}
         pictured = next((m for m in self._matches if m.get("map")), None) if spec.get("copy_picture") else None
         if pictured is not None:            # the frozen program really copies a picture (Pillow, its font, the clipboard)
             from bbreroll import map_picture

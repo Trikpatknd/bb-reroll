@@ -2081,3 +2081,190 @@ def test_a_failed_copy_or_save_says_why_in_the_status_line(map_app, monkeypatch,
         assert "damaged" in map_app.status_var.get()
     finally:
         map_app._clear_matches()
+
+
+# ====================================================================== the closest seed
+NEAR_DIFFERENCE = [{"slot": 2, "kind": "stars", "name": "res", "have": 1, "want": 2}]
+
+
+def near_payload(seed="0000000007", distance=(0, 1, 0), confirmed=True, roster=True, summary=None, differences=None):
+    return {"seed": seed, "roster": roster_of() if roster else None, "map": summary, "distance": distance,
+            "confirmed": confirmed, "differences": NEAR_DIFFERENCE if differences is None else differences}
+
+
+@pytest.fixture()
+def near_app(map_app):
+    map_app._run = dict(RUN)
+    map_app._forget_near()
+    yield map_app
+    map_app._forget_near()
+    map_app._clear_matches()
+    map_app._forget_near()
+
+
+def near_card_seed(app):
+    return app._near["seed"] if app._near else None
+
+
+@pytest.mark.core
+def test_the_near_card_says_it_is_not_exact_and_lists_the_differences(near_app):
+    from bbreroll import near_view
+    near_app._ev_near(near_payload())
+    texts = _card_texts(near_app)
+    assert near_view.TITLE in texts
+    assert any("Seed 0000000007" in t for t in texts)
+    assert "Brother 2: RES has 1 star. The condition is 2." in "\n".join(texts)
+    assert near_view.NOT_CHECKED not in texts
+    assert near_app.match_pane.winfo_manager() == "grid", "the results part shows"
+    assert near_app._matches == [], "it is no match: nothing counts it as one"
+
+
+@pytest.mark.core
+def test_a_nearer_seed_replaces_the_card(near_app):
+    near_app._ev_near(near_payload())
+    old = near_app._near["card"]
+    near_app._ev_near(near_payload(seed="0000000008", distance=(0, 0, 1)))
+    assert not old.winfo_exists() and near_card_seed(near_app) == "0000000008"
+    assert _cards(near_app) == [near_app._near["card"]], "one card"
+
+
+@pytest.mark.core
+def test_an_exact_match_removes_the_card(near_app):
+    near_app._ev_near(near_payload())
+    card = near_app._near["card"]
+    near_app._run = dict(RUN, checking=True)        # (a checked seed does not pull the window forward)
+    near_app._ev_match({"seed": "0000000009", "roster": roster_of(), "stable": True, "failure": None})
+    assert near_app._near is not None, "a checked seed is no search result: the card stays"
+    near_app._run = dict(RUN)
+    near_app._announced["surface"] = near_app._announced["notify"] = time.time()
+    near_app._ev_match({"seed": "0000000010", "roster": roster_of(), "stable": True, "failure": None})
+    assert near_app._near is None and not card.winfo_exists()
+
+
+@pytest.mark.edge
+def test_a_match_card_goes_under_the_near_card_and_a_near_card_over_the_matches(near_app):
+    near_app._ev_near(near_payload())
+    near_app._run = dict(RUN, checking=True)
+    first = _checked_match(near_app, "0000000009")["card"]
+    assert _cards(near_app) == [near_app._near["card"], first]
+    near_app._ev_near(near_payload(seed="0000000008", distance=(0, 0, 1)))
+    assert _cards(near_app) == [near_app._near["card"], first]
+
+
+@pytest.mark.edge
+def test_a_dismissed_near_seed_stays_away_until_a_nearer_one_comes(near_app):
+    near_app._ev_near(near_payload(distance=(0, 2, 0)))
+    _press(near_app._near["card"], "✕")
+    assert near_app._near is None
+    assert _cards(near_app) == [] and near_app.match_pane.winfo_manager() == ""
+    near_app._ev_near(near_payload(distance=(0, 2, 0)))         # the same seed, its checked copy
+    near_app._ev_near(near_payload(seed="0000000008", distance=(0, 3, 0)))
+    assert near_app._near is None
+    near_app._ev_near(near_payload(seed="0000000009", distance=(0, 1, 0)))
+    assert near_card_seed(near_app) == "0000000009" and len(_cards(near_app)) == 1
+
+
+@pytest.mark.edge
+def test_clear_while_the_search_runs_counts_as_dismissed(near_app):
+    near_app._ev_near(near_payload(distance=(0, 2, 0)))
+    near_app._clear_matches()
+    assert near_app._near is None and _cards(near_app) == []
+    near_app._ev_near(near_payload(distance=(0, 2, 0)))
+    assert near_app._near is None
+    near_app._ev_near(near_payload(seed="0000000009", distance=(0, 1, 0)))
+    assert len(_cards(near_app)) == 1
+
+
+@pytest.mark.edge
+def test_a_full_rebuild_of_the_list_keeps_the_near_card_on_top(near_app):
+    near_app._ev_near(near_payload())
+    _checked_match(near_app, "0000000009")
+    near_app._render_match_list()
+    assert _cards(near_app) == [near_app._near["card"], near_app._matches[0]["card"]]
+
+
+@pytest.mark.edge
+def test_a_new_search_removes_the_old_near_card_and_forgets_what_was_dismissed(near_app, calls):
+    near_app._ev_near(near_payload(distance=(0, 2, 0)))
+    near_app.origin_var.set("Trading Caravan")
+    near_app._on_origin_change("Trading Caravan")
+    near_app.stars_vars[("1", "res")].set("1")
+    near_app._on_search()
+    pump(near_app, lambda: calls and not near_app._searching)
+    assert near_app._near is None and _cards(near_app) == []
+    near_app._ev_near(near_payload(distance=(0, 5, 0)))
+    assert near_app._near is not None
+
+
+@pytest.mark.core
+def test_the_seed_post_of_a_near_seed_says_not_an_exact_match(near_app):
+    near_app._ev_near(near_payload())
+    post = near_app._share_report(near_app._near)
+    assert "Not an exact match." in post
+    assert "Brother 2: RES has 1 star. The condition is 2." in post
+    assert "Seed: 0000000007" in post
+    _press(near_app._near["card"], "Copy seed post")
+    assert near_app.clipboard_get() == post
+
+
+@pytest.mark.core
+def test_the_build_map_button_uses_the_check_path_and_builds_one_map(near_app, calls):
+    near_app._run = dict(RUN, map={"ports": 4})
+    near_app.origin_var.set("Trading Caravan")
+    near_app._on_origin_change("Trading Caravan")
+    near_app.map_vars["ports"].set("4")
+    near_app._ev_near(near_payload())
+    _press(near_app._near["card"], "Build map")
+    pump(near_app, lambda: calls and not near_app._searching)
+    assert len(calls) == 1 and calls[0]["seeds"] == ["0000000007"] and calls[0]["criteria"]["map"]["ports"] == 4
+    assert near_app._near is not None, "the check leaves the card"
+
+
+@pytest.mark.edge
+def test_build_map_during_a_search_says_to_stop_first(near_app, calls):
+    near_app._run = dict(RUN, map={"ports": 4})
+    near_app.map_vars["ports"].set("4")
+    near_app._ev_near(near_payload())
+    near_app._searching = True
+    try:
+        _press(near_app._near["card"], "Build map")
+        assert calls == [] and "Stop the search" in near_app.status_var.get()
+    finally:
+        near_app._searching = False
+
+
+@pytest.mark.edge
+def test_a_roster_only_near_card_has_no_map_button(near_app):
+    near_app._ev_near(near_payload())
+    texts = [b.cget("text") for b in _buttons_of(near_app._near["card"])]
+    assert "Build map" not in texts and "Show map" not in texts and "Check this seed" not in texts
+    assert "Copy seed" in texts and "Copy roster" in texts and "Copy seed post" in texts
+
+
+@pytest.mark.core
+def test_a_map_per_seed_near_card_says_not_checked_yet(near_app, calls):
+    near_app._run = dict(RUN, map={"ports": 4})
+    from bbreroll import near_view
+    near_app.origin_var.set("Trading Caravan")
+    near_app._on_origin_change("Trading Caravan")
+    near_app.map_vars["ports"].set("4")
+    near_app._ev_near(near_payload(confirmed=False, roster=False, summary=small_map(), distance=(0, 0, 2), differences=[
+        {"slot": None, "kind": "map", "name": "ports", "have": 2, "want": 4}]))
+    assert any(near_view.NOT_CHECKED in t for t in _card_texts(near_app))
+    texts = [b.cget("text") for b in _buttons_of(near_app._near["card"])]
+    assert "Copy roster" not in texts and "Show map" in texts and "Build map" not in texts
+    _press(near_app._near["card"], "Check this seed")
+    pump(near_app, lambda: calls and not near_app._searching)
+    assert calls[0]["seeds"] == ["0000000007"]
+    assert near_app._share_report(near_app._near)        # a post without brothers
+
+
+@pytest.mark.edge
+def test_a_stopped_search_shows_an_unchecked_roster_as_not_checked_yet(near_app):
+    from bbreroll import near_view
+    near_app._ev_near(near_payload(confirmed=False))
+    assert any(near_view.NOT_CHECKED in t for t in _card_texts(near_app))
+    assert "Check this seed" in [b.cget("text") for b in _buttons_of(near_app._near["card"])]
+    near_app._ev_near(near_payload(confirmed=True))      # its checked copy: no longer "not checked"
+    assert not any(near_view.NOT_CHECKED in t for t in _card_texts(near_app))
+    assert len(_cards(near_app)) == 1

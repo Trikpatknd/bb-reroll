@@ -365,3 +365,10 @@ def test_no_other_origin_gets_the_counter_line():
         info = dict(info_with_map_options(), legends=True)
         assert COUNTER_LINE not in build_seed_report("Trading Caravan", "", "0000000009", info, "4.3.0", roster=ROSTER,
                                                      game_map=game_map)
+
+
+@pytest.mark.core
+def test_a_closest_seed_says_it_is_not_exact_and_how_it_differs():
+    out = build_seed_report("Gladiators", "", "1234567890", FULL_INFO, "4.5.0", not_exact=["Ports: 4. The condition is 5."])
+    assert "Not an exact match." in out and "Ports: 4. The condition is 5." in out
+    assert "Not an exact match" not in build_seed_report("Gladiators", "", "1234567890", FULL_INFO, "4.5.0")

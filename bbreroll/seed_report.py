@@ -83,14 +83,17 @@ def _map_text(game_map, north_band) -> str:
 
 
 def build_seed_report(origin, description, seed, report_info, tool_version, roster=None,
-                      game_map=None, north_band=DEFAULT_NORTH_BAND) -> str:
+                      game_map=None, north_band=DEFAULT_NORTH_BAND, not_exact=None) -> str:
     """Return the ready-to-paste Discord post as a single string. With the seed's
     roster, a 'Bros:' line lists every brother's talent stars.
 
     game_map: the seed's map summary (bbseed.mapgen.summary), from a search with map conditions;
     north_band: the band percent that search used. With a map the post has a 'Map:' line and
     lists every Map Option (one the game did not report shows as unknown); without it nothing
-    changes."""
+    changes.
+
+    not_exact: the lines that say how a closest seed differs from the conditions (bbreroll/near_view.py); the post says
+    that it is not an exact match. None: an exact match."""
     report_info = report_info or {}
     map_options = report_info.get("map_options") or {}
 
@@ -103,8 +106,10 @@ def build_seed_report(origin, description, seed, report_info, tool_version, rost
         lines.append(_bros_line(roster))
     lines += [
         f"Seed: {seed}",
-        f"Battle sisters: {report_info.get('battle_sisters') or _UNKNOWN}",
     ]
+    if not_exact is not None:
+        lines += ["Not an exact match. The differences from the conditions:"] + list(not_exact)
+    lines.append(f"Battle sisters: {report_info.get('battle_sisters') or _UNKNOWN}")
     if "mods" in report_info:       # a seed is only valid for the same game and mod versions
         lines.append(f"Game version: {report_info.get('game_version') or _UNKNOWN}")
         lines.append(f"Mods: {_mods_text(report_info['mods'])}")
