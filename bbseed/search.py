@@ -517,7 +517,8 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     again; "stable" says both are what the sift found. Deserters (DESERTERS_SCRIPT): the brothers are made on the map, so
     every seed gets its whole map run on through the start, and the roster comes from that run (and from the confirming
     run); the map conditions, if any, are checked on the same map. Checked seeds (`seeds`) are rolled on a new world state and
-    get everything (a map too, when there are map conditions), whatever fails.
+    get everything (a map too, when there are map conditions), whatever fails. A player waits for a checked seed, so its map
+    is built once, with what a confirming map has; "stable" then says only that the roster is the same (Deserters: True).
 
     final_from (the catalog's, or None): a sift roster may stop as soon as a brother from that slot on makes it worse than
     the best seed so far (prune), except with a map per seed, where the map run is the cost. Every EARLY_AUDIT_SEEDS seeds
@@ -597,6 +598,10 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             except Exception:       # (a picture only: whatever went wrong, the map without a start is the result)
                 return map_run(seed)["map"]
 
+        def checked_run(seed):
+            """The one map run of a checked seed, complete at once: the map with its start; Deserters: the perk trees too."""
+            return map_run(seed, perks=True) if deserters else {"map": world_map(seed)}
+
         def map_fails(summary):
             return map_code(map_failure, summary, want_map)
 
@@ -604,7 +609,7 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             """The seed's map run for the sift (map_run); None when it failed (reported; the reason is in
             state["map_error"]). Raises _MapsDoNotWork."""
             try:
-                found = map_run(seed)
+                found = checked_run(seed) if checking else map_run(seed)
             except LabError as e:
                 state["map_error"] = str(e)
                 if state["maps_work"]:
@@ -749,13 +754,15 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             # the authoritative roll: a newly built world state, as in a new campaign (with the recruits' perk
             # trees, which the sifting roll leaves out); and the map built once more
             confirmed_map = None
-            if deserters:        # the recruits come from the map run again, with their perk trees
+            if deserters and checking:      # its one map run (checked_run) had the perk trees
+                confirmed, confirmed_map = roster, summary
+            elif deserters:      # the recruits come from the map run again, with their perk trees
                 again = map_run(seed, perks=True)
                 confirmed, confirmed_map = again["roster"], again["map"]
             else:
                 confirmed = lab.roster_with_perks(seed, origin)
                 if summary is not None:
-                    confirmed_map = world_map(seed)
+                    confirmed_map = summary if checking else world_map(seed)
             progress()                                   # current count when the match shows
             failure = first_failure(confirmed, criteria)
             if failure is None and confirmed_map is not None and want_map is not None:

@@ -2066,7 +2066,8 @@ class App(ctk.CTk):
 
     def _ev_ready(self, payload):
         ready, total, info = payload
-        self.watch_var.set(f"Loading: {ready} of {total} workers are ready")
+        self.watch_var.set(map_view.CHECK_BUILDING if self._run["checking"] and (self._run.get("map") or self._run.get("deserters"))
+                           else f"Loading: {ready} of {total} workers are ready")
         legends = info.get("legends_version")
         self._run["ready"] = ready              # a fatal after this is not "cannot start"
         self._report_info = {
@@ -2162,6 +2163,7 @@ class App(ctk.CTk):
         self._fit_match_list()
         self._add_match_card(entry)
         self._fill_match_list()
+        self._give_near_its_map(entry)
         self.match_pane.grid()
         if not entry["checked"]:
             if self._announce("surface", SURFACE_SECONDS):
@@ -2172,6 +2174,17 @@ class App(ctk.CTk):
                                         message=f"Seed {entry['seed']} matches ({entry['origin']}).", timeout=10)
                 except Exception:
                     pass
+
+    def _give_near_its_map(self, entry):
+        """The closest seed's map, built by a check: Show map on its card replaces Build map. The result's own card is
+        under the near card, often out of sight. The info and the band go with the map: the check's Map Options made it."""
+        near = self._near
+        if near is None or near["map"] or not entry.get("map") or (
+                (near["seed"], near["origin"], near["setup"]) != (entry["seed"], entry["origin"], entry["setup"])):
+            return
+        near.update(map=entry["map"], info=entry["info"], north_band=entry["north_band"])
+        near["card"].destroy()
+        self._add_near_card()
 
     def _announce(self, what, seconds):
         """True when `what` was last done at least `seconds` ago (and it counts as done now)."""
@@ -2503,7 +2516,7 @@ class App(ctk.CTk):
         elif near["map_wanted"] and not near["map"]:
             build = _button(buttons, "Build map", lambda e=near: self._check_near_seed(e), width=84, **small)
             build.pack(side="left", padx=2)
-            _attach_tooltip(build, "Build the map of this seed (about 25 s).")
+            _attach_tooltip(build, "Build the map of this seed. This takes about 1 minute with the default Map Options.")
         remove = _button(buttons, "✕", self._dismiss_near, kind="ghost", width=28, height=26, font=(FONT, 11))
         remove.pack(side="left", padx=(6, 0))
         _attach_tooltip(remove, "Remove this seed from the list. A nearer seed can still show.")

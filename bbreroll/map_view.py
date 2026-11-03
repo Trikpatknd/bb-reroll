@@ -63,6 +63,7 @@ YES, NO = "Yes", "No"
 # ------------------------------------------------------------------ texts (simplified writing rules)
 WAIT = "Each map takes about %d seconds with the default Map Options." % MAP_SECONDS
 WAIT_BASE = "Each map takes about %d seconds." % MAP_SECONDS      # the base game has no Map Options
+CHECK_BUILDING = "Building the map."      # no event comes until it is built
 SLOW_OPTIONS = "A low Land Mass Ratio with a high Water value can make one map take many minutes."
 HELP = ("Set the minimum number of ports and towns. A port lets you travel by ship. North band: the top part of the "
         "map, in percent. Each map takes about %d seconds with the default Map Options. Set brother conditions too, "

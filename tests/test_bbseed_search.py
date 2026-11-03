@@ -540,7 +540,7 @@ def test_checking_seeds_with_map_conditions_reports_every_seed(monkeypatch):
     got = {m["seed"]: m for m in matches_of(events)}
     assert got["0000000003"]["failure"] == "Ports: 3, needs 9" and got["0000000009"]["failure"] is None
     assert all(m["map"] and m["roster"] and m["stable"] for m in got.values())
-    assert FakeLab.world_map_calls == 4 and FakeLab.roster_calls == 4
+    assert FakeLab.world_map_calls == 2 and FakeLab.roster_calls == 4, "one map for each seed; the roster is rolled again"
     # with a roster condition too, a checked seed whose roster fails still gets its map
     events = run_worker(monkeypatch, FakeLab(), criteria={"stars_by_slot": {"1": "hp1"}, "map": {"ports": 9}},
                         seeds=["0000000002"])
@@ -982,9 +982,51 @@ def test_a_match_with_a_map_carries_the_start_tile_of_the_confirming_map(monkeyp
 
 @pytest.mark.core
 def test_a_checked_seed_gets_a_start_on_its_map(monkeypatch):
-    events = run_worker(monkeypatch, FakeLab(), criteria={"map": {"ports": 1}}, seeds=["0000000004"])
+    lab = FakeLab()
+    events = run_worker(monkeypatch, lab, criteria={"map": {"ports": 1}}, seeds=["0000000004"])
     [match] = matches_of(events)
     assert match["map"]["start"] == [7, 40]
+    assert lab.map_calls == [("spawn", False)], "its one map is built, on through the start"
+
+
+@pytest.mark.edge
+def test_a_checked_seed_with_brother_conditions_builds_one_map_too(monkeypatch):
+    lab = FakeLab()
+    events = run_worker(monkeypatch, lab, criteria={"stars_by_slot": {"1": "hp1"}, "map": {"ports": 1}}, seeds=["0000000004"])
+    [match] = matches_of(events)
+    assert match["map"]["start"] == [7, 40] and lab.map_calls == [("spawn", False)]
+
+
+@pytest.mark.dirty
+def test_a_checked_seed_without_a_start_keeps_its_map(monkeypatch):
+    lab = FakeLab()
+    lab.spawn_error = "the index 'x' does not exist"
+    events = run_worker(monkeypatch, lab, criteria={"map": {"ports": 1}}, seeds=["0000000004"])
+    [match] = matches_of(events)
+    assert match["map"] and "start" not in match["map"] and match["failure"] is None
+    assert lab.map_calls == [("spawn", False), ("reseed", False)]
+    assert not [e for e in events if e[0] in ("error", "fatal")]
+
+
+@pytest.mark.core
+def test_a_checked_seed_still_rolls_its_roster_again(monkeypatch):
+    class OtherFreshRoster(FakeLab):
+        def roster_with_perks(self, seed, origin):
+            return [dict(b, name="Other", perk_groups=[], single_perks=[]) for b in self._bros(seed)]
+    events = run_worker(monkeypatch, OtherFreshRoster(), criteria={"map": {"ports": 1}}, seeds=["0000000004"])
+    [match] = matches_of(events)
+    assert not match["stable"], "the one map changes nothing for the roster's check"
+
+
+@pytest.mark.core
+def test_a_checked_deserters_seed_has_one_map_run_with_the_perk_trees(monkeypatch):
+    lab = DesertersLab()
+    events = run_worker(monkeypatch, lab, {"stars_by_slot": {"1": "hp1"}, "map": {"ports": 1}}, seeds=["0000000003"],
+                        origin=DESERTERS)
+    [match] = matches_of(events)
+    assert lab.map_calls == [("spawn", True)] and FakeLab.roster_calls == 0
+    assert match["map"]["start"] == [6, 40] and all(b["perk_groups"] == [] for b in match["roster"])
+    assert match["stable"] and match["failure"] is None
 
 
 @pytest.mark.dirty

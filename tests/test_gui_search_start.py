@@ -2224,6 +2224,51 @@ def test_the_build_map_button_uses_the_check_path_and_builds_one_map(near_app, c
     assert near_app._near is not None, "the check leaves the card"
 
 
+def _checked_with_map(app, seed="0000000007"):
+    app._run = dict(RUN, map={"ports": 4}, checking=True, north_band=25)
+    summary = small_map()
+    app._ev_match({"seed": seed, "roster": roster_of(), "stable": True, "failure": None, "map": summary})
+    return summary
+
+
+@pytest.mark.core
+def test_the_built_map_goes_on_the_near_card_in_place_of_the_button(near_app):
+    near_app._run = dict(RUN, map={"ports": 4})
+    near_app._ev_near(near_payload())
+    summary = _checked_with_map(near_app)
+    near = near_app._near
+    assert near["map"] is summary and near["north_band"] == 25
+    texts = [b.cget("text") for b in _buttons_of(near["card"])]
+    assert "Show map" in texts and "Build map" not in texts
+    assert _cards(near_app)[0] is near["card"], "still on top of the results"
+    assert len(_cards(near_app)) == 2, "the old card is gone"
+
+
+@pytest.mark.edge
+def test_the_map_of_another_seed_stays_off_the_near_card(near_app):
+    near_app._run = dict(RUN, map={"ports": 4})
+    near_app._ev_near(near_payload())
+    _checked_with_map(near_app, seed="0000000009")
+    assert near_app._near["map"] is None
+    assert "Build map" in [b.cget("text") for b in _buttons_of(near_app._near["card"])]
+
+
+@pytest.mark.core
+def test_a_check_with_a_map_says_it_is_building_the_map_once_the_worker_is_ready(near_app):
+    from bbreroll import map_view
+    near_app._run = dict(RUN, map={"ports": 4}, checking=True)
+    near_app._ev_ready((1, 1, ROSTER_INFO))
+    assert near_app.watch_var.get() == map_view.CHECK_BUILDING
+
+
+@pytest.mark.edge
+@pytest.mark.parametrize("run", [dict(RUN, checking=True), dict(RUN, map={"ports": 4})])
+def test_other_runs_still_say_how_many_workers_are_ready(near_app, run):
+    near_app._run = dict(run)
+    near_app._ev_ready((1, 2, ROSTER_INFO))
+    assert near_app.watch_var.get() == "Loading: 1 of 2 workers are ready"
+
+
 @pytest.mark.edge
 def test_build_map_during_a_search_says_to_stop_first(near_app, calls):
     near_app._run = dict(RUN, map={"ports": 4})

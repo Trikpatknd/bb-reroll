@@ -308,8 +308,8 @@ def test_info_reports_the_map_options_at_legends_defaults(legends_lab):
 def test_real_search_finds_a_port_rich_map(town_maps):
     """search() with a map condition, in a real worker process (map-search Task 9). The seed is checked (seeds=[...]),
     not searched for: a search would build a whole map (~25 s) per seed tested. A checked seed goes the whole map
-    path all the same — the sift map, the roster, the confirming roster and map, the stable flag, the payload — with
-    two whole maps. TOWN_SEEDS[0] has 1 port at Legends' default Map Options (map-search Task 6); its map from this
+    path all the same — the map, the roster, the confirming roster, the stable flag, the payload — with one whole
+    map. TOWN_SEEDS[0] has 1 port at Legends' default Map Options (map-search Task 6); its map from this
     session's `town_maps` (the same default Map Options, black-market counter 0) must be the search's."""
     from bbseed.search import search
     seed = TOWN_SEEDS[0]
@@ -321,7 +321,7 @@ def test_real_search_finds_a_port_rich_map(town_maps):
     assert match["seed"] == seed and match["failure"] is None and match["stable"]
     assert len(match["roster"]) == 2 and all(bro.get("perk_groups") for bro in match["roster"])   # confirmed roll
     assert sum(t["port"] for t in match["map"]["towns"]) >= 1
-    # the confirming map is run on through the start (stage 2 C1): the same map plus the party's square
+    # a checked seed's map is run on through the start (stage 2 C1): the same map plus the party's square
     start = match["map"]["start"]
     assert len(start) == 2 and all(isinstance(v, int) for v in start)
     assert {k: v for k, v in match["map"].items() if k != "start"} == town_maps.maps[seed]["map"]
