@@ -52,7 +52,7 @@ def test_the_events_are_the_same_through_json(tmp_path):
         S.main(["--profile", "legends", "--origin", "trader_scenario", "--events-json"])
     """)
     got = run(command)
-    assert got == json.loads(json.dumps(EVENTS)), "one line per event, nothing else on the output"
+    assert [list(event) for event in got] == json.loads(json.dumps(EVENTS)), "one line per event, nothing else on the output"
 
 
 @pytest.mark.core
