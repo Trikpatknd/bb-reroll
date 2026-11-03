@@ -2080,6 +2080,9 @@ class App(ctk.CTk):
         self._announced[what] = now
         return True
 
+    def _ev_notice(self, payload):
+        self._show_notice(str(payload), kind="info")
+
     def _ev_error(self, payload):
         self._run["errors"] = self._run.get("errors", 0) + 1
         if self._run["errors"] == 1:        # show the first one; a count follows when the run ends

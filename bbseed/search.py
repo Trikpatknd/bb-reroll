@@ -44,7 +44,7 @@ import sys
 import time
 import traceback
 
-from .nearness import differences as near_differences, distance as near_distance
+from .nearness import differences as near_differences, distance as near_distance, slot_distance
 
 STATS = ("hp", "fat", "res", "init", "msk", "rsk", "mdf", "rdf")
 
@@ -267,12 +267,14 @@ class Odds:
     not true by construction: both seedings use the same seed string (engine fact 2), so the roster's draws replay
     the first draws of the map's stream. It is plausible because a map's ports and towns depend on thousands of
     draws; it is not measured.
-    With map conditions only, a seed is added with no slot results (its roster has no condition to meet)."""
+    With map conditions only, a seed is added with no slot results (its roster has no condition to meet).
+    A seed that stopped early (search.prune) says nothing about the later slots, so each slot has its own count."""
 
     def __init__(self, map_wanted=False):
         """map_wanted: the search has map conditions — chance() is None until a map was tested."""
         self.tested = 0
         self.passed = []          # per slot: seeds on which that recruit met his criteria
+        self.slot_tested = []     # per slot: seeds that got as far as that recruit
         self.team = None          # seeds on which the roster met its whole-roster criteria (None: there are none)
         self.map = None           # [maps built, maps that met the map conditions] (None: no map built)
         self.map_wanted = map_wanted
@@ -284,18 +286,25 @@ class Odds:
         self.add([slot_failure(slot, bro, criteria) is None for slot, bro in enumerate(roster, 1)], team, map)
 
     def add(self, passes, team=None, map=None):
-        """One seed: per slot whether that recruit met his criteria, whether the roster met the whole-roster ones
-        (None: no such condition), whether its map met the map conditions (None: no map was built for it)."""
+        """One seed: per slot whether that recruit met his criteria (None, or a list that ends early: not known for him),
+        whether the roster met the whole-roster ones (None: no such condition), whether its map met the map conditions
+        (None: no map was built for it)."""
         self.tested += 1
-        while len(self.passed) < len(passes):
-            self.passed.append(0)
+        self._grow(len(passes))
         for i, ok in enumerate(passes):
-            if ok:
-                self.passed[i] += 1
+            if ok is not None:
+                self.slot_tested[i] += 1
+                if ok:
+                    self.passed[i] += 1
         if team is not None:
             self.team = (self.team or 0) + bool(team)
         if map is not None:
             self._add_map(1, int(bool(map)))
+
+    def _grow(self, slots):
+        while len(self.passed) < slots:
+            self.passed.append(0)
+            self.slot_tested.append(0)
 
     def _add_map(self, built, passed):
         if self.map is None:
@@ -303,21 +312,22 @@ class Odds:
         self.map[0] += built
         self.map[1] += passed
 
-    def merge(self, tested, passed, team=None, map=None):
+    def merge(self, tested, passed, team=None, map=None, slot_tested=None):
         self.tested += tested
-        while len(self.passed) < len(passed):
-            self.passed.append(0)
+        self._grow(len(passed))
         for i, n in enumerate(passed):
             self.passed[i] += n
+            self.slot_tested[i] += tested if slot_tested is None else slot_tested[i]
         if team is not None:
             self.team = (self.team or 0) + team
         if map is not None:
             self._add_map(*map)
 
     def take(self):
-        """(tested, passed, team, map) since the last take, and start counting afresh (for the workers)."""
-        out = (self.tested, list(self.passed), self.team, None if self.map is None else list(self.map))
-        self.tested, self.passed, self.team, self.map = 0, [], None, None
+        """(tested, passed, team, map, slot_tested) since the last take, and start counting afresh (for the workers)."""
+        out = (self.tested, list(self.passed), self.team, None if self.map is None else list(self.map),
+               list(self.slot_tested))
+        self.tested, self.passed, self.team, self.map, self.slot_tested = 0, [], None, None, []
         return out
 
     def brothers_chance(self):
@@ -327,8 +337,9 @@ class Odds:
         if not self.tested:
             return None
         p = 1.0
-        for n in self.passed:
-            p *= n / self.tested
+        for n, seen in zip(self.passed, self.slot_tested):
+            if seen:
+                p *= n / seen
         if self.team is not None:
             p *= self.team / self.tested
         return p
@@ -357,7 +368,7 @@ class Odds:
 
     def never(self):
         """Slots (1 = first) that have not passed once."""
-        return [i + 1 for i, n in enumerate(self.passed) if n == 0]
+        return [i + 1 for i, n in enumerate(self.passed) if n == 0 and self.slot_tested[i]]
 
 
 # ---------------------------------------------------------------------- seeds
@@ -399,6 +410,58 @@ NEAR_MAPS = 100
 # run: early on the nearest seed changes often and nobody sees it, and those rolls cost 4 % of a 4,000-seed search.
 NEAR_CONFIRM_SHARE = 0.9
 PROGRESS_SECONDS = 1.0      # how often a worker reports its count
+# Early exit (Lab.roster's stop_after): every this many seeds a worker rolls the roster in full and compares what the stop
+# read with the finished roster. A difference turns early exit off for the rest of the worker's run.
+EARLY_AUDIT_SEEDS = 200
+EARLY_EXIT_OFF = ("A brother changed after BB Reroll read him. The search goes on without the early stop for this origin: "
+                  "it is slower, and the results stay correct.")
+
+
+def prune(distance_so_far, best):
+    """Stop a seed? True when the distance of its brothers so far is already no better than the best seed found: a distance
+    only grows as more brothers roll, and an equally near seed does not replace the best one. So the seed cannot match and
+    cannot be the nearest. While the brothers so far are exact (0, 0) the seed goes on: it can still match, or have a nearer
+    map. Only the first two parts count (a map is built after the roster). best None: nothing to compare with yet."""
+    if best is None:
+        return False
+    so_far, target = tuple(distance_so_far[:2]), tuple(best[:2])
+    return so_far > target or (so_far == target and so_far != (0, 0))
+
+
+class _EverySlotFrom:
+    """The slots from `first` on, for Lab.roster's stop_slots."""
+
+    def __init__(self, first):
+        self.first = first
+
+    def __contains__(self, slot):
+        return slot >= self.first
+
+
+def _stop_slots(criteria, final_from):
+    """The brothers whose completion can stop a seed: from final_from on (before that a later part of the origin can still
+    change them), and only those a condition reads. None: no brother can (an "any brother" background needs the whole
+    roster to say anything)."""
+    if (criteria.get("backgrounds_by_slot") or {}).get(ANY_BROTHER):
+        return None
+    tiers, backgrounds = criteria.get("tiers_by_slot") or {}, criteria.get("backgrounds_by_slot") or {}
+    stars = criteria["stars_by_slot"]
+    if criteria["banned"] or "*" in stars or "*" in tiers or (criteria["required"] and criteria["required_slots"] is None):
+        return _EverySlotFrom(final_from)
+    wanted = set(stars) | set(tiers) | set(backgrounds)
+    slots = {int(s) for s in wanted} | set(criteria["required_slots"] or () if criteria["required"] else ())
+    return {s for s in slots if s >= final_from} or None
+
+
+def _final_from(profile, origin):
+    """The catalog's first slot from which on this origin's brothers are final; None when it is not known (no catalog yet, a
+    mod's origin it does not hold): then no seed stops early."""
+    try:
+        from . import catalog
+        found = (catalog.load(profile) or {}).get("talents", {}).get(origin) or {}
+    except Exception:           # (the search works without it, only slower)
+        return None
+    return found.get("final_from")
 
 # The town fields of a map summary that the real game was checked against (CLAUDE.md engine fact 16): the confirming
 # map of a match must have the sift map's towns in these.
@@ -434,7 +497,7 @@ def _make_lab(profile, mod_settings):
     return Lab(profile, mod_settings).watch_rolls()      # stat rolls: criteria and results (~1 % slower)
 
 
-def _worker(index, workers, profile, mod_settings, origin, criteria, start, limit, seeds, out):
+def _worker(index, workers, profile, mod_settings, origin, criteria, start, limit, seeds, out, final_from=None):
     """Tests seeds start + index, start + index + workers, ... (or every workers-th of an
     explicit seed list) and reports to the queue.
 
@@ -446,6 +509,10 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     every seed gets its whole map run on through the start, and the roster comes from that run (and from the confirming
     run); the map conditions, if any, are checked on the same map. Checked seeds (`seeds`) are rolled on a new world state and
     get everything (a map too, when there are map conditions), whatever fails.
+
+    final_from (the catalog's, or None): a sift roster may stop as soon as a brother from that slot on makes it worse than
+    the best seed so far (prune), except with a map per seed, where the map run is the cost. Every EARLY_AUDIT_SEEDS seeds
+    the roster is rolled in full and compared with what the stop read.
 
     A map run that fails is an "error" event for that seed and the worker goes on (about 3 in 1,000 Legends seeds
     raise in guaranteeAllBuildingsInSettlements). Only when the worker's first two map runs both fail, without one
@@ -466,6 +533,9 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
     state = {"tested": 0, "last": 0.0, "maps_work": False, "first_map_error": None, "map_error": None, "seed": None,
              "near": None, "held": None, "seen": 0, "exact": False}
     want_near = not checking and (want_map is not None or roster_conditions(criteria))
+    stop_slots = None
+    if final_from is not None and want_near and not deserters and not map_first:
+        stop_slots = _stop_slots(criteria, final_from)
 
     def numbered():
         n = start + index
@@ -584,6 +654,34 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             if held is not None and not state["exact"] and not confirm_near(*held):
                 state["near"] = None
 
+        def stopping_roster(seed):
+            """A sift roster that may stop early: the roster, or None after a stop (the seed is counted here)."""
+            nonlocal stop_slots
+            seen = []
+            best = (0, 0, 0) if state["exact"] else state["near"]
+            audit = (state["seen"] - 1) % EARLY_AUDIT_SEEDS == 0     # the first seed too: it shows a wrong catalog at once
+            total = [0, 0]
+
+            def stop_after(slot, bro):
+                if bro is None:     # (the catalog said he can be read: this roster is rolled in full)
+                    return False
+                misses, short = slot_distance(slot, bro, criteria)
+                seen.append((slot, bro, (misses, short)))
+                total[0] += misses
+                total[1] += short
+                return not audit and prune(total, best)
+            roster = lab.roster(seed, origin, fresh=False, stop_after=stop_after, stop_slots=stop_slots)
+            if roster is None:
+                passes = [None] * max(slot for slot, _bro, _found in seen)
+                for slot, _bro, found in seen:
+                    passes[slot - 1] = found == (0, 0)
+                odds.add(passes)
+                return None
+            if audit and any(slot_distance(slot, roster[slot - 1], criteria) != found for slot, _bro, found in seen):
+                stop_slots = None
+                out.put(("notice", index, EARLY_EXIT_OFF))
+            return roster
+
         def sift(seed):
             """(roster, map summary or None, why there is no map or None) of a seed to confirm, or None. A checked
             seed whose map run failed still has its roster: the map is None and the reason is the third part.
@@ -615,7 +713,12 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
                 # the sift roll (kept for the stable flag); after a map run the lab builds a new world state anyway
                 return lab.roster(seed, origin, fresh=checking), summary, None
             # sift on the reused world state (fast); an explicit seed is rolled on a fresh one
-            roster = lab.roster(seed, origin, fresh=checking)
+            if stop_slots is not None:
+                roster = stopping_roster(seed)
+                if roster is None:
+                    return None
+            else:
+                roster = lab.roster(seed, origin, fresh=checking)
             ok = first_failure(roster, criteria) is None
             if want_map is None or not (ok or checking):
                 odds.add_roster(roster, criteria)
@@ -721,6 +824,7 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
     limit, and always with a map per seed)): the nearest seed so far, while
     no seed matches: at NEAR_SEEDS tested seeds (a map per seed: NEAR_MAPS maps), on each nearer seed after that, and at the
     end of a run with no match,
+    "notice" (text: something the player should know, the search goes on),
     "error" / "fatal" (text), "finished" (seeds tested, seconds, matches, stopped early?).
     A fatal event that starts with MAP_FATAL (the lab cannot build maps of this game setup) ends the search: it is
     sent once, however many workers find it.
@@ -744,10 +848,11 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
         emit("fatal", "%s" % (e.args[0] if e.args else e))
         emit("finished", (0, 0.0, 0, False))
         return []
+    final_from = _final_from(profile, origin) if seeds is None else None
     ctx = mp.get_context("spawn")
     out = ctx.Queue()
     procs = [ctx.Process(target=_worker, daemon=True,
-                         args=(i, workers, profile, mod_settings, origin, criteria, start, max_seeds, seeds, out))
+                         args=(i, workers, profile, mod_settings, origin, criteria, start, max_seeds, seeds, out, final_from))
              for i in range(workers)]
     for p in procs:
         p.start()
@@ -755,6 +860,7 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
     odds = Odds(map_wanted=criteria["map"] is not None)
     map_per_seed = origin == DESERTERS_SCRIPT or (criteria["map"] is not None and not roster_conditions(criteria))
     near = {"best": None, "shown": None}
+    noticed = set()
 
     def take_near(payload):
         best = near["best"]
@@ -798,6 +904,10 @@ def search(profile, origin, criteria, workers=None, count=1, max_seeds=None, sta
                 emit("match", payload)
             elif kind == "error":
                 emit("error", payload)
+            elif kind == "notice":
+                if payload not in noticed:      # (every worker can find the same)
+                    noticed.add(payload)
+                    emit("notice", payload)
             elif kind in ("done", "fatal"):
                 running -= 1
                 if kind == "fatal":
@@ -1116,6 +1226,8 @@ def main(argv=None):
                 print("   %s%s %s: has %s, the condition is %s" % (
                     "brother %d: " % d["slot"] if d["slot"] else "", d["kind"], d["name"], d["have"], d["want"]))
             print(flush=True)
+        elif kind == "notice":
+            print("NOTE: %s" % payload, flush=True)
         elif kind in ("error", "fatal"):
             print("%s: %s" % (kind.upper(), payload), flush=True)
         elif kind == "finished":

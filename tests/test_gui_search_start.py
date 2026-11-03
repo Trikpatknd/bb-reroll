@@ -2268,3 +2268,13 @@ def test_a_stopped_search_shows_an_unchecked_roster_as_not_checked_yet(near_app)
     near_app._ev_near(near_payload(confirmed=True))      # its checked copy: no longer "not checked"
     assert not any(near_view.NOT_CHECKED in t for t in _card_texts(near_app))
     assert len(_cards(near_app)) == 1
+
+
+@pytest.mark.dirty
+def test_a_notice_of_the_search_shows_in_the_banner(app):
+    from bbseed.search import EARLY_EXIT_OFF
+    app._ev_notice(EARLY_EXIT_OFF)
+    try:
+        assert app.notice_var.get() == EARLY_EXIT_OFF
+    finally:
+        app._clear_notice()

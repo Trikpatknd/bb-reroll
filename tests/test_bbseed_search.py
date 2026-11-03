@@ -275,11 +275,11 @@ class ListQueue:
         self.items.append(item)
 
 
-def run_worker(monkeypatch, lab, criteria, seeds=None, limit=30, origin="trader_scenario"):
+def run_worker(monkeypatch, lab, criteria, seeds=None, limit=30, origin="trader_scenario", final_from=None):
     """One search worker (index 0 of 1, seeds 0, 1, ... limit - 1) on the stand-in lab: its events."""
     monkeypatch.setattr(S, "_make_lab", lambda profile, mod_settings: lab)
     out = ListQueue()
-    S._worker(0, 1, "legends", None, origin, normalize(criteria), 0, limit, seeds, out)
+    S._worker(0, 1, "legends", None, origin, normalize(criteria), 0, limit, seeds, out, final_from)
     return out.items
 
 
@@ -1297,3 +1297,205 @@ def test_cli_near_prints_the_differences(monkeypatch, capsys):
     assert "0000000003" not in without
     printed = run_cli_events(monkeypatch, capsys, [("near", near)], argv + ["--near"])
     assert "0000000003" in printed and "hp" in printed and "(0, 1, 0)" in printed
+import random
+
+
+# ====================================================================== early exit
+class StopLab(FakeLab):
+    """A roster of `size` brothers whose stars come from the seed (random.Random(seed)). It answers stop_after as Lab.roster
+    does: after each brother but the last. asked: per seed the slots it asked about."""
+
+    def __init__(self, size=4, changes_later=False, **kw):
+        super().__init__(**kw)
+        self.size, self.changes_later = size, changes_later
+        self.asked, self.full_rolls, self.stopped_rolls = {}, 0, 0
+
+    def _bros(self, seed):
+        rng = random.Random(int(seed))
+        return [bro(traits=["dumb"] if rng.random() < .1 else ["brave"], **{s: rng.randrange(4) for s in ("hp", "res", "msk")})
+                for _ in range(self.size)]
+
+    def roster(self, seed, origin, fresh=True, probe=None, stop_after=None, stop_slots=None):
+        FakeLab.roster_calls += 1
+        bros = self._bros(seed)
+        asked = self.asked.setdefault(seed, [])
+        for slot, one in enumerate(bros[:-1], 1):
+            if stop_after is not None and (stop_slots is None or slot in stop_slots):
+                asked.append(slot)
+                seen = dict(one, stars=dict(one["stars"], hp=(one["stars"]["hp"] + 1) % 4)) if self.changes_later else one
+                if stop_after(slot, seen):
+                    self.stopped_rolls += 1
+                    return None
+        self.full_rolls += 1
+        return bros
+
+
+RARE = {"stars_by_slot": {"1": {"hp": 3, "res": 3}, "2": {"msk": 3}}, "banned": ["dumb"]}
+
+
+def near_or_match(events):
+    near = [p for k, _i, p in events if k == "near"]
+    return [p["seed"] for p in matches_of(events)], (near[-1]["seed"], near[-1]["distance"]) if near else None
+
+
+@pytest.mark.core
+def test_prune_compares_the_first_two_parts():
+    assert S.prune((0, 2), (0, 1, 0)) is True
+    assert S.prune((0, 1), (0, 1, 0)) is True, "equal: an equally near seed does not replace the best one"
+    assert S.prune((0, 0), (0, 0, 3)) is False, "the brothers so far are exact: it can match, or have a better map"
+    assert S.prune((0, 0), (0, 0, 0)) is False, "and an exact match after an exact match is a match"
+    assert S.prune((1, 0), (0, 9, 0)) is True
+    assert S.prune((0, 1), (0, 0, 3)) is True
+    assert S.prune((5, 5), None) is False
+
+
+@pytest.mark.edge
+def test_seeds_that_all_tie_stop_early_and_keep_the_first(monkeypatch):
+    """A New Company's stars are fixed: every seed is equally far from a condition on them."""
+    class Fixed(StopLab):
+        def _bros(self, seed):
+            return [bro(hp=1) for _ in range(self.size)]
+    lab = Fixed()
+    events = run_worker(monkeypatch, lab, {"stars_by_slot": {"1": {"hp": 3}}}, limit=50, final_from=1)
+    assert [p["seed"] for k, _i, p in events if k == "near"][0] == "0000000000"
+    assert {p["seed"] for k, _i, p in events if k == "near"} == {"0000000000"}
+    assert lab.stopped_rolls > 40
+
+
+@pytest.mark.core
+def test_the_same_matches_with_and_without_early_exit(monkeypatch):
+    plain = run_worker(monkeypatch, StopLab(), RARE, limit=600)
+    lab = StopLab()
+    early = run_worker(monkeypatch, lab, RARE, limit=600, final_from=1)
+    assert matches_of(plain), "the sample has matches"
+    assert [m["seed"] for m in matches_of(early)] == [m["seed"] for m in matches_of(plain)]
+    assert lab.stopped_rolls > 300, "and most seeds stop early"
+
+
+@pytest.mark.core
+def test_the_same_nearest_seed_with_and_without_early_exit(monkeypatch):
+    never = {"stars_by_slot": {"1": {"hp": 3, "res": 3, "msk": 3}, "2": {"hp": 3, "res": 3, "msk": 3},
+                               "3": {"hp": 3, "res": 3, "msk": 3}}}
+    plain = run_worker(monkeypatch, StopLab(), never, limit=800)
+    lab = StopLab()
+    early = run_worker(monkeypatch, lab, never, limit=800, final_from=1)
+    assert near_or_match(plain) == near_or_match(early) and near_or_match(plain)[1] is not None
+    assert lab.stopped_rolls > 200
+
+
+@pytest.mark.core
+def test_a_later_brothers_condition_stops_no_earlier_than_that_brother(monkeypatch):
+    lab = StopLab()
+    run_worker(monkeypatch, lab, {"stars_by_slot": {"3": {"hp": 3}}}, limit=50, final_from=1)
+    assert {tuple(a) for a in lab.asked.values()} == {(3,)}, "only brother 3 is read"
+    assert lab.stopped_rolls > 0
+
+
+@pytest.mark.edge
+def test_a_slot_before_final_from_is_never_asked(monkeypatch):
+    lab = StopLab()
+    run_worker(monkeypatch, lab, {"banned": ["dumb"]}, limit=50, final_from=3)
+    assert all(slot >= 3 for asked in lab.asked.values() for slot in asked)
+    lab = StopLab()
+    run_worker(monkeypatch, lab, {"stars_by_slot": {"1": {"hp": 3}}}, limit=50, final_from=3)
+    assert lab.stopped_rolls == 0 and not any(lab.asked.values()), "its only condition is on a slot that is not final"
+
+
+@pytest.mark.edge
+def test_any_brother_conditions_never_stop_early(monkeypatch):
+    lab = StopLab()
+    criteria = {"stars_by_slot": {"1": {"hp": 3}}, "backgrounds_by_slot": {"any": ["background.monk"]}}
+
+    class WithBackground(StopLab):
+        def _bros(self, seed):
+            return [dict(b, background="background.monk") for b in StopLab._bros(self, seed)]
+    lab = WithBackground()
+    run_worker(monkeypatch, lab, criteria, limit=30, final_from=1)
+    assert lab.stopped_rolls == 0 and not any(lab.asked.values())
+
+
+@pytest.mark.edge
+def test_a_map_per_seed_search_never_stops_early(monkeypatch):
+    lab = StopLab()
+    run_worker(monkeypatch, lab, {"map": {"ports": 11}}, limit=5, final_from=1)
+    assert lab.stopped_rolls == 0 and not any(lab.asked.values())
+
+
+@pytest.mark.edge
+def test_no_final_from_never_stops_early(monkeypatch):
+    lab = StopLab()
+    run_worker(monkeypatch, lab, RARE, limit=30)
+    assert lab.stopped_rolls == 0 and not any(lab.asked.values())
+    assert S._final_from("no such profile", "trader_scenario") is None
+
+
+@pytest.mark.core
+def test_the_catalog_answer_is_used_only_for_an_origin_it_holds(monkeypatch):
+    from bbseed import catalog
+    monkeypatch.setattr(catalog, "load", lambda profile=None, mod_settings=None: {"talents": {
+        "trader_scenario": {"final_from": 1}, "old_scenario": {"samples": 12}}})
+    assert S._final_from("legends", "trader_scenario") == 1
+    assert S._final_from("legends", "old_scenario") is None
+    assert S._final_from("legends", "a_mod_scenario") is None
+    monkeypatch.setattr(catalog, "load", lambda profile=None, mod_settings=None: None)
+    assert S._final_from("legends", "trader_scenario") is None
+
+
+@pytest.mark.core
+def test_the_odds_stay_within_ten_percent(monkeypatch):
+    criteria = {"stars_by_slot": {"1": {"hp": 2}, "2": {"res": 2}, "3": {"msk": 1}}}
+    plain = odds_of(run_worker(monkeypatch, StopLab(), criteria, limit=3000))
+    lab = StopLab()
+    early = odds_of(run_worker(monkeypatch, lab, criteria, limit=3000, final_from=1))
+    assert lab.stopped_rolls > 500
+    assert early.tested == plain.tested == 3000
+    assert early.chance() == pytest.approx(plain.chance(), rel=0.10)
+    assert early.never() == []
+    assert early.slot_tested[0] == 3000 and early.slot_tested[2] < 3000
+
+
+@pytest.mark.edge
+def test_a_slot_no_seed_reached_is_not_a_slot_that_never_passed():
+    odds = Odds()
+    odds.add([False])
+    assert odds.never() == [1]
+    odds = Odds()
+    odds.add([True, None, False])
+    odds.add([True])
+    assert odds.never() == [3] and odds.slot_tested == [2, 0, 1]
+    assert odds.brothers_chance() == 0.0
+    other = Odds()
+    other.merge(*odds.take())
+    assert other.tested == 2 and other.slot_tested == [2, 0, 1]
+    old = Odds()
+    old.merge(10, [5, 10])       # a count from before the per-slot counts: every slot saw every seed
+    assert old.brothers_chance() == 0.5
+
+
+@pytest.mark.dirty
+def test_a_wrong_stop_turns_early_exit_off_and_says_so(monkeypatch):
+    monkeypatch.setattr(S, "EARLY_AUDIT_SEEDS", 10)
+    lab = StopLab(changes_later=True)
+    events = run_worker(monkeypatch, lab, {"stars_by_slot": {"1": {"hp": 3}}}, limit=30, final_from=1)
+    notices = [p for k, _i, p in events if k == "notice"]
+    assert notices == [S.EARLY_EXIT_OFF], "one notice: the first roster shows it"
+    assert lab.stopped_rolls == 0 and lab.full_rolls == 30
+    assert all(not a for seed, a in lab.asked.items() if int(seed) > 0), "and no brother is read after that"
+    expected = [str(n).zfill(10) for n in range(30) if lab._bros(str(n))[0]["stars"]["hp"] >= 3]
+    assert [m["seed"] for m in matches_of(events)] == expected
+
+
+@pytest.mark.core
+def test_search_passes_one_notice_on(monkeypatch):
+    monkeypatch.setattr(S, "EARLY_AUDIT_SEEDS", 10)
+    monkeypatch.setattr(S, "_final_from", lambda profile, origin: 1)
+    _found, events = run_search(monkeypatch, lambda: StopLab(changes_later=True), {"stars_by_slot": {"1": {"hp": 3}}},
+                                workers=2, max_seeds=6, count=99)
+    assert [p for k, p in events if k == "notice"] == [S.EARLY_EXIT_OFF]
+
+
+@pytest.mark.edge
+def test_a_checked_seed_is_rolled_in_full(monkeypatch):
+    lab = StopLab()
+    events = run_worker(monkeypatch, lab, RARE, seeds=["0000000005"], final_from=1)
+    assert len(matches_of(events)) == 1 and lab.stopped_rolls == 0 and not any(lab.asked.values())
