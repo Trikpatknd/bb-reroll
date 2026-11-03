@@ -77,7 +77,7 @@ The first start after installing or updating the game or a mod works out what ea
 
 **Closest seed.** Some conditions are very rare. When no seed matches after 35,000 seeds (with a map for each seed: after 100 maps), or when a search ends with no match, an amber card shows the closest seed and how it differs. The search goes on: a nearer seed replaces the card, and a match removes it. "Closest" has a fixed order: first the number of trait and background differences, then the stars and stat rolls that are short, then the ports and towns that are short. So a seed with the right brothers and a wrong map is nearer than any seed with a wrong brother. **Build map** builds the map of the seed. "Not checked yet" means that BB Reroll did not roll the seed a second time: **Check this seed** does that.
 
-Speed with Legends is about 4 seeds per second per worker; each worker takes ~10 seconds to load the game's scripts.
+Speed with Legends is about 4 seeds per second per worker; each worker takes ~10 seconds to load the game's scripts. A seed stops as soon as a brother makes it no better than the best seed so far, so strict conditions on the first brothers are the fastest: the same seeds show, 1.3 to 2.4 times faster on most origins. Legends' Peasant Militia and Gladiators do not stop early: these origins change or read their brothers later. The first start after this update reads each origin again (about 2 minutes).
 
 ### Map conditions
 
