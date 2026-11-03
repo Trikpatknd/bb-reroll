@@ -75,6 +75,8 @@ The first start after installing or updating the game or a mod works out what ea
 
 **Check a seed** → **Show roster** shows the roster any seed gives for the chosen setup and origin — handy for a seed someone shared. Seed text is case-sensitive in the game (`SEEDTEST` and `seedtest` are different seeds); the search only produces digit seeds, so there is nothing to mistype.
 
+**Closest seed.** Some conditions are very rare. When no seed matches after 35,000 seeds (with a map for each seed: after 100 maps), or when a search ends with no match, an amber card shows the closest seed and how it differs. The search goes on: a nearer seed replaces the card, and a match removes it. "Closest" has a fixed order: first the number of trait and background differences, then the stars and stat rolls that are short, then the ports and towns that are short. So a seed with the right brothers and a wrong map is nearer than any seed with a wrong brother. **Build map** builds the map of the seed. "Not checked yet" means that BB Reroll did not roll the seed a second time: **Check this seed** does that.
+
 Speed with Legends is about 4 seeds per second per worker; each worker takes ~10 seconds to load the game's scripts.
 
 ### Map conditions
@@ -175,6 +177,7 @@ bb_reroll/
 │   ├── map_conditions.py         #   map conditions: labels, what a map can have at most, impossible conditions, the post's map line
 │   ├── map_view.py               #   the Map view without tkinter: fields, checks, settings, Map Options, saved Mod Options
 │   ├── map_picture.py            #   the map as a PNG picture (Pillow): the clipboard, a file
+│   ├── near_view.py              #   the closest seed's differences as lines for the card and the post
 │   └── trait_names.py            #   trait ID → display name
 ├── bbseed/                       # the search: the game's campaign-start scripts, run without the game
 │   ├── rng.py                    #   the game's seeded random generator
@@ -188,6 +191,7 @@ bb_reroll/
 │   ├── mapgen.py                 #   builds the map of a seed (the game's own map scripts), the map summary, the condition counts
 │   ├── mapdraw.py                #   the map as a picture (SVG, and the same numbers for the GUI's canvas)
 │   ├── search.py                 #   the parallel search (brothers and map) + match-odds estimate (+ command line)
+│   ├── nearness.py               #   how far a seed is from the conditions
 │   ├── talents.py                #   which stars the talent roll makes, which ones an origin fixes, background lists
 │   ├── rolls.py                  #   each stat roll's place in what the background can roll (low/mid/high)
 │   ├── traits.py                 #   what each trait does, from the game's tooltips
