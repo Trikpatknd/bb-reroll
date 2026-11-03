@@ -159,7 +159,7 @@ def test_the_last_result_can_be_scrolled_into_view(app):
         pump(app, lambda: False, 0.3)
         bottom = lambda w: w.winfo_rooty() + w.winfo_height()
         window = bottom(app)
-        last = app.match_list.winfo_children()[-1]
+        last = app.match_list.pack_slaves()[-1]
         assert bottom(canvas) <= window, "the list must end inside the window"
         assert bottom(last) <= bottom(canvas) + 2, "scrolled to the end, the last result is in view"
         assert canvas.winfo_height() >= 60, "the list keeps a usable height"
@@ -217,6 +217,7 @@ def map_app(app):
             window.destroy()
         app._map_windows.clear()
         app._matches.clear()
+        app._render_match_list()
         app._clear_notice()
         app._dismissed_notices.clear()
         app._bulk_check("banned", True)
@@ -1844,3 +1845,135 @@ def test_the_map_window_marks_city_state_names_only_off_a_verified_setup(map_app
         assert ("(name not verified)" in window.info_var.get()) is marked
         window.destroy()
         map_app._map_windows.clear()
+
+
+# ====================================================================== the results list
+# A card is added, replaced or removed on its own: rebuilding the whole list for each match kept the window busy
+# with many matches (A New Company, ~1 match in 8 seeds).
+def _checked_match(app, seed, roster=None):
+    app._run = {"origin": "Trading Caravan", "setup": "Legends", "checking": True}
+    app._ev_match({"seed": seed, "roster": roster or roster_of(), "stable": True, "failure": None})
+    return app._matches[0]
+
+
+def _cards(app):
+    """The cards on the screen, top first."""
+    return app.match_list.pack_slaves()
+
+
+@pytest.mark.core
+def test_a_new_match_leaves_the_other_cards_alone(app):
+    try:
+        first = _checked_match(app, "0000000001")["card"]
+        inside = first.winfo_children()
+        new = _checked_match(app, "0000000002")["card"]
+        assert _cards(app) == [new, first], "the newest card is on top, the other one is the same widget"
+        assert first.winfo_exists() and first.winfo_children() == inside
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.edge
+def test_two_hundred_results_can_be_removed_toggled_and_cleared(app):
+    roster = [dict(b, rolls={"hp": {"lo": 0, "hi": 9, "value": 5, "tier": "high"}}) for b in roster_of()]
+    try:
+        for n in range(200):
+            _checked_match(app, "%010d" % n, roster)
+        assert len(_cards(app)) == 200
+        assert [m["card"] for m in app._matches] == _cards(app), "the cards are in the order of the list"
+        gone = app._matches[100]
+        app._dismiss_match(gone)
+        assert len(_cards(app)) == 199 and not gone["card"].winfo_exists()
+        shown = app._matches[50]
+        others = [m["card"] for m in app._matches if m is not shown]
+        app._toggle_perks(shown)
+        assert len(_cards(app)) == 199
+        assert [m["card"] for m in app._matches] == _cards(app), "Details leaves the card in its place"
+        assert others == [m["card"] for m in app._matches if m is not shown], "and the other cards alone"
+        assert any("Rolls:" in t for t in _card_texts(app))
+        app._toggle_perks(shown)
+        assert not any("Rolls:" in t for t in _card_texts(app))
+        app._clear_matches()
+        assert _cards(app) == [] and app.match_list.winfo_children() == []
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.core
+def test_the_same_seed_again_replaces_its_card(app):
+    try:
+        old = _checked_match(app, "0000000001")["card"]
+        other = _checked_match(app, "0000000002")["card"]
+        new = _checked_match(app, "0000000001")["card"]
+        assert not old.winfo_exists()
+        assert _cards(app) == [new, other], "no second card for the seed"
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.edge
+def test_the_list_height_stops_growing_at_its_limit(app):
+    try:
+        for n in range(30):
+            _checked_match(app, "%010d" % n)
+        assert app.match_list.cget("height") == 300
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.edge
+def test_the_long_deserters_note_wraps_inside_the_window(app):
+    from bbreroll import map_view
+    before = app.origin_info_var.get()
+    app.deiconify()
+    app.geometry("980x940+40+40")
+    try:
+        app.origin_info_var.set(map_view.DESERTERS_INFO + " " + map_view.DESERTERS_INFO)
+        pump(app, lambda: False, 0.3)
+        assert app.origin_info_label.winfo_reqwidth() <= app.winfo_width()
+    finally:
+        app.origin_info_var.set(before)
+        app.withdraw()
+
+
+@pytest.mark.core
+def test_many_matches_pull_the_window_forward_once_and_notify_once(app, monkeypatch):
+    import gui
+    surfaced, told = [], []
+    monkeypatch.setattr(app, "_surface_window", lambda: surfaced.append(1))
+    monkeypatch.setattr(gui, "notification", type("N", (), {"notify": staticmethod(lambda **k: told.append(k))}))
+    monkeypatch.setattr(app, "_announced", {}, raising=False)
+    now = [1000.0]
+    monkeypatch.setattr(gui.time, "time", lambda: now[0])
+    app._run = {"origin": "Trading Caravan", "setup": "Legends", "checking": False}
+    match = lambda n: app._ev_match({"seed": "%010d" % n, "roster": roster_of(), "stable": True, "failure": None})
+    try:
+        for n in range(20):
+            match(n)
+        assert (len(surfaced), len(told)) == (1, 1)
+        now[0] += gui.SURFACE_SECONDS
+        match(20)
+        assert (len(surfaced), len(told)) == (2, 1), "the window again after its time on top ends"
+        now[0] += gui.NOTIFY_SECONDS
+        match(21)
+        assert (len(surfaced), len(told)) == (3, 2), "a notice again when the last one is gone"
+    finally:
+        app._clear_matches()
+
+
+@pytest.mark.edge
+def test_a_long_queue_of_events_leaves_the_window_time_for_stop(app, monkeypatch):
+    """Stop is a window event: with events always waiting the drain never gave it a turn (A New Company, 1,656 events
+    waiting and Stop not run after 200 s)."""
+    left = []
+
+    def slow(payload):
+        if payload == 0:
+            app.after(1, lambda: left.append(app._events.qsize()))
+        time.sleep(0.01)
+    monkeypatch.setattr(app, "_ev_slow", slow, raising=False)
+    for n in range(100):
+        app._events.put(("slow", n))
+    pump(app, lambda: left and app._events.empty(), 10.0)
+    assert app._events.empty(), "every event is handled"
+    assert left and left[0] > 0, "the window had its turn before the queue was empty"

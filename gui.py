@@ -124,6 +124,10 @@ def default_workers() -> int:
 SEEDS_TO_TEST = "Seeds to test"
 MATCHES_TO_FIND = "Matches to find"
 WORKERS = "Workers"
+# Many matches at once (A New Company: 1 in 8 seeds): the time one match keeps the window on top, and a notification's.
+SURFACE_SECONDS = 1.5
+NOTIFY_SECONDS = 10
+DRAIN_SECONDS = 0.1       # the most one turn of the event queue takes: the window has its own events, Stop is one
 
 
 # ─────────────────────── look ───────────────────────
@@ -534,6 +538,7 @@ class App(ctk.CTk):
         self._search_total = 0
         self._run = {}
         self._matches: list[dict] = []   # session-level list of results, newest first
+        self._announced: dict[str, float] = {}   # when a match last pulled the window forward / made a notification
         self._report_info: dict = {"version": None, "build_name": None,
                                    "battle_sisters": None, "origin": None,
                                    "map_options": {}}
@@ -643,7 +648,7 @@ class App(ctk.CTk):
         self.grid_help.grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=(2, 0))
         self.origin_info_var = ctk.StringVar(value="")
         self.origin_info_label = ctk.CTkLabel(cond, textvariable=self.origin_info_var, justify="left", anchor="w",
-                                              font=(FONT, 11), text_color=PALETTE["star"])
+                                              font=(FONT, 11), text_color=PALETTE["star"], wraplength=880)
         self.origin_info_label.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(4, 2))
         self.stars_frame = ctk.CTkFrame(cond, fg_color="transparent")
         self.stars_frame.grid(row=3, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 4))
@@ -1935,16 +1940,17 @@ class App(ctk.CTk):
 
     # ── events from the search ──
     def _drain_events(self):
+        end, waiting = time.perf_counter() + DRAIN_SECONDS, True
         try:
-            while True:
+            while time.perf_counter() < end:
                 kind, payload = self._events.get_nowait()
                 handler = getattr(self, "_ev_" + kind, None)
                 if handler:
                     handler(payload)
         except queue.Empty:
-            pass
+            waiting = False
         finally:
-            self.after(100, self._drain_events)
+            self.after(10 if waiting else 100, self._drain_events)
 
     def _ev_preparing(self, payload):
         name, done, total = payload
@@ -2036,22 +2042,33 @@ class App(ctk.CTk):
 
     def _ev_match(self, payload):
         # the same seed found or checked again replaces its earlier entry
-        self._matches = [m for m in self._matches if not (
-            m["seed"] == payload["seed"] and m["origin"] == self._run["origin"] and m["setup"] == self._run["setup"])]
+        for m in [m for m in self._matches if (
+                m["seed"] == payload["seed"] and m["origin"] == self._run["origin"] and m["setup"] == self._run["setup"])]:
+            self._drop_match(m)
         entry = dict(payload, ts=time.time(), origin=self._run["origin"], setup=self._run["setup"],
                      checked=self._run["checking"], info=dict(self._report_info),
                      north_band=self._run.get("north_band"))     # the band of this run: the map's ports count by it
         self._matches.insert(0, entry)
-        self._render_match_list()
+        self._fit_match_list()
+        self._add_match_card(entry)
         self.match_pane.grid()
         if not entry["checked"]:
-            self._surface_window()   # pull the window to front so the match is seen
-            if notification:
+            if self._announce("surface", SURFACE_SECONDS):
+                self._surface_window()   # pull the window to front so the match is seen
+            if notification and self._announce("notify", NOTIFY_SECONDS):
                 try:
                     notification.notify(title="BB Reroll: match",
                                         message=f"Seed {entry['seed']} matches ({entry['origin']}).", timeout=10)
                 except Exception:
                     pass
+
+    def _announce(self, what, seconds):
+        """True when `what` was last done at least `seconds` ago (and it counts as done now)."""
+        now = time.time()
+        if now - self._announced.get(what, float("-inf")) < seconds:
+            return False
+        self._announced[what] = now
+        return True
 
     def _ev_error(self, payload):
         self._run["errors"] = self._run.get("errors", 0) + 1
@@ -2231,9 +2248,15 @@ class App(ctk.CTk):
 
     # ── results ──
     def _render_match_list(self):
-        from bbseed.lab import perk_text, roll_text
+        """Every card again. For the changes that touch all of them; one match, one removed result or one Details
+        click changes one card (_add_match_card): rebuilding the list for each match kept the window busy."""
         for w in self.match_list.winfo_children():
             w.destroy()
+        self._fit_match_list()
+        for entry in self._matches:
+            self._add_match_card(entry, front=False)
+
+    def _fit_match_list(self):
         # the results row stretches only while it is shown (an empty row with weight takes space too).
         # When the window is too short for everything, grid takes the missing height from the rows
         # with weight, in proportion to it: the traits row (weight 4) gives up most of it, down to its
@@ -2245,72 +2268,87 @@ class App(ctk.CTk):
             self.match_pane.grid_remove()
             return
         # as tall as its content needs, up to a limit (it scrolls beyond that)
-        wanted = sum(64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1)
-                     + (20 if map_view.first_campaign_line(O.is_deserters(m["origin"]),
-                                                           (m.get("info") or {}).get("legends")) else 0)
-                     for m in self._matches)
-        self.match_list.configure(height=max(90, min(300, wanted)))
-        for entry in self._matches:
-            ok = entry.get("failure") is None
-            card = ctk.CTkFrame(self.match_list, corner_radius=8, border_width=1,
-                                fg_color=PALETTE["card"] if ok else PALETTE["card_other"],
-                                border_color=PALETTE["card_border"] if ok else PALETTE["card_other_border"])
-            card.pack(fill="x", padx=2, pady=3)
-            card.grid_columnconfigure(1, weight=1)
-            ctk.CTkLabel(card, text=f"Seed {entry['seed']}", font=(FONT, 14, "bold"), text_color=PALETTE["text"]).grid(
-                row=0, column=0, sticky="w", padx=(12, 8), pady=(8, 0))
-            sub = f"{entry['origin']} · {entry['setup']}"
-            if entry.get("checked"):
-                sub += ("  ·  Checked: matches the conditions" if ok else
-                        "  ·  Checked: " + explain_failure(entry["failure"], self._display_for,
-                                                           self._background_names()))
-            ctk.CTkLabel(card, text=sub, font=(FONT, 12), text_color=PALETTE["muted"] if ok else PALETTE["bad"],
-                         anchor="w").grid(row=0, column=1, sticky="w", pady=(8, 0))
-            buttons = ctk.CTkFrame(card, fg_color="transparent")
-            buttons.grid(row=0, column=2, sticky="e", padx=(4, 8), pady=(8, 0))
-            _button(buttons, "Copy seed", lambda s=entry["seed"]: self._copy_to_clipboard(s), width=84, height=26,
-                    font=(FONT, 11)).pack(side="left", padx=2)
-            _button(buttons, "Copy roster", lambda e=entry: self._copy_roster(e), width=90, height=26,
-                    font=(FONT, 11)).pack(side="left", padx=2)
-            share_btn = _button(buttons, "Copy seed post", lambda e=entry: self._copy_seed_share(e), width=108,
-                                height=26, font=(FONT, 11))
-            share_btn.pack(side="left", padx=2)
-            _attach_tooltip(share_btn, "Copy a seed post for the Legends Discord to the clipboard.")
-            has_details = any(b.get("perk_groups") or b.get("rolls") for b in entry["roster"])
-            if has_details:
-                details = _button(buttons, "Hide details" if entry.get("show_perks") else "Details",
-                                  lambda e=entry: self._toggle_perks(e), width=92, height=26, font=(FONT, 11))
-                details.pack(side="left", padx=2)
-                _attach_tooltip(details, "Show the stat rolls of each brother and, with Legends, his perk trees.")
-            if entry.get("map"):
-                map_btn = _button(buttons, "Show map", lambda e=entry: self._show_map(e), width=84, height=26,
-                                  font=(FONT, 11))
-                map_btn.pack(side="left", padx=2)
-                _attach_tooltip(map_btn, "Show the world map of this seed with its towns and ports. North is at the top.")
-            remove = _button(buttons, "✕", lambda e=entry: self._dismiss_match(e), kind="ghost", width=28, height=26,
-                             font=(FONT, 11))
-            remove.pack(side="left", padx=(6, 0))
-            _attach_tooltip(remove, "Remove this result from the list.")
-            if not entry.get("stable", True):
-                ctk.CTkLabel(card, text="⚠ This result is not stable. Do not use it.", font=(FONT, 12, "bold"),
-                             text_color=PALETTE["bad"]).grid(row=1, column=0, columnspan=3, sticky="w", padx=12)
-            ctk.CTkLabel(card, text="\n".join(roster_lines(entry["roster"])), font=("Consolas", 11), justify="left",
-                         anchor="w", text_color=PALETTE["text"]).grid(row=2, column=0, columnspan=3, sticky="w",
-                                                                      padx=12, pady=(4, 10))
-            first = map_view.first_campaign_line(O.is_deserters(entry["origin"]), (entry.get("info") or {}).get("legends"))
-            if first:       # Deserters on Legends: the map depends on the black-market counter (as the seed post says)
-                ctk.CTkLabel(card, text=first, font=(FONT, 12), justify="left", anchor="w", wraplength=880,
-                             text_color=PALETTE["muted"]).grid(row=4, column=0, columnspan=3, sticky="w",
-                                                               padx=12, pady=(0, 8))
-            if has_details and entry.get("show_perks"):
-                lines = []
-                for i, b in enumerate(entry["roster"], 1):
-                    lines.append(f"{i:2d}. {b['name']}. Rolls: {roll_text(b) or 'not known'}")
-                    if perk_text(b):
-                        lines.append(f"      Perk trees: {perk_text(b)}")
-                ctk.CTkLabel(card, text="\n".join(lines), font=(FONT, 11), justify="left", anchor="w", wraplength=880,
-                             text_color=PALETTE["muted"]).grid(row=3, column=0, columnspan=3, sticky="w",
-                                                               padx=12, pady=(0, 10))
+        wanted = 0
+        for m in self._matches:
+            wanted += (64 + 16 * len(m["roster"]) * (6 if m.get("show_perks") else 1)
+                       + (20 if map_view.first_campaign_line(O.is_deserters(m["origin"]),
+                                                             (m.get("info") or {}).get("legends")) else 0))
+            if wanted >= 300:
+                break
+        height = max(90, min(300, wanted))
+        if self.match_list.cget("height") != height:
+            self.match_list.configure(height=height)
+
+    def _add_match_card(self, entry, front=True, before=None):
+        """One result's card. front: above the other cards; else at the end of the list, or above the card before."""
+        import tkinter as tk
+        from bbseed.lab import perk_text, roll_text
+        ok = entry.get("failure") is None
+        card = ctk.CTkFrame(self.match_list, corner_radius=8, border_width=1,
+                            fg_color=PALETTE["card"] if ok else PALETTE["card_other"],
+                            border_color=PALETTE["card_border"] if ok else PALETTE["card_other_border"])
+        card.pack(fill="x", padx=2, pady=3)
+        if front and before is None:
+            before = next((m["card"] for m in self._matches if m is not entry and m.get("card") is not None), None)
+        if before is not None:      # not through CTk's pack: it would replay the argument on a scale change,
+            tk.Frame.pack_configure(card, before=before)    # when that card may be gone
+        card.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(card, text=f"Seed {entry['seed']}", font=(FONT, 14, "bold"), text_color=PALETTE["text"]).grid(
+            row=0, column=0, sticky="w", padx=(12, 8), pady=(8, 0))
+        sub = f"{entry['origin']} · {entry['setup']}"
+        if entry.get("checked"):
+            sub += ("  ·  Checked: matches the conditions" if ok else
+                    "  ·  Checked: " + explain_failure(entry["failure"], self._display_for,
+                                                       self._background_names()))
+        ctk.CTkLabel(card, text=sub, font=(FONT, 12), text_color=PALETTE["muted"] if ok else PALETTE["bad"],
+                     anchor="w").grid(row=0, column=1, sticky="w", pady=(8, 0))
+        buttons = ctk.CTkFrame(card, fg_color="transparent")
+        buttons.grid(row=0, column=2, sticky="e", padx=(4, 8), pady=(8, 0))
+        _button(buttons, "Copy seed", lambda s=entry["seed"]: self._copy_to_clipboard(s), width=84, height=26,
+                font=(FONT, 11)).pack(side="left", padx=2)
+        _button(buttons, "Copy roster", lambda e=entry: self._copy_roster(e), width=90, height=26,
+                font=(FONT, 11)).pack(side="left", padx=2)
+        share_btn = _button(buttons, "Copy seed post", lambda e=entry: self._copy_seed_share(e), width=108,
+                            height=26, font=(FONT, 11))
+        share_btn.pack(side="left", padx=2)
+        _attach_tooltip(share_btn, "Copy a seed post for the Legends Discord to the clipboard.")
+        has_details = any(b.get("perk_groups") or b.get("rolls") for b in entry["roster"])
+        if has_details:
+            details = _button(buttons, "Hide details" if entry.get("show_perks") else "Details",
+                              lambda e=entry: self._toggle_perks(e), width=92, height=26, font=(FONT, 11))
+            details.pack(side="left", padx=2)
+            _attach_tooltip(details, "Show the stat rolls of each brother and, with Legends, his perk trees.")
+        if entry.get("map"):
+            map_btn = _button(buttons, "Show map", lambda e=entry: self._show_map(e), width=84, height=26,
+                              font=(FONT, 11))
+            map_btn.pack(side="left", padx=2)
+            _attach_tooltip(map_btn, "Show the world map of this seed with its towns and ports. North is at the top.")
+        remove = _button(buttons, "✕", lambda e=entry: self._dismiss_match(e), kind="ghost", width=28, height=26,
+                         font=(FONT, 11))
+        remove.pack(side="left", padx=(6, 0))
+        _attach_tooltip(remove, "Remove this result from the list.")
+        if not entry.get("stable", True):
+            ctk.CTkLabel(card, text="⚠ This result is not stable. Do not use it.", font=(FONT, 12, "bold"),
+                         text_color=PALETTE["bad"]).grid(row=1, column=0, columnspan=3, sticky="w", padx=12)
+        ctk.CTkLabel(card, text="\n".join(roster_lines(entry["roster"])), font=("Consolas", 11), justify="left",
+                     anchor="w", text_color=PALETTE["text"]).grid(row=2, column=0, columnspan=3, sticky="w",
+                                                                  padx=12, pady=(4, 10))
+        first = map_view.first_campaign_line(O.is_deserters(entry["origin"]), (entry.get("info") or {}).get("legends"))
+        if first:       # Deserters on Legends: the map depends on the black-market counter (as the seed post says)
+            ctk.CTkLabel(card, text=first, font=(FONT, 12), justify="left", anchor="w", wraplength=880,
+                         text_color=PALETTE["muted"]).grid(row=4, column=0, columnspan=3, sticky="w",
+                                                           padx=12, pady=(0, 8))
+        if has_details and entry.get("show_perks"):
+            lines = []
+            for i, b in enumerate(entry["roster"], 1):
+                lines.append(f"{i:2d}. {b['name']}. Rolls: {roll_text(b) or 'not known'}")
+                if perk_text(b):
+                    lines.append(f"      Perk trees: {perk_text(b)}")
+            ctk.CTkLabel(card, text="\n".join(lines), font=(FONT, 11), justify="left", anchor="w", wraplength=880,
+                         text_color=PALETTE["muted"]).grid(row=3, column=0, columnspan=3, sticky="w",
+                                                           padx=12, pady=(0, 10))
+        entry["card"] = card
+        return card
 
     def _show_map(self, entry: dict, screen_height=None):
         """The map of a result in a window of its own. A second click on the same result brings its window
@@ -2345,11 +2383,20 @@ class App(ctk.CTk):
 
     def _toggle_perks(self, entry: dict):
         entry["show_perks"] = not entry.get("show_perks")
-        self._render_match_list()
+        place = self._matches.index(entry) + 1
+        below = self._matches[place]["card"] if place < len(self._matches) else None
+        entry["card"].destroy()
+        self._add_match_card(entry, front=False, before=below)
+        self._fit_match_list()
+
+    def _drop_match(self, entry: dict):
+        self._matches = [m for m in self._matches if m is not entry]
+        if entry.get("card") is not None:
+            entry["card"].destroy()
 
     def _dismiss_match(self, entry: dict):
-        self._matches = [m for m in self._matches if m is not entry]
-        self._render_match_list()
+        self._drop_match(entry)
+        self._fit_match_list()
 
     def _clear_matches(self):
         self._matches.clear()
