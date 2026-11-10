@@ -44,6 +44,57 @@ def test_a_point_on_no_monitor_has_no_scale():
     assert screens.scale_at(3000, 40, [MAIN, SECOND]) == 1.0
 
 
+WORK_MAIN = dict(MAIN, work=(0, 0, 2560, 1392))         # (a taskbar 48 high)
+WORK_SECOND = dict(SECOND, work=(3840, -400, 5280, 2112))
+SIZE = (1000, 960)
+
+
+@pytest.mark.core
+def test_a_saved_place_that_fits_stays():
+    assert screens.start_geometry("1000x960+200+150", SIZE, [WORK_MAIN, WORK_SECOND]) == "1000x960+200+150"
+    assert screens.start_geometry("1000x960+4000+0", SIZE, [WORK_MAIN, WORK_SECOND]) == "1000x960+4000+0"
+
+
+@pytest.mark.core
+def test_a_window_low_on_the_screen_moves_up_so_search_shows():
+    # the reported case: 1000x960 at 150 % placed low on the 1440-pixel screen
+    assert screens.start_geometry("1000x960+300+700", SIZE, [WORK_MAIN]) == "1000x960+300+392"
+
+
+@pytest.mark.core
+def test_no_saved_place_centres_the_window_on_the_main_monitor():
+    assert screens.start_geometry(None, SIZE, [WORK_SECOND, WORK_MAIN]) == "1000x960+780+196"
+
+
+@pytest.mark.edge
+def test_a_window_on_a_monitor_that_is_gone_moves_to_the_main_one():
+    assert screens.start_geometry("1000x960+4000+0", SIZE, [WORK_MAIN]) == "1000x960+1560+0"
+
+
+@pytest.mark.edge
+def test_a_window_larger_than_the_screen_shrinks_to_it():
+    small = dict(MAIN, right=1366, bottom=768, work=(0, 0, 1366, 728))
+    assert screens.start_geometry("1000x960+0+0", SIZE, [small]) == "1000x688+0+0"
+
+
+@pytest.mark.edge
+def test_a_monitor_left_of_the_main_one_keeps_its_negative_place():
+    left = dict(SECOND, left=-1440, right=0, top=0, bottom=2560, work=(-1440, 0, 0, 2512))
+    assert screens.start_geometry("1000x960+-1300+100", SIZE, [WORK_MAIN, left]) == "1000x960+-1300+100"
+
+
+@pytest.mark.dirty
+def test_no_monitor_found_keeps_what_was_saved():
+    assert screens.start_geometry("1000x960+300+700", SIZE, []) == "1000x960+300+700"
+    assert screens.start_geometry(None, SIZE, []) == "1000x960"
+
+
+@pytest.mark.dirty
+def test_a_saved_place_in_another_form_is_not_used():
+    assert screens.start_geometry("1000x960-20+30", SIZE, [WORK_MAIN]) == "1000x960+780+196"
+    assert screens.start_geometry("big", SIZE, [WORK_MAIN]) == "1000x960+780+196"
+
+
 @pytest.mark.core
 def test_this_computer_gives_monitors_with_one_main_monitor():
     found = screens.monitors()

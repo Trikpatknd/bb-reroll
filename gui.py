@@ -131,6 +131,9 @@ MATCHES_TO_FIND = "Matches to find"
 WORKERS = "Workers"
 CLOSEST_SEEDS = "Closest seed after (seeds)"
 CLOSEST_MAPS = "Closest seed after (maps)"
+# The window's size at the first start, and the smallest size (made smaller only on a screen that has less room).
+WINDOW_SIZE = (1000, 960)
+WINDOW_MIN = (960, 820)
 # Many matches at once (A New Company: 1 in 8 seeds): how often a match pulls the window forward (it takes 0.7 s with a long list,
 # and takes the focus from whatever the player does), and how often a notification shows.
 SURFACE_SECONDS = 10
@@ -490,8 +493,8 @@ class App(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         self.title(f"BB Reroll {APP_VERSION} - Seed search")
-        self.geometry("1000x960")
-        self.minsize(960, 820)
+        self.geometry("%dx%d" % WINDOW_SIZE)
+        self.minsize(*WINDOW_MIN)
 
         self._saved = self._read_settings()
         self._game_folder = None
@@ -2783,10 +2786,14 @@ class App(ctk.CTk):
 
     def _load_settings(self):
         data = self._saved
-        # A window size saved by 3.x was made for another layout: only the new one is restored.
-        if data.get("v") == SETTINGS_VERSION and data.get("geometry"):
-            try:    self.geometry(data["geometry"])
-            except Exception: pass
+        # A window size saved by 3.x was made for another layout: only the new one is restored. The window starts all on one
+        # monitor: placed low on the screen, or on a monitor that is gone, it put Search below the screen.
+        saved = data.get("geometry") if data.get("v") == SETTINGS_VERSION else None
+        place = screens.start_geometry(saved if isinstance(saved, str) else None, WINDOW_SIZE)
+        width, height = (int(n) for n in place.split("+")[0].split("x"))
+        self.minsize(min(WINDOW_MIN[0], width), min(WINDOW_MIN[1], height))
+        try:    self.geometry(place)
+        except Exception: pass
         if data.get("setup") in O.SETUPS:
             self.setup_var.set(data["setup"])
         if data.get("last_origin") in O.names_for(self.setup_var.get()):
