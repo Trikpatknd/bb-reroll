@@ -117,6 +117,14 @@ def test_exact_verified_setup_needs_the_checked_mod_versions():
     assert mapgen.wrong_mod_versions(_legends_mods()) == []
 
 
+@pytest.mark.core
+def test_legends_19_4_23_with_its_assets_is_a_verified_setup():
+    mods = _legends_mods(mod_legends="19.4.23", mod_legends_assets="19.4.23")
+    assert mapgen.verified_setup("1.5.2.3", "19.4.23", mods, True, exact=True) is True
+    assert mapgen.verified_setup("1.5.2.3", "19.4.22", _legends_mods(mod_legends_assets="19.4.23"), True, exact=True) is True
+    assert mapgen.verified_setup("1.5.2.3", "19.4.24", mods, True) is False, "a version nobody checked"
+
+
 @pytest.mark.dirty
 def test_exact_verified_setup_needs_every_checked_mod_and_skips_zip_names():
     without_hooks = [m for m in _legends_mods() if m["id"] != "mod_modern_hooks"]

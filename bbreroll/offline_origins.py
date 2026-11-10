@@ -176,7 +176,7 @@ def is_legends_only(name):
 
 def verified_for_maps(setup):
     """Were the maps of this game setup checked against the game (mapgen.verified_setup), as the installed files say
-    it? Legends: game 1.5.2.3, Legends 19.4.22 and no mod beyond Legends' own set. Vanilla: game 1.5.2.3 with every DLC
+    it? Legends: game 1.5.2.3, Legends 19.4.22 or 19.4.23 and no mod beyond Legends' own set. Vanilla: game 1.5.2.3 with every DLC
     (the mod zips on the disk do not matter: the base game loads none). Any other setup: no."""
     profile, _legends = SETUPS.get(setup, (None, False))
     if FOUND is None or profile not in ("legends", "vanilla"):

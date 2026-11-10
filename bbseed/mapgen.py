@@ -684,6 +684,10 @@ def unexplained_stubs(stub_uses):
 # Legends. The ids are those the mods register with Modern Hooks (and the start of their zip names).
 VERIFIED_GAME = "1.5.2.3"
 VERIFIED_LEGENDS = "19.4.22"
+# Legends versions whose campaign start is the verified one's (MODLOG "LEGENDS 19.4.23", 2026-11-10: 7 changed scripts, all
+# outside the start - two combat skills, four helmets' draw layer, the version; the rest only line endings; rosters, perk
+# trees, maps and Deserters starts identical on the lab). A new version goes here only with such a check.
+SAME_START_LEGENDS = (VERIFIED_LEGENDS, "19.4.23")
 VERIFIED_MOD_IDS = ("mod_legends", "mod_legends_assets", "mod_msu", "mod_modern_hooks")
 NOT_VERIFIED = "Map results are not verified for this setup."
 # What a seed post and the console say about Legends' black-market counter (every map of a search is built at counter 0):
@@ -724,11 +728,14 @@ def other_mods(mods):
 # their brothers from the map, so for them a mod of another version is not verified, even when its zip name is the
 # right one (verified_setup(exact=True)). The ids are those the mods register (Lab.info()["mods"]).
 VERIFIED_MOD_VERSIONS = {"mod_msu": "1.9.0", "mod_modern_hooks": "0.6.0", "mod_legends_assets": "19.4.3"}
+# Other versions with the same campaign start (SAME_START_LEGENDS): Legends 19.4.23 needs its assets 19.4.23, whose one
+# script registers that version and nothing else (the asset file names are the same as in 19.4.3).
+SAME_START_MOD_VERSIONS = {"mod_legends_assets": ("19.4.23",)}
 
 
 DESERTERS_UNVERIFIED = ("Deserters need the world map. BB Reroll checked the maps for only two setups. "
-                        "One is Legends 19.4.22 with its mods: Legends assets %(mod_legends_assets)s, "
-                        "MSU %(mod_msu)s and Modern Hooks %(mod_modern_hooks)s. "
+                        "One is Legends 19.4.22 or 19.4.23 with its mods: Legends assets %(mod_legends_assets)s or "
+                        "19.4.23, MSU %(mod_msu)s and Modern Hooks %(mod_modern_hooks)s. "
                         "The other is the base game with all DLCs and no mods. Both use game version 1.5.2.3. "
                         "This game setup is not one of them." % VERIFIED_MOD_VERSIONS)
 
@@ -745,7 +752,7 @@ def wrong_mod_versions(mods):
         if not found:
             if infos:
                 out.append("%s missing" % mod_id)
-        elif any(m.get("version") != version for m in found):
+        elif any(m.get("version") not in (version,) + SAME_START_MOD_VERSIONS.get(mod_id, ()) for m in found):
             out.append("%s %s" % (mod_id, ", ".join(str(m.get("version")) for m in found)))
     return out
 
@@ -764,7 +771,7 @@ def verified_setup(game_version, legends_version, mods=None, dlc_complete=True, 
     if legends_version is None:
         return (VANILLA_MAPS_VERIFIED and game_version == VERIFIED_GAME and dlc_complete
                 and (mods is None or not mods))
-    return (game_version == VERIFIED_GAME and legends_version == VERIFIED_LEGENDS
+    return (game_version == VERIFIED_GAME and legends_version in SAME_START_LEGENDS
             and (mods is None or not other_mods(mods))
             and not (exact and mods is not None and wrong_mod_versions(mods)))
 

@@ -23,7 +23,7 @@ Criteria follow BB Reroll's model (and its config keys, see --criteria):
             The Map Options go in --mod-setting (mod_legends:Settlements=24 ...).
   Deserters  its brothers are made after the map, so every seed needs its whole map (about 25 s) and the roster comes
             from that one run (the Map Options change the brothers: pass them in --mod-setting). Only on a setup whose
-            maps are verified (Legends 19.4.22 / the base game with all DLCs); start the seed as your first campaign
+            maps are verified (Legends 19.4.22 or 19.4.23 / the base game with all DLCs); start the seed as your first campaign
             after the game starts (Legends' black-market counter).
 
 The seeds found are plain campaign seeds: typed into the new-campaign screen of a game

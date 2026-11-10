@@ -10,7 +10,8 @@ from bbseed import profiles
 
 FOUND = profiles.installed_summary()
 HAVE_GAME = FOUND is not None and FOUND["game_version"] == "1.5.2.3"
-HAVE_LEGENDS = HAVE_GAME and any("mod_legends-19.4.22" in m for m in FOUND["mods"]) and any("1.9.0" in m for m in FOUND["mods"])
+HAVE_LEGENDS = (HAVE_GAME and any(("mod_legends-19.4.22" in m or "mod_legends-19.4.23" in m) for m in FOUND["mods"])
+                and any("1.9.0" in m for m in FOUND["mods"]))     # (19.4.23 has the same campaign start: mapgen.SAME_START_LEGENDS)
 
 
 @pytest.mark.core
