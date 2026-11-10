@@ -78,6 +78,7 @@ from bbreroll.criteria import (
 )
 from bbreroll.seed_report import build_seed_report
 from bbseed import mapdraw
+from bbseed.search import NEAR_MAPS, NEAR_SEEDS, near_key
 from bbseed import msu_settings
 
 
@@ -128,6 +129,8 @@ def default_workers() -> int:
 SEEDS_TO_TEST = "Seeds to test"
 MATCHES_TO_FIND = "Matches to find"
 WORKERS = "Workers"
+CLOSEST_SEEDS = "Closest seed after (seeds)"
+CLOSEST_MAPS = "Closest seed after (maps)"
 # Many matches at once (A New Company: 1 in 8 seeds): how often a match pulls the window forward (it takes 0.7 s with a long list,
 # and takes the focus from whatever the player does), and how often a notification shows.
 SURFACE_SECONDS = 10
@@ -504,6 +507,8 @@ class App(ctk.CTk):
         self.max_iters_var  = ctk.StringVar(value="100000")
         self.count_var      = ctk.StringVar(value="3")
         self.workers_var    = ctk.StringVar(value=str(default_workers()))
+        self.near_seeds_var = ctk.StringVar(value=str(NEAR_SEEDS))
+        self.near_maps_var  = ctk.StringVar(value=str(NEAR_MAPS))
         self.sisters_var    = ctk.StringVar(value=O.BATTLE_SISTERS[1])
         self.check_seed_var = ctk.StringVar(value="")
         self.status_var     = ctk.StringVar(value="Ready.")
@@ -650,10 +655,19 @@ class App(ctk.CTk):
                                  f"{os.cpu_count() or 1} processor threads. With Legends, each process uses "
                                  f"approximately {worker_load.GB_LEGENDS:g} GB of memory, with the base game "
                                  f"{worker_load.GB_VANILLA:g} GB. Each process needs approximately 10 seconds to start.")
+        near_seeds = _field(line_b, CLOSEST_SEEDS, lambda p: _entry(p, self.near_seeds_var, 80))
+        _attach_tooltip(near_seeds, "When no seed matches, BB Reroll shows the closest seed after it tests this number of "
+                                    f"seeds. Then it shows each closer seed. The default is {NEAR_SEEDS:,}. A slow "
+                                    "computer can use a smaller number. With map conditions, BB Reroll builds the map "
+                                    "of each closest seed that it shows. A map takes approximately 25 seconds.")
+        near_maps = _field(line_b, CLOSEST_MAPS, lambda p: _entry(p, self.near_maps_var, 60))
+        _attach_tooltip(near_maps, "Map conditions and no brother conditions, or Deserters: BB Reroll builds a map for "
+                                   "each seed. Then it shows the closest seed after it builds this number of maps. "
+                                   f"The default is {NEAR_MAPS}.")
         # filled by _refresh_load when the workers do not fit this computer
         self.load_var = ctk.StringVar(value="")
         self.load_label = ctk.CTkLabel(line_b, textvariable=self.load_var, font=(FONT, 11), text_color=PALETTE["star"],
-                                       justify="left", anchor="w", wraplength=560)
+                                       justify="left", anchor="w", wraplength=380)     # (the room the five fields leave)
 
         # Conditions: stars or stat rolls (one grid at a time; both always count)
         cond = _panel(self, row=2, column=0, sticky="ew", padx=10, pady=4)
@@ -1886,7 +1900,9 @@ class App(ctk.CTk):
     def _numbers(self):
         values = {SEEDS_TO_TEST: to_int(self.max_iters_var.get()),
                   MATCHES_TO_FIND: to_int(self.count_var.get()),
-                  WORKERS: to_int(self.workers_var.get())}
+                  WORKERS: to_int(self.workers_var.get()),
+                  CLOSEST_SEEDS: to_int(self.near_seeds_var.get()),
+                  CLOSEST_MAPS: to_int(self.near_maps_var.get())}
         return values, number_errors(values, os.cpu_count() or 1)
 
     # ── starting / stopping a search ──
@@ -2028,7 +2044,8 @@ class App(ctk.CTk):
                 if in_pypy:
                     why = pypy_addon.search(self._pypy, profile, scenario, criteria, workers, numbers[MATCHES_TO_FIND] or 1,
                                             numbers[SEEDS_TO_TEST], mod_settings or None,
-                                            lambda kind, payload: put((kind, payload)), self._stop.is_set, start)
+                                            lambda kind, payload: put((kind, payload)), self._stop.is_set, start,
+                                            numbers[CLOSEST_SEEDS], numbers[CLOSEST_MAPS])
                     if why is None:
                         return
                     put(("notice", why))        # on with the exe's own Python
@@ -2036,7 +2053,8 @@ class App(ctk.CTk):
                 search(profile, scenario, criteria, workers=workers, count=numbers[MATCHES_TO_FIND] or 1,
                        max_seeds=None if seeds else numbers[SEEDS_TO_TEST], seeds=seeds, start=start,
                        mod_settings=mod_settings or None,
-                       on_event=lambda kind, payload: put((kind, payload)), should_stop=self._stop.is_set)
+                       on_event=lambda kind, payload: put((kind, payload)), should_stop=self._stop.is_set,
+                       near_seeds=numbers[CLOSEST_SEEDS], near_maps=numbers[CLOSEST_MAPS])
             except Exception as e:      # report instead of dying silently in the thread
                 put(("fatal", f"{type(e).__name__}: {e}"))
                 put(("finished", (0, 0.0, 0, True)))
@@ -2439,7 +2457,7 @@ class App(ctk.CTk):
     def _ev_near(self, payload):
         """The closest seed so far (bbseed/search.py). A seed the player removed stays away until a nearer one comes."""
         distance = tuple(payload["distance"])
-        if self._near_dismissed is not None and distance >= self._near_dismissed:
+        if self._near_dismissed is not None and near_key(distance) >= near_key(self._near_dismissed):
             return
         self._drop_near()
         self._near = dict(payload, distance=distance, ts=time.time(), origin=self._run["origin"], setup=self._run["setup"],
@@ -2467,7 +2485,8 @@ class App(ctk.CTk):
         self._fit_match_list()
 
     def _near_lines(self, near):
-        return near_view.lines(near["differences"], self._display_for, self._background_names())
+        found = near_view.lines(near["differences"], self._display_for, self._background_names())
+        return found + [near_view.MAP_NOT_BUILT] if near.get("map_wanted") and not near.get("map") else found
 
     def _check_near_seed(self, near):
         """The Check a seed path for the seed on the card: with map conditions it builds that one map."""
@@ -2772,7 +2791,8 @@ class App(ctk.CTk):
             self.setup_var.set(data["setup"])
         if data.get("last_origin") in O.names_for(self.setup_var.get()):
             self.origin_var.set(data["last_origin"])
-        for key, var in (("workers", self.workers_var), ("count", self.count_var), ("max_seeds", self.max_iters_var)):
+        for key, var in (("workers", self.workers_var), ("count", self.count_var), ("max_seeds", self.max_iters_var),
+                         ("near_seeds", self.near_seeds_var), ("near_maps", self.near_maps_var)):
             if isinstance(data.get(key), int) and data[key] >= 1:
                 var.set(str(data[key]))
         if data.get("battle_sisters") in O.BATTLE_SISTERS:
@@ -2806,6 +2826,8 @@ class App(ctk.CTk):
                 "workers":           to_int(self.workers_var.get()),
                 "count":             to_int(self.count_var.get()),
                 "max_seeds":         to_int(self.max_iters_var.get()),
+                "near_seeds":        to_int(self.near_seeds_var.get()),
+                "near_maps":         to_int(self.near_maps_var.get()),
                 "battle_sisters":    self.sisters_var.get(),
                 "display_overrides": overrides,
                 "known_banned":      list(self.banned_known),
@@ -2868,6 +2890,8 @@ class App(ctk.CTk):
             self.sisters_var.set(spec.get("battle_sisters", O.BATTLE_SISTERS[1]))
             self.count_var.set(str(spec.get("count", 2)))
             self.workers_var.set(str(spec.get("workers", 4)))
+            self.near_seeds_var.set(str(spec.get("near_seeds", NEAR_SEEDS)))
+            self.near_maps_var.set(str(spec.get("near_maps", NEAR_MAPS)))
             self.share_desc_var.set(spec.get("description", ""))
             # the Map view: the spec's conditions and Map Options, else the defaults (never the player's saved ones)
             self._set_map_fields(spec.get("map"), spec.get("map_options"))
@@ -2908,7 +2932,8 @@ class App(ctk.CTk):
         }
         if self._near is not None:
             report["near"] = {"seed": self._near["seed"], "distance": list(self._near["distance"]),
-                              "confirmed": self._near["confirmed"], "lines": self._near_lines(self._near),
+                              "confirmed": self._near["confirmed"], "map": bool(self._near.get("map")),
+                              "lines": self._near_lines(self._near),
                               "share": self._share_report(self._near)}
         pictured = next((m for m in self._matches if m.get("map")), None) if spec.get("copy_picture") else None
         if pictured is not None:            # the frozen program really copies a picture (Pillow, its font, the clipboard)

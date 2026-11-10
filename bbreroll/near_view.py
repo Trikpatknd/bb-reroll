@@ -7,6 +7,7 @@ from bbseed.mapgen import PORT_LABELS, TOWN_TYPE_LABELS
 TITLE = "Closest seed so far: not an exact match"
 NOT_CHECKED = "Not checked yet"
 NOT_CHECKED_TIP = "BB Reroll did not roll this seed a second time. Check it before you use it."
+MAP_NOT_BUILT = "The map of this seed is not built. BB Reroll did not check the map conditions."
 _MAP_LABELS = {**PORT_LABELS, **TOWN_TYPE_LABELS}
 
 

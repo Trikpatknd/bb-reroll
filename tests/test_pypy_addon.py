@@ -85,6 +85,9 @@ def test_the_arguments_reach_the_command_line_parser(tmp_path):
                  "--profile", "legends", "--mod-setting", "mod_legends:Settlements=24"):
         assert part in args
     assert "--max-seeds" not in P.arguments(None, "x", "c", 1, 1, None, None)
+    assert "--near-seeds" not in P.arguments(None, "x", "c", 1, 1, None, None)
+    args = P.arguments(None, "x", "c", 1, 1, None, None, near_seeds=500, near_maps=20)
+    assert args[args.index("--near-seeds") + 1] == "500" and args[args.index("--near-maps") + 1] == "20"
 
 
 class ScriptAddon:

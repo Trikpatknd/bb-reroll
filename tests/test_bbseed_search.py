@@ -1309,6 +1309,66 @@ def test_a_worker_with_an_exact_match_rolls_no_near_seed_again(monkeypatch):
     assert [p["seed"] for k, _i, p in events if k == "near"] == ["0000000000", "0000000002"]
 
 
+HP2_PORTS11 = {"stars_by_slot": {"1": {"hp": 2}}, "map": {"ports": 11}}     # (FakeLab: no seed meets either)
+
+
+@pytest.mark.core
+def test_a_near_seed_of_a_map_search_gets_its_map_when_it_is_rolled_again(monkeypatch):
+    monkeypatch.setattr(S, "NEAR_SEEDS", 0)     # past the limit from the first seed
+    lab = FakeLab()
+    events = run_worker(monkeypatch, lab, HP2_PORTS11, limit=10)
+    near = [p for k, _i, p in events if k == "near"]
+    assert [(n["seed"], n["distance"], n["confirmed"]) for n in near] == [
+        ("0000000000", (0, 2, 11), True), ("0000000001", (0, 1, 10), True)]
+    assert all(n["map"]["towns"] for n in near), "the map comes along"
+    assert near[-1]["differences"][-1] == {"slot": None, "kind": "map", "name": "ports", "have": 1, "want": 11}
+    assert FakeLab.world_map_calls == 2, "seed 3 and on are as near by their brothers: no map for them"
+
+
+@pytest.mark.core
+def test_before_the_limit_a_near_seed_of_a_map_search_has_no_map_and_no_map_distance(monkeypatch):
+    lab = FakeLab()
+    events = run_worker(monkeypatch, lab, HP2_PORTS11, limit=10)
+    near = [p for k, _i, p in events if k == "near"]
+    assert [(n["seed"], n["distance"], n["map"]) for n in near[:2]] == [
+        ("0000000000", (0, 2, None), None), ("0000000001", (0, 1, None), None)]
+    assert near[-1]["seed"] == "0000000001" and near[-1]["confirmed"] and near[-1]["distance"] == (0, 1, 10)
+    assert FakeLab.world_map_calls == 1, "only the held seed gets a map, at the end of the run"
+
+
+@pytest.mark.edge
+def test_a_near_seed_whose_map_run_fails_stays_without_a_map(monkeypatch):
+    monkeypatch.setattr(S, "NEAR_SEEDS", 0)
+    events = run_worker(monkeypatch, FakeLab(map_errors=("0000000001",)), HP2_PORTS11, limit=4)
+    near = [p for k, _i, p in events if k == "near"]
+    assert near[-1]["seed"] == "0000000001" and near[-1]["map"] is None and near[-1]["distance"] == (0, 1, None)
+
+
+@pytest.mark.core
+def test_an_unknown_map_is_farther_than_any_built_map():
+    assert S.near_key((0, 1, None)) > S.near_key((0, 1, 50))
+    assert S.near_key((0, 0, None)) < S.near_key((0, 1, 0)), "nearer brothers win whatever the map is"
+    assert S.near_key((1, 0, 3)) == (1, 0, 3)
+
+
+@pytest.mark.core
+def test_the_search_takes_its_own_near_limits(monkeypatch):
+    monkeypatch.setattr(S, "PROGRESS_SECONDS", 0.0)
+    _found, events = run_search(monkeypatch, lambda: NearLab(hp={3: 2}), HP3, workers=1, max_seeds=40, near_seeds=5)
+    assert 5 <= count_before_first_near(events) < 40, "shown at 5 seeds, not at NEAR_SEEDS or the end"
+    _found, events = run_search(monkeypatch, FakeLab, {"map": {"ports": 11}}, workers=1, max_seeds=9, near_maps=3)
+    assert 3 <= count_before_first_near(events) < 5, "shown at 3 maps, not at NEAR_MAPS (100) or the end"
+
+
+@pytest.mark.core
+def test_the_command_line_takes_the_near_limits(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(S, "search", lambda *a, **kw: seen.update(kw))
+    S.main(["--profile", "legends", "--origin", "trader_scenario", "--stars", "1", "hp1", "--near-seeds", "7",
+            "--near-maps", "2"])
+    assert seen["near_seeds"] == 7 and seen["near_maps"] == 2
+
+
 @pytest.mark.core
 def test_the_checked_copy_of_a_near_seed_replaces_its_unchecked_copy(monkeypatch, quick_near):
     monkeypatch.setattr(S, "NEAR_CONFIRM_SHARE", 2.0)      # the roll comes after the limit, so the card shows both copies

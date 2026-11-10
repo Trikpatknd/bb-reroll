@@ -72,7 +72,8 @@ def applies(criteria, origin):
     return normal["map"] is not None and not roster_conditions(normal)
 
 
-def arguments(profile, origin, criteria_path, workers, count, max_seeds, mod_settings, start=None):
+def arguments(profile, origin, criteria_path, workers, count, max_seeds, mod_settings, start=None, near_seeds=None,
+              near_maps=None):
     """The arguments of a search as bbseed.search's command line takes them."""
     args = ["--events-json", "--origin", origin, "--criteria", str(criteria_path), "--workers", str(workers), "--count", str(count)]
     if profile:
@@ -81,12 +82,17 @@ def arguments(profile, origin, criteria_path, workers, count, max_seeds, mod_set
         args += ["--max-seeds", str(max_seeds)]
     if start is not None:
         args += ["--start", str(start)]
+    if near_seeds is not None:
+        args += ["--near-seeds", str(near_seeds)]
+    if near_maps is not None:
+        args += ["--near-maps", str(near_maps)]
     for key, value in (mod_settings or {}).items():
         args += ["--mod-setting", "%s=%s" % (key, value)]
     return args
 
 
-def search(addon, profile, origin, criteria, workers, count, max_seeds, mod_settings, on_event, should_stop=None, start=None):
+def search(addon, profile, origin, criteria, workers, count, max_seeds, mod_settings, on_event, should_stop=None, start=None,
+           near_seeds=None, near_maps=None):
     """The search in PyPy, with the events of bbseed.search.search(). None when it ran. Else the text why PyPy did not start: no
     event has reached the caller then, except "preparing", and the caller searches on in its own Python. A child that ends
     before its workers are ready counts as not started, unless the player pressed Stop."""
@@ -111,7 +117,7 @@ def search(addon, profile, origin, criteria, workers, count, max_seeds, mod_sett
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as f:
             json.dump(criteria, f)
-        args = arguments(profile, origin, path, workers, count, max_seeds, mod_settings, start)
+        args = arguments(profile, origin, path, workers, count, max_seeds, mod_settings, start, near_seeds, near_maps)
         try:
             external_search.run(addon.command(args), addon.env(), relay, should_stop, cwd=str(addon.folder))
         except external_search.CannotStart as e:

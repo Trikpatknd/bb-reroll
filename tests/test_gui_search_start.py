@@ -93,6 +93,33 @@ def test_search_starts_with_the_numbers_in_the_fields(app, calls):
 
 
 @pytest.mark.core
+def test_search_sends_the_closest_seed_limits_in_the_fields(app, calls):
+    import gui
+    app.origin_var.set("Trading Caravan")
+    app._on_origin_change("Trading Caravan")
+    app.stars_vars[("1", "res")].set("2")
+    app.near_seeds_var.set("500")
+    app.near_maps_var.set("20")
+    try:
+        app._on_search()
+        pump(app, lambda: calls and not app._searching)
+        assert calls[-1]["near_seeds"] == 500 and calls[-1]["near_maps"] == 20
+    finally:
+        app.near_seeds_var.set(str(gui.NEAR_SEEDS))
+        app.near_maps_var.set(str(gui.NEAR_MAPS))
+
+
+@pytest.mark.dirty
+def test_a_closest_seed_limit_of_0_is_an_error(app, calls):
+    import gui
+    app.near_maps_var.set("0")
+    try:
+        assert any(gui.CLOSEST_MAPS in e for e in app._numbers()[1])
+    finally:
+        app.near_maps_var.set(str(gui.NEAR_MAPS))
+
+
+@pytest.mark.core
 def test_show_roster_checks_one_seed(app, calls):
     app.check_seed_var.set("1234567890")
     app._on_check_seed()
@@ -2286,6 +2313,25 @@ def test_build_map_during_a_search_says_to_stop_first(near_app, calls):
         near_app._searching = False
 
 
+@pytest.mark.core
+def test_a_near_card_without_its_map_says_the_map_is_not_checked(near_app):
+    from bbreroll import near_view
+    near_app._run = dict(RUN, map={"ports": 4})
+    near_app._ev_near(near_payload(distance=(0, 1, None)))
+    assert any(near_view.MAP_NOT_BUILT in t for t in _card_texts(near_app))
+    near_app._ev_near(near_payload(seed="0000000008", distance=(0, 0, 2), summary=small_map()))
+    assert not any(near_view.MAP_NOT_BUILT in t for t in _card_texts(near_app)), "a card with its map"
+
+
+@pytest.mark.edge
+def test_a_removed_card_without_a_map_lets_a_card_with_one_come_back(near_app):
+    near_app._run = dict(RUN, map={"ports": 4})
+    near_app._ev_near(near_payload(distance=(0, 1, None)))
+    near_app._dismiss_near()
+    near_app._ev_near(near_payload(seed="0000000008", distance=(0, 1, 3), summary=small_map()))
+    assert near_card_seed(near_app) == "0000000008"
+
+
 @pytest.mark.edge
 def test_a_roster_only_near_card_has_no_map_button(near_app):
     near_app._ev_near(near_payload())
@@ -2381,7 +2427,8 @@ def _search_with_addon(pypy_app, calls, monkeypatch, why=None, map_ports="4", st
     pypy_app._pypy = pypy_addon.Addon(Path("X:/addon"))
     used = []
 
-    def fake(addon, profile, origin, criteria, workers, count, max_seeds, mod_settings, on_event, should_stop=None, start=None):
+    def fake(addon, profile, origin, criteria, workers, count, max_seeds, mod_settings, on_event, should_stop=None, start=None,
+             near_seeds=None, near_maps=None):
         used.append(dict(profile=profile, origin=origin, criteria=criteria, workers=workers, count=count, max_seeds=max_seeds,
                          mod_settings=mod_settings))
         if why:
