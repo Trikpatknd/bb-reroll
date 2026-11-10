@@ -56,6 +56,8 @@ build_exe.bat
 
 Put the `.exe` anywhere and double-click it. For dev mode (no build): `pip install -r requirements.txt` and `python gui.py`.
 
+**Updates.** One time each day, when BB Reroll starts, it asks GitHub for the newest release. When there is a newer one, the **Updates** button says **Update to X.Y.Z**, and a banner tells you one time. The button opens the releases page; BB Reroll does not download or install anything. GitHub sees your IP address. To stop the check, clear **Check for updates** under the button.
+
 ---
 
 ## Use
@@ -184,6 +186,7 @@ bb_reroll/
 │   ├── near_view.py              #   the closest seed's differences as lines for the card and the post
 │   ├── external_search.py        #   a search in another Python, with the same events
 │   ├── pypy_addon.py             #   the optional PyPy download: which folder counts, which searches use it
+│   ├── update_check.py           #   the daily question to GitHub for a newer release
 │   └── trait_names.py            #   trait ID → display name
 ├── bbseed/                       # the search: the game's campaign-start scripts, run without the game
 │   ├── rng.py                    #   the game's seeded random generator

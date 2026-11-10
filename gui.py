@@ -71,6 +71,7 @@ from bbreroll import map_view
 from bbreroll import near_view
 from bbreroll import pypy_addon
 from bbreroll import screens
+from bbreroll import update_check
 from bbreroll import worker_load
 from bbreroll.criteria import (
     DEFAULT_BANNED, DEFAULT_REQUIRED, STATS, id_to_display, is_trivial, number_errors,
@@ -512,6 +513,11 @@ class App(ctk.CTk):
         self.workers_var    = ctk.StringVar(value=str(default_workers()))
         self.near_seeds_var = ctk.StringVar(value=str(NEAR_SEEDS))
         self.near_maps_var  = ctk.StringVar(value=str(NEAR_MAPS))
+        self.update_check_var = ctk.BooleanVar(value=True)
+        self._update_latest = None        # the newest release seen ("v4.6.0"), saved: the button shows it while it is newer
+        self._update_checked_at = None    # when GitHub last answered (time.time()), saved
+        self._update_dismissed = None     # the release whose banner the player removed, saved
+        self._update_notice = None        # the text of the update banner, once it showed
         self.sisters_var    = ctk.StringVar(value=O.BATTLE_SISTERS[1])
         self.check_seed_var = ctk.StringVar(value="")
         self.status_var     = ctk.StringVar(value="Ready.")
@@ -601,6 +607,7 @@ class App(ctk.CTk):
         self.after(100, self._drain_events)
         self.after(LOAD_CHECK_MS, self._watch_load)
         self.after(1500, self._ensure_catalog)     # after a self-test spec, if any, is known
+        self.after(2000, self._start_update_check)
 
     # ── UI build ──
     def _build_ui(self):
@@ -629,8 +636,16 @@ class App(ctk.CTk):
         _attach_tooltip(folder_btn, lambda: O.found_text(details=True) + "\n\nBB Reroll reads the game files and the "
                         "mod files where they are. It does not copy or change them. Click to select a different "
                         "game folder.")
-        _button(head, "Updates", self._open_github, kind="ghost", width=80).grid(
-            row=0, column=4, rowspan=2, sticky="e", padx=(8, 0))
+        self.updates_btn = _button(head, "Updates", self._open_github, kind="ghost", width=80)
+        self.updates_btn.grid(row=0, column=4, sticky="e", padx=(8, 0))
+        self._updates_tip = update_check.BUTTON_TIP
+        _attach_tooltip(self.updates_btn, lambda: self._updates_tip)
+        check = ctk.CTkCheckBox(head, text=update_check.CHECKBOX, variable=self.update_check_var, font=(FONT, 11),
+                                text_color=PALETTE["muted"], fg_color=PALETTE["accent"], hover_color=PALETTE["accent_hover"],
+                                border_color=PALETTE["faint"], border_width=2, checkbox_width=14, checkbox_height=14,
+                                corner_radius=3, command=self._on_update_check_toggle)
+        check.grid(row=1, column=4, sticky="e", padx=(8, 0))
+        _attach_tooltip(check, update_check.CHECKBOX_TIP)
 
         # What to search: labels above their controls
         settings = _panel(self, row=1, column=0, sticky="ew", padx=10, pady=4)
@@ -2325,6 +2340,8 @@ class App(ctk.CTk):
         txt = self.notice_var.get()
         if txt:
             self._dismissed_notices.add(txt)
+            if txt == self._update_notice:      # (saved: that release's banner stays away; its button stays)
+                self._update_dismissed = self._update_latest
         self._clear_notice()
 
     def _clear_notice(self):
@@ -2766,7 +2783,44 @@ class App(ctk.CTk):
         self._copy_to_clipboard(self._share_report(entry), label=f"The seed post for seed {entry['seed']} is copied.")
 
     def _open_github(self):
-        webbrowser.open("https://github.com/Trikpatknd/bb-reroll/releases")
+        webbrowser.open(update_check.RELEASES_URL)
+
+    # ── the update check (the logic is in bbreroll/update_check.py) ──
+    def _start_update_check(self):
+        """At start (and when the box is ticked): a newer release seen before shows at once; GitHub is asked again only when
+        the box is ticked and the last answer is a day old. Never in a self-test."""
+        self._show_update(self._update_latest)
+        if os.environ.get("BB_REROLL_SELFTEST") or not self.update_check_var.get():
+            return
+        if not update_check.due(self._update_checked_at, time.time()):
+            return
+        put = self._events.put
+        threading.Thread(target=lambda: put(("update", update_check.fetch_latest(APP_VERSION))), daemon=True).start()
+
+    def _ev_update(self, tag):
+        """GitHub's answer: the newest release's tag, or None (no answer: asked again at the next start)."""
+        if tag is None:
+            return
+        self._update_checked_at = time.time()
+        self._update_latest = tag
+        self._show_update(tag)
+
+    def _show_update(self, tag):
+        """A release newer than this version: the Updates button says so, and a banner once (not over another notice,
+        not after the player removed that release's banner)."""
+        if not update_check.newer(tag, APP_VERSION):
+            return
+        version = update_check.plain(tag)
+        self.updates_btn.configure(text=update_check.NEWER_BUTTON % version, width=130, fg_color=PALETTE["accent"],
+                                   hover_color=PALETTE["accent_hover"], text_color="white", border_width=0)
+        self._updates_tip = update_check.NEWER_TIP % (version, APP_VERSION)
+        if tag != self._update_dismissed and not self.notice_var.get():
+            self._update_notice = update_check.NEWER_NOTICE % (version, APP_VERSION)
+            self._show_notice(self._update_notice, "info", (update_check.OPEN_RELEASES, self._open_github))
+
+    def _on_update_check_toggle(self):
+        if self.update_check_var.get():
+            self._start_update_check()
 
     # ── settings persistence ──
     @staticmethod
@@ -2804,6 +2858,12 @@ class App(ctk.CTk):
                 var.set(str(data[key]))
         if data.get("battle_sisters") in O.BATTLE_SISTERS:
             self.sisters_var.set(data["battle_sisters"])
+        if isinstance(data.get("update_check"), bool):
+            self.update_check_var.set(data["update_check"])
+        checked = data.get("update_checked_at")
+        self._update_checked_at = checked if isinstance(checked, (int, float)) and not isinstance(checked, bool) else None
+        self._update_latest = data.get("update_latest") if update_check.parse_version(data.get("update_latest")) else None
+        self._update_dismissed = data.get("update_dismissed") if isinstance(data.get("update_dismissed"), str) else None
         self._restore_map_values(data)
         # Layered display-name overrides — only persist deltas from the builtin
         # map so a future TRAIT_NAMES update flows through automatically.
@@ -2835,6 +2895,10 @@ class App(ctk.CTk):
                 "max_seeds":         to_int(self.max_iters_var.get()),
                 "near_seeds":        to_int(self.near_seeds_var.get()),
                 "near_maps":         to_int(self.near_maps_var.get()),
+                "update_check":      bool(self.update_check_var.get()),
+                "update_checked_at": self._update_checked_at,
+                "update_latest":     self._update_latest,
+                "update_dismissed":  self._update_dismissed,
                 "battle_sisters":    self.sisters_var.get(),
                 "display_overrides": overrides,
                 "known_banned":      list(self.banned_known),
@@ -2937,6 +3001,11 @@ class App(ctk.CTk):
                                 if m.get("map") else None} for m in self._matches],
             "share": None if not self._matches else self._share_report(self._matches[0]),
         }
+        if spec.get("update_check"):        # a real request to GitHub (HTTPS in the exe); a self-test never asks at start
+            tag = update_check.fetch_latest(APP_VERSION)
+            self._show_update(tag)
+            report["update"] = {"latest": tag, "newer": update_check.newer(tag, APP_VERSION),
+                                "button": self.updates_btn.cget("text")}
         if self._near is not None:
             report["near"] = {"seed": self._near["seed"], "distance": list(self._near["distance"]),
                               "confirmed": self._near["confirmed"], "map": bool(self._near.get("map")),

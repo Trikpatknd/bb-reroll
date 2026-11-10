@@ -28,6 +28,7 @@ def app(tmp_path_factory):
     real_ensure_catalog = gui.App._ensure_catalog
     mp.setattr(gui.App, "_ensure_catalog", lambda self: None)       # no game, no catalog
     mp.setattr(gui.msu_settings, "read_map_options", lambda path=None: None)   # no test reads the player's file
+    mp.setattr(gui.update_check, "fetch_latest", lambda current, **kw: None)  # no test asks GitHub
     mp.setattr(gui.worker_load, "memory", lambda: (256 << 30, 200 << 30))      # no test depends on this PC's free memory
     mp.setattr(gui.messagebox, "askyesno", lambda *a, **k: True)
     errors = []
@@ -2797,3 +2798,127 @@ def test_nothing_covers_the_near_cards_bottom_border(near_app):
     card = near_app._near["card"]
     assert card.grid_slaves(row=5) == [], "a spacer at the bottom painted over the border"
     assert card.grid_rowconfigure(5)["minsize"] > 0, "the room under the text stays"
+
+
+
+# ====================================================================== the update check
+NEWER = "v99.0.0"
+
+
+@pytest.fixture()
+def update_app(app):
+    """The window with no update state; afterwards the Updates button and the banner as at start."""
+    def reset():
+        app._update_latest = app._update_dismissed = app._update_notice = app._update_checked_at = None
+        app.update_check_var.set(True)
+        app.updates_btn.configure(text="Updates", width=80, fg_color="transparent", hover_color=gui_palette()["control"],
+                                  text_color=gui_palette()["muted"], border_width=1)
+        app._clear_notice()
+        app._dismissed_notices.clear()
+    reset()
+    yield app
+    reset()
+
+
+def gui_palette():
+    import gui
+    return gui.PALETTE
+
+
+@pytest.mark.core
+def test_a_newer_release_changes_the_button_and_shows_a_banner(update_app):
+    from bbreroll import update_check
+    update_app._ev_update(NEWER)
+    assert update_app.updates_btn.cget("text") == "Update to 99.0.0"
+    assert update_app.notice_var.get() == update_check.NEWER_NOTICE % ("99.0.0", update_app_version())
+    assert update_app._update_latest == NEWER and update_app._update_checked_at is not None
+
+
+def update_app_version():
+    import gui
+    return gui.APP_VERSION
+
+
+@pytest.mark.edge
+def test_the_same_version_changes_nothing(update_app):
+    update_app._ev_update("v" + update_app_version())
+    assert update_app.updates_btn.cget("text") == "Updates" and update_app.notice_var.get() == ""
+    assert update_app._update_checked_at is not None, "an answer counts as the day's check"
+
+
+@pytest.mark.dirty
+def test_no_answer_changes_nothing_and_asks_again_next_time(update_app):
+    update_app._ev_update(None)
+    assert update_app.updates_btn.cget("text") == "Updates" and update_app._update_checked_at is None
+
+
+@pytest.mark.core
+def test_a_removed_banner_stays_away_for_that_release_and_is_saved(update_app):
+    import json
+    import gui
+    update_app._ev_update(NEWER)
+    update_app._dismiss_notice()
+    assert update_app._update_dismissed == NEWER
+    update_app._show_update(NEWER)
+    assert update_app.notice_var.get() == "", "the banner stays away"
+    assert update_app.updates_btn.cget("text") == "Update to 99.0.0", "the button stays"
+    update_app._save_settings()
+    saved = json.loads(gui.SETTINGS_PATH.read_text(encoding="utf-8"))
+    assert saved["update_latest"] == NEWER and saved["update_dismissed"] == NEWER and saved["update_check"] is True
+    assert isinstance(saved["update_checked_at"], float)
+
+
+@pytest.mark.edge
+def test_the_banner_does_not_cover_another_notice(update_app):
+    update_app._show_notice("Another notice.")
+    update_app._ev_update(NEWER)
+    assert update_app.notice_var.get() == "Another notice."
+    assert update_app.updates_btn.cget("text") == "Update to 99.0.0"
+
+
+def run_update_check(update_app, monkeypatch):
+    import gui
+    calls = []
+    monkeypatch.setattr(gui.update_check, "fetch_latest", lambda current, **kw: calls.append(current) or NEWER)
+    monkeypatch.delenv("BB_REROLL_SELFTEST", raising=False)
+    update_app._start_update_check()
+    pump(update_app, lambda: update_app._update_latest is not None, seconds=2.0)
+    return calls
+
+
+@pytest.mark.core
+def test_the_check_asks_github_once_and_shows_the_answer(update_app, monkeypatch):
+    assert run_update_check(update_app, monkeypatch) == [update_app_version()]
+    assert update_app.updates_btn.cget("text") == "Update to 99.0.0"
+
+
+@pytest.mark.edge
+def test_a_check_less_than_a_day_old_does_not_ask_again(update_app, monkeypatch):
+    import time as clock
+    update_app._update_checked_at = clock.time() - 3600
+    assert run_update_check(update_app, monkeypatch) == []
+
+
+@pytest.mark.edge
+def test_a_cleared_box_never_asks_github(update_app, monkeypatch):
+    update_app.update_check_var.set(False)
+    assert run_update_check(update_app, monkeypatch) == []
+
+
+@pytest.mark.edge
+def test_a_self_test_never_asks_github(update_app, monkeypatch):
+    import gui
+    calls = []
+    monkeypatch.setattr(gui.update_check, "fetch_latest", lambda current, **kw: calls.append(current) or NEWER)
+    monkeypatch.setenv("BB_REROLL_SELFTEST", "spec.json")
+    update_app._start_update_check()
+    pump(update_app, lambda: False, seconds=0.5)
+    assert calls == []
+
+
+@pytest.mark.edge
+def test_a_release_seen_before_shows_at_start_without_asking(update_app, monkeypatch):
+    import time as clock
+    update_app._update_latest, update_app._update_checked_at = NEWER, clock.time()
+    assert run_update_check(update_app, monkeypatch) == []
+    assert update_app.updates_btn.cget("text") == "Update to 99.0.0"
