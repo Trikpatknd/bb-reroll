@@ -324,7 +324,9 @@ def test_real_search_finds_a_port_rich_map(town_maps):
     # a checked seed's map is run on through the start (stage 2 C1): the same map plus the party's square
     start = match["map"]["start"]
     assert len(start) == 2 and all(isinstance(v, int) for v in start)
-    assert {k: v for k, v in match["map"].items() if k != "start"} == town_maps.maps[seed]["map"]
+    assert {k: v for k, v in match["map"].items() if k not in ("start", "trade")} == town_maps.maps[seed]["map"]
+    # a map the player can open carries the towns' trade data (trade routes), one row per town
+    assert len(match["map"]["trade"]["towns"]) == len(match["map"]["towns"])
 
 
 @pytest.mark.core
