@@ -1,7 +1,7 @@
 """The map of a result as a picture, to copy or to save: Pillow draws bbseed/mapdraw's geometry, so it shows what the Show
 map window and the SVG show, layer for layer. No tkinter: the window only calls this.
 
-    render(summary, verified=, north_band=, footer=, scale=)   -> an RGB image
+    render(summary, verified=, north_band=, footer=, scale=, routes=)   -> an RGB image
     footer_text(seed, origin)      -> the line that says which seed the picture is of, when it is shared alone
     copy_to_clipboard(image)       -> None when done, else the text that says why not
     save_png(image, path)          -> None when done, else the text that says why not; never leaves half a file
@@ -63,17 +63,21 @@ def _footer_layout(lines, width, scale):
     return font, size, wrapped
 
 
-def render(summary, *, verified, north_band=None, footer="", scale=2):
-    """The picture, north at the top: terrain, roads, north band, towns, ports, star (the Tk canvas's order). No text on
-    the map. With a `footer`: a strip under the map with the map line and the footer's text.
-    `verified`: the setup's maps are checked against the game (mapdraw: roads and start only then). `scale` is a whole
-    number. ValueError for a damaged summary (mapdraw._checked's rule)."""
+def render(summary, *, verified, north_band=None, footer="", scale=2, routes=None):
+    """The picture, north at the top: terrain, roads, trade routes, north band, towns, ports, star, the routes' tags
+    (the Tk canvas's order). No other text on the map. With a `footer`: a strip under the map with the map line and the
+    footer's text.
+    `verified`: the setup's maps are checked against the game (mapdraw: roads, start and routes only then). `scale` is a
+    whole number. `routes`: None = no trade routes (the picture as before); a list (trade.find_routes) = the routes
+    drawn and their legend (mapdraw.route_legend) added to the strip, [] = the line that says there are none.
+    ValueError for a damaged summary (mapdraw._checked's rule)."""
     width, height = mapdraw.picture_size(summary, scale)
     font, size, lines, strip = None, 0, [], 0
-    if footer:
+    legend = [] if routes is None else mapdraw.route_legend(summary, routes, verified)
+    if footer or legend:
         pad = FOOTER_PAD * scale
-        lines = [map_line(summary, DEFAULT_NORTH_BAND if north_band is None else north_band), footer]
-        font, size, lines = _footer_layout(lines, width - 2 * pad, scale)
+        lines = [map_line(summary, DEFAULT_NORTH_BAND if north_band is None else north_band), footer] if footer else []
+        font, size, lines = _footer_layout(lines + legend, width - 2 * pad, scale)
         strip = len(lines) * round(size * 1.3) + 2 * pad
     image = Image.new("RGB", (width, height + strip), BACKGROUND)
     draw = ImageDraw.Draw(image)
@@ -81,6 +85,8 @@ def render(summary, *, verified, north_band=None, footer="", scale=2):
         draw.rectangle((x0, y0, x1 - 1, y1 - 1), fill=colour)          # (Pillow's corners are inside the rectangle)
     for segment in mapdraw.road_segments(summary, verified, scale):
         draw.line(segment, fill=mapdraw.ROAD_COLOUR, width=max(1, round(mapdraw.ROAD_WIDTH * scale)))
+    route_lines = mapdraw.route_lines(summary, routes or [], verified, scale)
+    _draw_routes(draw, route_lines, scale)
     if north_band is not None:
         _dashed_line(draw, mapdraw.band_y(summary, north_band, scale), width, scale)
     marks = mapdraw.town_marks(summary, scale, verified)
@@ -95,11 +101,64 @@ def render(summary, *, verified, north_band=None, footer="", scale=2):
     if start is not None:
         cx, cy, r, fill, _label = start
         draw.polygon(mapdraw.star_points(cx, cy, r), fill=fill, outline=mapdraw.START_OUTLINE, width=max(1, round(scale)))
+    _draw_route_tags(draw, route_lines, scale)
     y = height + FOOTER_PAD * scale
     for line in lines:
+        head = _route_number(line)
+        if head is not None:            # a route's head line: a swatch of its colour in the margin
+            box = max(2, round(size * 0.35))
+            mid = y + round(size * 0.6)
+            draw.rectangle((FOOTER_PAD * scale // 2 - box // 2, mid - box, FOOTER_PAD * scale // 2 + box // 2, mid),
+                           fill=mapdraw.ROUTE_COLOURS[(head - 1) % len(mapdraw.ROUTE_COLOURS)])
         draw.text((FOOTER_PAD * scale, y), line, fill=FOOTER_TEXT, font=font)
         y += round(size * 1.3)
     return image
+
+
+def _route_number(line):
+    """n of a legend head line "#n: ...", else None."""
+    if line.startswith("#"):
+        number = line[1:].split(":", 1)[0]
+        if number.isdigit():
+            return int(number)
+    return None
+
+
+def _draw_routes(draw, route_lines, scale):
+    width = max(1, round(mapdraw.ROUTE_WIDTH * scale))
+    dash, gap = (max(1, round(v * scale)) for v in mapdraw.ROUTE_DASH)
+    for route in route_lines:
+        for points in route["polylines"]:
+            if len(points) > 1:
+                draw.line(points, fill=route["colour"], width=width, joint="curve")
+        for start, end in route["dashes"]:
+            _dashes(draw, start, end, mapdraw.ROUTE_UNDERLAY, width + 2 * max(1, round(scale)), dash, gap)
+            _dashes(draw, start, end, route["colour"], width, dash, gap)
+
+
+def _dashes(draw, start, end, fill, width, dash, gap):
+    (x0, y0), (x1, y1) = start, end
+    length = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+    if length == 0:
+        return
+    ux, uy = (x1 - x0) / length, (y1 - y0) / length
+    t = 0.0
+    while t < length:
+        e = min(t + dash, length)
+        draw.line([(x0 + ux * t, y0 + uy * t), (x0 + ux * e, y0 + uy * e)], fill=fill, width=width)
+        t = e + gap
+
+
+def _draw_route_tags(draw, route_lines, scale):
+    if not route_lines:
+        return
+    font = ImageFont.load_default(size=10 * scale)
+    for route in route_lines:
+        cx, cy, text = route["tag"]
+        half = draw.textlength(text, font=font) / 2 + 5 * scale
+        draw.rounded_rectangle((cx - half, cy - 8 * scale, cx + half, cy + 8 * scale), 4 * scale, fill=route["colour"],
+                               outline=mapdraw.ROUTE_TAG_OUTLINE, width=max(1, round(scale)))
+        draw.text((cx, cy), text, fill=mapdraw.ROUTE_TAG_OUTLINE, font=font, anchor="mm")
 
 
 def _dashed_line(draw, y, width, scale):

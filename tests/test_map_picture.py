@@ -211,3 +211,55 @@ def test_a_clipboard_that_refuses_the_data_frees_it_and_closes(monkeypatch):
     monkeypatch.setattr(map_picture, "_KERNEL32", Kernel())
     assert "Cannot copy" in map_picture.copy_to_clipboard(image)
     assert closed == [1] and len(freed) == 1
+
+
+# ---------------------------------------------------------------- trade routes
+def route_map():
+    summary = with_road(small_map())
+    summary["trade"] = {}
+    route = {"towns": [2, 1], "ships": [False, False], "paths": [[(10, 20), (11, 20), (12, 21)], [(12, 21), (10, 20)]],
+             "lap_days": 2.0, "fares": 0, "per_lap": 900.0, "per_day": 300.0,
+             "deals": [{"good": "Silk", "buy_in": 2, "sell_in": 1, "each": 150, "count": 2.0}]}
+    return summary, route
+
+
+@pytest.mark.core
+def test_render_without_trade_is_unchanged():
+    summary, _route = route_map()
+    plain = map_picture.render(summary, verified=True, footer="Seed 1. Trader.")
+    assert map_picture.render(summary, verified=True, footer="Seed 1. Trader.", routes=None).tobytes() == plain.tobytes()
+    del summary["trade"]
+    assert map_picture.render(summary, verified=True, footer="Seed 1. Trader.").tobytes() == plain.tobytes()
+
+
+@pytest.mark.core
+def test_render_with_routes_grows_footer():
+    summary, route = route_map()
+    plain = map_picture.render(summary, verified=True, footer="Seed 1. Trader.")
+    image = map_picture.render(summary, verified=True, footer="Seed 1. Trader.", routes=[route, dict(route), dict(route)])
+    assert image.width == plain.width and image.height > plain.height
+    colours = {c for _n, c in image.getcolors(1 << 20)}
+    assert rgb(mapdraw.ROUTE_COLOURS[0]) in colours
+    width, height = mapdraw.picture_size(summary, 2)
+    line = mapdraw.route_lines(summary, [route], True, 2)[0]
+    (x0, y0), (x1, y1) = line["polylines"][0][1], line["polylines"][0][2]      # (the first step is under the fort)
+    one = map_picture.render(summary, verified=True, footer="Seed 1. Trader.", routes=[route])
+    assert one.getpixel((round((x0 + x1) / 2), round((y0 + y1) / 2))) == rgb(mapdraw.ROUTE_COLOURS[0])
+    assert one.height < image.height                # fewer legend lines
+    # the towns are drawn above the routes
+    cx, cy, _r, fill, _port, _label = mapdraw.town_marks(summary, 2, True)[2]
+    assert image.getpixel((int(cx), int(cy))) == rgb(fill)
+    # no routes at all: the line that says so, under the map
+    none = map_picture.render(summary, verified=True, footer="Seed 1. Trader.", routes=[])
+    assert none.height > plain.height and none.crop((0, 0, width, height)).tobytes() == \
+        plain.crop((0, 0, width, height)).tobytes()
+
+
+@pytest.mark.edge
+def test_render_with_routes_on_an_unverified_setup_draws_none():
+    summary, route = route_map()
+    plain = map_picture.render(summary, verified=False)
+    image = map_picture.render(summary, verified=False, routes=[route])
+    width, height = mapdraw.picture_size(summary, 2)
+    assert image.crop((0, 0, width, height)).tobytes() == plain.crop((0, 0, width, height)).tobytes()
+    assert image.height > plain.height              # the line that says why

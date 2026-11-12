@@ -649,3 +649,77 @@ def test_the_svg_with_roads_is_well_formed_and_one_without_any_is_what_it_was():
     _parse(svg(s, verified=True, north_band=33))
     plain = tiny_summary("LLLL" "LLLL" "LLLL", [town(0, 0)])
     assert svg(dict(plain, roads=ROADS_OFF), verified=True) == svg(plain, verified=True)
+
+
+# ---------------------------------------------------------------- trade routes
+def route_summary():
+    """A 30 x 10 land map with three towns: A and B walked, C a port reached by ship."""
+    return tiny_summary("L" * 300, [town(2, 4, name="A"), town(6, 4, name="B"), town(20, 4, name="C", port=True)],
+                        size=(30, 10))
+
+
+def a_route(**extra):
+    route = {"towns": [0, 1, 2], "ships": [False, True, False],
+             "paths": [[(2, 4), (3, 4), (4, 4), (5, 4), (6, 4)], [], [(20, 4), (2, 4)]],
+             "lap_days": 3.3, "fares": 120, "per_lap": 1602.4, "per_day": 494.13,
+             "deals": [{"good": "Silk", "buy_in": 0, "sell_in": 2, "each": 189, "count": 2.0},
+                       {"good": "Furs", "buy_in": 1, "sell_in": 0, "each": 40, "count": 1.226}]}
+    route.update(extra)
+    return route
+
+
+def centre(summary, x, y, scale=1):
+    marks = mapdraw.town_marks(tiny_summary(summary["terrain"], [town(x, y)], size=summary["size"]), scale)
+    return marks[0][0], marks[0][1]
+
+
+@pytest.mark.core
+def test_route_lines_follow_paths():
+    s = route_summary()
+    [line] = mapdraw.route_lines(s, [a_route()], verified=True, scale=2)
+    assert line["colour"] == mapdraw.ROUTE_COLOURS[0]
+    assert line["polylines"] == [[centre(s, x, y, 2) for x, y in [(2, 4), (3, 4), (4, 4), (5, 4), (6, 4)]],
+                                 [centre(s, 20, 4, 2), centre(s, 2, 4, 2)]]
+    assert line["dashes"] == [(centre(s, 6, 4, 2), centre(s, 20, 4, 2))]         # the ship leg: town to town
+    cx, cy, text = line["tag"]
+    points = [centre(s, x, y, 2) for x, y in [(2, 4), (6, 4), (20, 4)]]
+    assert (cx, cy) == pytest.approx((sum(p[0] for p in points) / 3, sum(p[1] for p in points) / 3))
+    assert text == "#1  494/day"
+    second = mapdraw.route_lines(s, [a_route(), a_route(per_day=99.6)], verified=True)[1]
+    assert second["colour"] == mapdraw.ROUTE_COLOURS[1] and second["tag"][2] == "#2  100/day"
+    assert second["tag"][1] == pytest.approx(cy / 2 + mapdraw.ROUTE_TAG_SPACE[1]), "a tag on another one moves down"
+
+
+@pytest.mark.dirty
+def test_unverified_draws_no_routes():
+    s = route_summary()
+    assert mapdraw.route_lines(s, [a_route()], verified=False) == []
+    assert mapdraw.route_legend(dict(s, trade={}), [a_route()], verified=False) == [mapdraw.ROUTES_UNVERIFIED]
+
+
+@pytest.mark.core
+def test_route_legend_texts():
+    s = dict(route_summary(), trade={})
+    lines = mapdraw.route_legend(s, [a_route()], verified=True)
+    assert lines[0] == ("#1: about 494 crowns per day. Lap 3.3 days, ships 120 crowns, about 1,482 crowns a lap. "
+                        "A > B > sail to C > A")
+    assert [line.strip() for line in lines[1:3]] == ["Silk: buy in A, sell in C, +189 each x 2",
+                                                     "Furs: buy in B, sell in A, +40 each x 1.2"]
+    assert lines[1].startswith(" ")
+    assert lines[-1] == mapdraw.ROUTE_NOTE
+    walked = mapdraw.route_legend(s, [a_route(ships=[False, False, False], fares=0)], verified=True)[0]
+    assert walked.startswith("#1: about 494 crowns per day. Lap 3.3 days, about 1,602 crowns a lap. A > B > C > A")
+    assert mapdraw.route_legend(s, [], verified=True) == [mapdraw.NO_ROUTES]
+    assert mapdraw.NO_ROUTES == "No profitable trade loop on this map."
+    assert mapdraw.ROUTES_UNVERIFIED == "Trade routes need a checked game setup."
+    assert mapdraw.ROUTE_NOTE.startswith("Crowns per day before wages, at the start:")
+    # a map kept from before the trade data: no routes, and it says why
+    assert mapdraw.route_legend(route_summary(), [], verified=True) == [mapdraw.NO_TRADE_DATA]
+
+
+@pytest.mark.edge
+def test_route_legend_shows_four_deals_at_most():
+    s = dict(route_summary(), trade={})
+    deals = [{"good": "Good %d" % n, "buy_in": 0, "sell_in": 1, "each": 10 - n, "count": 2.0} for n in range(6)]
+    lines = mapdraw.route_legend(s, [a_route(deals=deals)], verified=True)
+    assert len(lines) == 1 + 4 + 1

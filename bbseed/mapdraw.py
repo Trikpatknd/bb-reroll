@@ -12,6 +12,9 @@ SVG and the canvas show one picture:
     star_points(cx, cy, radius)    -> the star's ten corners [(x, y)]
     band_y(summary, north_band)    -> y of the north band's line
     svg(summary, north_band=None, verified=False)  -> the whole picture as SVG text
+    route_lines(summary, routes, verified, scale=1)  -> the trade routes (trade.find_routes) to draw: lines, ship
+                                   dashes and a tag per route; [] off a verified setup
+    route_legend(summary, routes, verified)  -> the routes' legend lines (or the line that says why there are none)
 
 How the tiles are placed (the layout the lab measured against the game, mapgen.LAYOUT "even-q-up"): the map is
 drawn with NORTH AT THE TOP, i.e. high y is up the picture (the game's direction N is y + 1). Flat-topped hexes in
@@ -319,3 +322,98 @@ def svg(summary, north_band=None, scale=1, verified=False):
                % (_num(4 * scale), _num(height + 12 * scale), _num(10 * scale), escape(key)))
     out.append("</svg>")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------- trade routes (bbseed/trade.py find_routes)
+# Drawn only on a setup whose maps were checked against the game (`verified`, as the roads): above the roads, below the
+# towns; a ship leg is a dashed straight line from port to port. The legend goes under the map.
+ROUTE_COLOURS = ("#ff2d95", "#00e5ff", "#ffb300")
+ROUTE_WIDTH = 4.0           # pixels at scale 1
+ROUTE_UNDERLAY = "#ffffff"  # under a ship leg's dashes, so they show on the sea
+ROUTE_DASH = (9, 5)         # a ship leg's dash and gap, pixels at scale 1
+ROUTE_TAG_OUTLINE = "#111111"
+ROUTE_TAG_SPACE = (90, 18)  # pixels at scale 1 a tag keeps from the tags before it (about its width and height)
+ROUTE_NOTE = ("Crowns per day before wages, at the start: your starting company's prices, neutral relations, no town "
+              "events. Shops restock every 3 days. Days are about. For the first campaign after starting the game.")
+NO_ROUTES = "No profitable trade loop on this map."
+ROUTES_UNVERIFIED = "Trade routes need a checked game setup."
+NO_TRADE_DATA = "This map has no trade data. Check the seed again to see its trade routes."
+ROUTE_TEXTS = {"note": ROUTE_NOTE, "none": NO_ROUTES, "unverified": ROUTES_UNVERIFIED, "no_data": NO_TRADE_DATA}
+ROUTE_DEALS_SHOWN = 4       # deal lines per route in the legend
+
+
+def _tile_centre(x, y, h):
+    """The middle of tile (x, y) at scale 1, where the towns' circles are."""
+    return x * CELL_W + CELL_W / 2, _top(y, h) + _lower(x) + CELL_H / 2
+
+
+def route_lines(summary, routes, verified=False, scale=1):
+    """What to draw for each route (find_routes' order: the best first): {"colour", "polylines": [[(x, y), ...] per
+    walked leg, along its tiles' centres], "dashes": [((x0, y0), (x1, y1)) per ship leg, town to town], "tag": (cx, cy,
+    "#n  X/day") at the middle of the loop's towns}. [] when `verified` is false."""
+    if not verified:
+        return []
+    _w, h, _ = _checked(summary)
+    towns = summary["towns"]
+    out = []
+    for n, route in enumerate(routes):
+        order = route["towns"]
+        k = len(order)
+        polylines, dashes = [], []
+        for i in range(k):
+            if route["ships"][i]:
+                a, b = towns[order[i]], towns[order[(i + 1) % k]]
+                pa, pb = _tile_centre(a["x"], a["y"], h), _tile_centre(b["x"], b["y"], h)
+                dashes.append(((pa[0] * scale, pa[1] * scale), (pb[0] * scale, pb[1] * scale)))
+            else:
+                polylines.append([(cx * scale, cy * scale)
+                                  for cx, cy in (_tile_centre(x, y, h) for x, y in route["paths"][i])])
+        centres = [_tile_centre(towns[i]["x"], towns[i]["y"], h) for i in order]
+        cx = sum(p[0] for p in centres) / k * scale
+        cy = sum(p[1] for p in centres) / k * scale
+        while any(abs(cx - t[0]) < ROUTE_TAG_SPACE[0] * scale and abs(cy - t[1]) < ROUTE_TAG_SPACE[1] * scale
+                  for t in (r["tag"] for r in out)):
+            cy += ROUTE_TAG_SPACE[1] * scale        # a tag on another one moves down below it
+        out.append({"colour": ROUTE_COLOURS[n % len(ROUTE_COLOURS)], "polylines": polylines, "dashes": dashes,
+                    "tag": (cx, cy, "#%d  %s/day" % (n + 1, "{:,}".format(round(route["per_day"]))))})
+    return out
+
+
+def _count(value):
+    value = round(value, 1)
+    return "%d" % value if value == int(value) else "%.1f" % value
+
+
+def route_legend(summary, routes, verified=False):
+    """The legend lines: per route a head line ("#1: about 494 crowns per day. Lap 3.3 days, about 1,482 crowns a lap.
+    A > B > sail to C > A") and up to ROUTE_DEALS_SHOWN deal lines (indented: "Silk: buy in A, sell in B, +189 each
+    x 2"), then ROUTE_NOTE. Without routes the line that says why: ROUTES_UNVERIFIED off a verified setup,
+    NO_TRADE_DATA for a map without trade data (kept from before, or one without its start), else NO_ROUTES."""
+    if not verified:
+        return [ROUTES_UNVERIFIED]
+    if summary.get("trade") is None:
+        return [NO_TRADE_DATA]
+    if not routes:
+        return [NO_ROUTES]
+    towns = summary["towns"]
+
+    def name(i):
+        return town_name(towns[i], verified)
+    lines = []
+    for n, route in enumerate(routes):
+        order = route["towns"]
+        k = len(order)
+        parts = [name(order[0])]
+        for i in range(k):
+            nxt = name(order[(i + 1) % k])
+            parts.append("sail to " + nxt if route["ships"][i] else nxt)
+        fares = route["fares"]
+        lines.append("#%d: about %s crowns per day. Lap %.1f days, %sabout %s crowns a lap. %s" % (
+            n + 1, "{:,}".format(round(route["per_day"])), route["lap_days"],
+            "ships %s crowns, " % "{:,}".format(fares) if fares else "",
+            "{:,}".format(round(route["per_lap"] - fares)), " > ".join(parts)))
+        for deal in route["deals"][:ROUTE_DEALS_SHOWN]:
+            lines.append("    %s: buy in %s, sell in %s, +%d each x %s" % (
+                deal["good"], name(deal["buy_in"]), name(deal["sell_in"]), deal["each"], _count(deal["count"])))
+    lines.append(ROUTE_NOTE)
+    return lines
