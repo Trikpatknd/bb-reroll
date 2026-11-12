@@ -256,6 +256,7 @@ def map_app(app):
         app._bulk_check("banned", True)
         app._bulk_check("required", True)
         app._searching = False
+        app.trade_routes_var.set(False)
     reset()
     app.errors.clear()
     yield app
@@ -2922,3 +2923,89 @@ def test_a_release_seen_before_shows_at_start_without_asking(update_app, monkeyp
     update_app._update_latest, update_app._update_checked_at = NEWER, clock.time()
     assert run_update_check(update_app, monkeypatch) == []
     assert update_app.updates_btn.cget("text") == "Update to 99.0.0"
+
+
+# ---------------------------------------------------------------- the Trade routes box
+def trade_map():
+    """The lab's map of 7430000000 with its trade data (tests/data): 28 towns, 3 routes."""
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).resolve().parent / "data" / "trade_map_7430000000.json").read_text(encoding="utf-8"))
+
+
+def routes_window(app, info, summary=None):
+    app._run = dict(RUN, north_band=33)
+    entry = result(app, "7430000000", summary or trade_map())
+    entry["info"] = dict(info)
+    app._show_map(entry)
+    pump(app, lambda: False, 0.2)
+    return next(iter(app._map_windows.values())), entry
+
+
+@pytest.mark.core
+def test_toggle_redraws_open_windows(map_app):
+    """Review Focus 4: ticking the box draws the routes in the open map window (found in a thread), unticking takes
+    them away; the picture follows the box; a late result for a closed window does nothing."""
+    from bbseed import mapdraw
+    app = map_app
+    window, entry = routes_window(app, LEGENDS_VERIFIED)
+    canvas = canvas_of(window)
+    assert not canvas.find_withtag("routes") and window.routes_drawn == 0, "the box is off by default"
+    plain = app._map_picture(entry).size
+    app.trade_routes_var.set(True)
+    app._on_trade_routes_toggle()
+    pump(app, lambda: window.routes_drawn is not None, 20.0)
+    assert window.routes_drawn == 3 and len(entry["trade_routes"]) == 3
+    assert canvas.find_withtag("routes") and len(canvas.find_withtag("routetag")) == 3 * 2
+    texts = labels_of(window)
+    assert any(t.startswith("#1: about ") for t in texts) and mapdraw.ROUTE_NOTE in texts
+    # the routes lie above the roads and below the towns
+    order = canvas.find_all()
+    ovals = [i for i in order if canvas.type(i) == "oval"]
+    routes = canvas.find_withtag("routes")
+    roads = canvas.find_withtag("road")
+    assert order.index(routes[-1]) < order.index(ovals[0]) and order.index(roads[-1]) < order.index(routes[0])
+    with_routes = app._map_picture(entry).size
+    assert with_routes[0] == plain[0] and with_routes[1] > plain[1]
+    app.trade_routes_var.set(False)
+    app._on_trade_routes_toggle()
+    pump(app, lambda: False, 0.1)
+    assert not canvas.find_withtag("routes") and not canvas.find_withtag("routetag") and window.routes_drawn == 0
+    assert not any(t.startswith("#1: about ") for t in labels_of(window))
+    assert app._map_picture(entry).size == plain
+    window.destroy()
+    pump(app, lambda: False, 0.1)
+    window._routes_ready(entry["trade_routes"])          # a late result for a closed window: nothing happens
+
+
+@pytest.mark.dirty
+def test_the_box_draws_no_routes_on_an_unverified_setup_or_an_old_map(map_app):
+    from bbseed import mapdraw
+    app = map_app
+    app.trade_routes_var.set(True)
+    window, entry = routes_window(app, dict(LEGENDS_VERIFIED, game_version="1.5.2.4"))
+    assert window.routes_drawn == 0 and not canvas_of(window).find_withtag("routes")
+    assert mapdraw.ROUTES_UNVERIFIED in labels_of(window) and "trade_routes" not in entry
+    window.destroy()
+    app._map_windows.clear()
+    old = trade_map()
+    del old["trade"]                                       # a result kept from before this version
+    window, entry = routes_window(app, LEGENDS_VERIFIED, old)
+    pump(app, lambda: window.routes_drawn is not None, 10.0)
+    assert window.routes_drawn == 0 and mapdraw.NO_TRADE_DATA in labels_of(window)
+    assert app.errors == []
+
+
+@pytest.mark.core
+def test_the_trade_routes_box_is_saved(map_app, tmp_path, monkeypatch):
+    import gui
+    app = map_app
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(gui, "SETTINGS_PATH", path)
+    app.trade_routes_var.set(True)
+    app._save_settings()
+    import json
+    assert json.loads(path.read_text(encoding="utf-8"))["trade_routes"] is True
+    app.trade_routes_var.set(False)
+    app._save_settings()
+    assert json.loads(path.read_text(encoding="utf-8"))["trade_routes"] is False

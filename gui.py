@@ -82,6 +82,18 @@ from bbseed import mapdraw
 from bbseed.search import NEAR_MAPS, NEAR_SEEDS, near_key
 from bbseed import msu_settings
 
+ROUTES_PANEL_WIDTH = 380        # the map window's trade routes legend, beside the map (pixels)
+ROUTES_POLL_MS = 100            # how often the window looks for routes a thread has found
+
+
+def _find_routes(summary):
+    """The trade routes of a map (bbseed/trade.py); [] when anything goes wrong (a damaged or old summary)."""
+    from bbseed import trade
+    try:
+        return trade.find_routes(summary)
+    except Exception:
+        return []
+
 
 # ─────────────────────── paths ───────────────────────
 
@@ -374,6 +386,8 @@ class _MapWindow(ctk.CTkToplevel):
         self._app, self._key = app, key
         summary, band = entry["map"], entry.get("north_band")
         self.summary, self.band = summary, band     # what the picture shows (App._show_map compares them)
+        self._entry = entry
+        self.routes_drawn, self.routes_legend = 0, []     # the trade routes on the canvas (None: still being found)
         # the company's start tile: drawn only for a setup whose maps are checked against the game (verified_setup)
         self.verified = map_view.result_verified(entry.get("info"))
         self.start_note = map_view.start_line(summary, entry.get("info"))
@@ -387,12 +401,17 @@ class _MapWindow(ctk.CTkToplevel):
         self.info_var.set(self._line)
         ctk.CTkLabel(self, textvariable=self.info_var, font=(FONT, 12), text_color=PALETTE["text"], anchor="w").pack(
             fill="x", padx=12, pady=(8, 4))
-        self.canvas = tk.Canvas(self, width=round(width), height=round(height), bg=PALETTE["field"],
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="x", padx=12)
+        self.canvas = tk.Canvas(body, width=round(width), height=round(height), bg=PALETTE["field"],
                                 highlightthickness=0)
-        self.canvas.pack(padx=12)
+        self.canvas.pack(side="left", anchor="n")
+        # the trade routes' legend, beside the map (under it the window could get taller than the screen)
+        self._routes_panel = ctk.CTkFrame(body, fg_color="transparent", width=ROUTES_PANEL_WIDTH)
         self._draw(summary, band, round(width))
         self._legend(band)
         app._map_picture_buttons(self, entry, window=self).pack(fill="x", padx=12, pady=(0, 8))
+        self.redraw_routes()
         self.bind("<Destroy>", self._forget, add="+")
         # beside the main window, and not lower than the screen allows
         self.update_idletasks()
@@ -420,11 +439,11 @@ class _MapWindow(ctk.CTkToplevel):
         # no overlap at any scale.
         for x0, y0, x1, y1, colour in mapdraw.cells(summary, 1):
             canvas.create_rectangle(round(x0 * scale), round(y0 * scale), round(x1 * scale), round(y1 * scale),
-                                    fill=colour, outline="")
+                                    fill=colour, outline="", tags="cell")
         # the roads: the same segments as the SVG's path, above the terrain and below the band, towns and star
         for x0, y0, x1, y1 in mapdraw.road_segments(summary, self.verified, scale):
             canvas.create_line(x0, y0, x1, y1, fill=mapdraw.ROAD_COLOUR, width=max(1, round(mapdraw.ROAD_WIDTH * scale)),
-                               capstyle="round")
+                               capstyle="round", tags="road")
         if band is not None:
             y = mapdraw.band_y(summary, band, scale)
             canvas.create_line(0, y, width, y, fill=mapdraw.BAND_COLOUR, width=max(1, round(1.5 * scale)),
@@ -450,6 +469,91 @@ class _MapWindow(ctk.CTkToplevel):
         canvas.create_polygon(4, 4, 32, 4, 32, 44, 4, 44, fill="#111111", outline="#ffffff")
         canvas.create_polygon(18, 8, 26, 24, 18, 20, 10, 24, fill="#ffffff", outline="#ffffff")
         canvas.create_text(18, 35, text="N", fill="#ffffff", font=(FONT, 11, "bold"))
+
+    # ---- the trade routes (the Trade routes box): above the roads, below the towns; the legend beside the map
+    def redraw_routes(self):
+        """Draws the routes as the box says now: none when it is off, else the routes of this result (found once, in a
+        thread: App._routes_for), or the line that says why there are none."""
+        self._clear_routes()
+        if not self._app.trade_routes_var.get():
+            self._routes_panel.pack_forget()
+            return
+        self._routes_panel.pack(side="left", anchor="n", fill="y", padx=(12, 0))
+        if not self.verified:
+            self.routes_legend = [mapdraw.ROUTES_UNVERIFIED]
+            self._route_texts(self.routes_legend)
+            return
+        self.routes_drawn = None
+        if "trade_routes" not in self._entry:
+            self._route_texts([map_view.TRADE_ROUTES_WAIT])
+        self._app._routes_for(self._entry, self._routes_ready)
+
+    def _clear_routes(self):
+        self.canvas.delete("routes")
+        self.canvas.delete("routetag")
+        for child in self._routes_panel.winfo_children():
+            child.destroy()
+        self.routes_drawn, self.routes_legend = 0, []
+
+    def _routes_ready(self, routes):
+        """The routes found for this window's result. Nothing when the window is closed or the box was unticked since."""
+        try:
+            if not self.winfo_exists() or not self._app.trade_routes_var.get():
+                return
+        except Exception:
+            return
+        self._clear_routes()
+        canvas, scale = self.canvas, self.scale
+        lines = mapdraw.route_lines(self.summary, routes, self.verified, scale)
+        legend = mapdraw.route_legend(self.summary, routes, self.verified)
+        heads = [line for line in legend if line.startswith("#")]
+        width = max(1, round(mapdraw.ROUTE_WIDTH * scale))
+        dash = tuple(max(1, min(255, round(v * scale))) for v in mapdraw.ROUTE_DASH)
+        for n, route in enumerate(lines):
+            items = []
+            for points in route["polylines"]:
+                if len(points) > 1:
+                    items.append(canvas.create_line(*[c for p in points for c in p], fill=route["colour"], width=width,
+                                                    capstyle="round", joinstyle="round", tags="routes"))
+            for (x0, y0), (x1, y1) in route["dashes"]:
+                items.append(canvas.create_line(x0, y0, x1, y1, fill=mapdraw.ROUTE_UNDERLAY, width=width + 2, dash=dash,
+                                                tags="routes"))
+                items.append(canvas.create_line(x0, y0, x1, y1, fill=route["colour"], width=width, dash=dash,
+                                                tags="routes"))
+            head = heads[n] if n < len(heads) else ""
+            for item in items:
+                canvas.tag_bind(item, "<Enter>", lambda _e, text=head: self.info_var.set(text))
+                canvas.tag_bind(item, "<Leave>", lambda _e: self.info_var.set(self._line))
+        # above the roads and below the band, the towns and the star: lower the routes, then what lies under them
+        canvas.tag_lower("routes")
+        canvas.tag_lower("road")
+        canvas.tag_lower("cell")
+        for route in lines:     # the tags on top of everything
+            cx, cy, text = route["tag"]
+            label = canvas.create_text(cx, cy, text=text, fill=mapdraw.ROUTE_TAG_OUTLINE, font=(FONT, 10, "bold"),
+                                       tags="routetag")
+            x0, y0, x1, y1 = canvas.bbox(label)
+            plate = canvas.create_rectangle(x0 - 5, y0 - 2, x1 + 5, y1 + 2, fill=route["colour"],
+                                            outline=mapdraw.ROUTE_TAG_OUTLINE, tags="routetag")
+            canvas.tag_raise(label, plate)
+        self._route_texts(legend, len(lines))
+        self.routes_drawn, self.routes_legend = len(lines), legend
+
+    def _route_texts(self, legend, count=0):
+        for child in self._routes_panel.winfo_children():
+            child.destroy()
+        ctk.CTkLabel(self._routes_panel, text=map_view.TRADE_ROUTES_LABEL, font=(FONT, 12, "bold"),
+                     text_color=PALETTE["text"], anchor="w").pack(fill="x")
+        for line in legend:
+            number = line[1:].split(":", 1)[0] if line.startswith("#") else ""
+            if number.isdigit():
+                colour, font, pad = mapdraw.ROUTE_COLOURS[(int(number) - 1) % len(mapdraw.ROUTE_COLOURS)], (FONT, 11, "bold"), 6
+            elif line.startswith(" "):
+                colour, font, pad = PALETTE["text"], (FONT, 11), 0
+            else:
+                colour, font, pad = PALETTE["muted"], (FONT, 11), 6
+            ctk.CTkLabel(self._routes_panel, text=line.strip(), font=font, text_color=colour, anchor="w", justify="left",
+                         wraplength=ROUTES_PANEL_WIDTH - 16, height=18).pack(fill="x", padx=(0 if pad else 14, 0), pady=(pad, 0))
 
     def _legend(self, band):
         """One line under the map: what the circles, the ring, the road line, the star and the dashed line mean."""
@@ -514,6 +618,7 @@ class App(ctk.CTk):
         self.near_seeds_var = ctk.StringVar(value=str(NEAR_SEEDS))
         self.near_maps_var  = ctk.StringVar(value=str(NEAR_MAPS))
         self.update_check_var = ctk.BooleanVar(value=True)
+        self.trade_routes_var = ctk.BooleanVar(value=False)        # the Trade routes box: off unless the player ticks it
         self._update_latest = None        # the newest release seen ("v4.6.0"), saved: the button shows it while it is newer
         self._update_checked_at = None    # when GitHub last answered (time.time()), saved
         self._update_dismissed = None     # the release whose banner the player removed, saved
@@ -548,6 +653,9 @@ class App(ctk.CTk):
         self._map_versions = (None, None)               # the game and Legends version the workers reported
         self._map_mods = None                           # the mod zips the workers reported (None: not yet)
         self._map_windows:           dict = {}          # (setup, origin, seed) -> the open map window
+        self._routes_jobs:           dict = {}          # id(entry) -> (entry, [callbacks]) while its routes are found
+        self._routes_done = queue.Queue()               # (id(entry), routes) from the route threads
+        self._routes_polling = False
         self.banned_vars: dict[str, ctk.BooleanVar] = {}
         self.required_vars: dict[str, ctk.BooleanVar] = {}
         self.banned_known   = self._saved_list("known_banned", DEFAULT_BANNED)
@@ -1303,6 +1411,18 @@ class App(ctk.CTk):
         top, towns = line(1), line(2)
         for key, label in map_view.CONDITION_LABELS.items():
             entry(top, label, self.map_vars, key, conditions[key], map_view.CONDITION_TIPS[key])
+        # not a condition: what the map windows and the map pictures of the results show (never disabled)
+        routes_box = ctk.CTkFrame(top, fg_color="transparent")
+        routes_box.pack(side="left", padx=(0, 18))
+        ctk.CTkLabel(routes_box, text=map_view.TRADE_ROUTES_TITLE, font=(FONT, 11), text_color=PALETTE["muted"],
+                     anchor="w").pack(anchor="w")
+        routes_check = ctk.CTkCheckBox(routes_box, text=map_view.TRADE_ROUTES_LABEL, variable=self.trade_routes_var,
+                                       font=(FONT, 12), text_color=PALETTE["text"], fg_color=PALETTE["accent"],
+                                       hover_color=PALETTE["accent_hover"], border_color=PALETTE["faint"], border_width=2,
+                                       checkbox_width=16, checkbox_height=16, corner_radius=3,
+                                       command=self._on_trade_routes_toggle)
+        routes_check.pack(anchor="w", pady=(4, 0))
+        _attach_tooltip(routes_check, map_view.TRADE_ROUTES_TIP)
         for key, label in map_view.TOWN_LABELS.items():
             entry(towns, label, self.map_vars, key, conditions[key], map_view.town_tip(label))
         bar = ctk.CTkFrame(frame, fg_color="transparent")       # the title of the Map Options and their read button
@@ -2694,10 +2814,69 @@ class App(ctk.CTk):
         return row
 
     def _map_picture(self, entry: dict):
+        """The picture to copy or save; with the Trade routes box ticked, with the routes (found now when the map window
+        has not found them yet: a copy is a click, a short wait is fine)."""
         from bbreroll import map_picture
-        return map_picture.render(entry["map"], verified=map_view.result_verified(entry.get("info")),
-                                  north_band=entry.get("north_band"),
-                                  footer=map_picture.footer_text(entry["seed"], entry["origin"]))
+        verified = map_view.result_verified(entry.get("info"))
+        routes = None
+        if self.trade_routes_var.get():
+            routes = self._routes_now(entry) if verified else []
+        return map_picture.render(entry["map"], verified=verified, north_band=entry.get("north_band"),
+                                  footer=map_picture.footer_text(entry["seed"], entry["origin"]), routes=routes)
+
+    # ---- trade routes (bbseed/trade.py): found once per result, kept on its entry
+    def _on_trade_routes_toggle(self):
+        """The box changed: save it and draw every open map window again."""
+        self._save_settings()
+        for window in list(self._map_windows.values()):
+            try:
+                if window.winfo_exists():
+                    window.redraw_routes()
+            except Exception:
+                pass
+
+    def _routes_now(self, entry: dict):
+        if "trade_routes" not in entry:
+            entry["trade_routes"] = _find_routes(entry["map"])
+        return entry["trade_routes"]
+
+    def _routes_for(self, entry: dict, callback):
+        """callback(routes) on the Tk thread: at once when the entry has them, else after a thread has found them
+        (a few seconds on a big map; one thread per entry, however many windows ask)."""
+        if "trade_routes" in entry:
+            callback(entry["trade_routes"])
+            return
+        job = self._routes_jobs.get(id(entry))
+        if job is not None:
+            job[1].append(callback)
+            return
+        self._routes_jobs[id(entry)] = (entry, [callback])
+        summary, key, done = entry["map"], id(entry), self._routes_done
+        threading.Thread(target=lambda: done.put((key, _find_routes(summary))), daemon=True).start()
+        if not self._routes_polling:
+            self._routes_polling = True
+            self.after(ROUTES_POLL_MS, self._poll_routes)
+
+    def _poll_routes(self):
+        while True:
+            try:
+                key, routes = self._routes_done.get_nowait()
+            except queue.Empty:
+                break
+            job = self._routes_jobs.pop(key, None)
+            if job is None:
+                continue
+            entry, callbacks = job
+            entry["trade_routes"] = routes
+            for callback in callbacks:
+                try:
+                    callback(routes)
+                except Exception:
+                    pass
+        if self._routes_jobs:
+            self.after(ROUTES_POLL_MS, self._poll_routes)
+        else:
+            self._routes_polling = False
 
     def _map_picture_result(self, message, window):
         self.status_var.set(message)
@@ -2860,6 +3039,7 @@ class App(ctk.CTk):
             self.sisters_var.set(data["battle_sisters"])
         if isinstance(data.get("update_check"), bool):
             self.update_check_var.set(data["update_check"])
+        self.trade_routes_var.set(map_view.trade_routes_setting(data))
         checked = data.get("update_checked_at")
         self._update_checked_at = checked if isinstance(checked, (int, float)) and not isinstance(checked, bool) else None
         self._update_latest = data.get("update_latest") if update_check.parse_version(data.get("update_latest")) else None
@@ -2896,6 +3076,7 @@ class App(ctk.CTk):
                 "near_seeds":        to_int(self.near_seeds_var.get()),
                 "near_maps":         to_int(self.near_maps_var.get()),
                 "update_check":      bool(self.update_check_var.get()),
+                "trade_routes":      bool(self.trade_routes_var.get()),
                 "update_checked_at": self._update_checked_at,
                 "update_latest":     self._update_latest,
                 "update_dismissed":  self._update_dismissed,
@@ -2967,6 +3148,7 @@ class App(ctk.CTk):
             # the Map view: the spec's conditions and Map Options, else the defaults (never the player's saved ones)
             self._set_map_fields(spec.get("map"), spec.get("map_options"))
             self._apply_map_state()
+            self.trade_routes_var.set(bool(spec.get("trade_routes", False)))
             if spec.get("search") is False:     # a picture of the window only: no search
                 self.after(1000, lambda: self._selftest_done((0, 0.0, 0, False)))
             elif spec.get("check"):
@@ -3016,7 +3198,9 @@ class App(ctk.CTk):
             from bbreroll import map_picture
             self._copy_map_picture(pictured)
             report["copy_picture"] = {"status": self.status_var.get(), "drawn": list(self._map_picture(pictured).size),
-                                      "clipboard": map_picture.clipboard_picture_size()}
+                                      "clipboard": map_picture.clipboard_picture_size(),
+                                      "routes": len(pictured["trade_routes"]) if self.trade_routes_var.get()
+                                      and pictured.get("trade_routes") is not None else None}
         Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
         if spec.get("screenshot"):          # a picture of the window, to check the layout unattended
             self._grab(self, spec["screenshot"])
@@ -3026,17 +3210,35 @@ class App(ctk.CTk):
                 self._show_map(shown)
                 window = self._map_windows[(shown["setup"], shown["origin"], shown["seed"])]
                 self.update()
+                end = time.time() + 60
+                while window.routes_drawn is None and time.time() < end:       # the routes are found in a thread
+                    self.update()
+                    time.sleep(0.05)
                 report["map_window"] = {"title": window.title(), "scale": window.scale, "info": window.info_var.get(),
                                         "canvas": [int(window.canvas.cget("width")), int(window.canvas.cget("height"))],
                                         "items": len(window.canvas.find_all()),
                                         "start": window.summary.get("start"),       # the star: only when verified
                                         "start_drawn": mapdraw.start_mark(window.summary, window.verified) is not None,
                                         "roads_drawn": len(mapdraw.road_segments(window.summary, window.verified)),
-                                        "start_note": window.start_note}
+                                        "start_note": window.start_note,
+                                        "routes_drawn": window.routes_drawn, "routes_legend": window.routes_legend,
+                                        "trade": "trade" in window.summary}
                 Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
                 if spec.get("screenshot"):
                     shot = Path(spec["screenshot"])
                     self._grab(window, str(shot.with_name(shot.stem + "_map" + shot.suffix)))
+                if spec.get("toggle_routes"):      # the box flipped while the window is open: it is drawn again
+                    self.trade_routes_var.set(not self.trade_routes_var.get())
+                    self._on_trade_routes_toggle()
+                    end = time.time() + 60
+                    while window.routes_drawn is None and time.time() < end:
+                        self.update()
+                        time.sleep(0.05)
+                    self.update()
+                    report["map_window"]["after_toggle"] = {
+                        "box": self.trade_routes_var.get(), "routes_drawn": window.routes_drawn,
+                        "route_items": len(window.canvas.find_withtag("routes")), "legend": window.routes_legend}
+                    Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")
             except Exception as e:
                 report["map_window"] = {"error": f"{type(e).__name__}: {e}"}
                 Path(spec["out"]).write_text(json.dumps(report, indent=2), encoding="utf-8")

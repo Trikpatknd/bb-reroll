@@ -452,3 +452,18 @@ def canvas_scale(summary, screen_height):
     tiles) is about 1156 pixels high."""
     _w, height = mapdraw.picture_size(summary, 1)
     return min(1.0, max(MIN_SCALE, (screen_height - _RESERVE) / height))
+
+
+# ------------------------------------------------------------------ the Trade routes box (bbseed/trade.py)
+# Ticked: every result's map window and its copied / saved picture show the 3 best trade loops for the start of the
+# game. Saved in the settings file as "trade_routes"; off unless the player ticks it.
+TRADE_ROUTES_LABEL = "Trade routes"
+TRADE_ROUTES_TITLE = "Show on the map"
+TRADE_ROUTES_TIP = ("Shows the 3 best trade loops for the start of the game: buy goods where a village makes them, "
+                    "sell them where they pay most.")
+TRADE_ROUTES_WAIT = "Finding the trade routes..."
+
+
+def trade_routes_setting(data):
+    """The box's saved state: True only for a saved true; no key or anything else is off."""
+    return data.get("trade_routes") is True

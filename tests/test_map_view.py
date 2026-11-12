@@ -635,3 +635,24 @@ def test_the_start_note_is_the_first_campaign_line_on_legends_only_and_only_with
     assert V.start_line(shown, VANILLA_RESULT) == "", "the base game has no black-market counter"
     assert V.start_line({"start": None}, LEGENDS_RESULT) == "" and V.start_line({}, LEGENDS_RESULT) == ""
     assert V.start_line(shown, dict(LEGENDS_RESULT, game_version="1.5.2.4")) == "", "no marker, no note"
+
+
+# ------------------------------------------------------------------ the Trade routes box
+@pytest.mark.core
+def test_trade_routes_setting_default_off():
+    assert V.trade_routes_setting({}) is False, "no key in the settings file: off"
+    assert V.trade_routes_setting({"trade_routes": True}) is True
+    assert V.trade_routes_setting({"trade_routes": False}) is False
+
+
+@pytest.mark.dirty
+def test_trade_routes_setting_ignores_a_damaged_value():
+    for value in ("yes", 1, None, [True]):
+        assert V.trade_routes_setting({"trade_routes": value}) is False
+
+
+@pytest.mark.core
+def test_trade_routes_texts():
+    assert V.TRADE_ROUTES_LABEL == "Trade routes"
+    assert V.TRADE_ROUTES_TIP == ("Shows the 3 best trade loops for the start of the game: buy goods where a village "
+                                  "makes them, sell them where they pay most.")
