@@ -219,6 +219,7 @@ class FakeLab:
         self.builds = {}
         self.blackmarket = []
         self.map_calls = []             # (stop_at, perks) of every world_map call
+        self.trade_calls = []           # (stop_at, trade) of every world_map call
 
     def info(self):
         return {"profile": "fake"}
@@ -241,10 +242,15 @@ class FakeLab:
         FakeLab.roster_calls += 1
         return [dict(b, perk_groups=[], single_perks=[]) for b in self._bros(seed)]
 
-    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0, perks=False):
+    trade_data = {"towns": [], "goods": {}}     # what a run with trade=True puts in its map (None: nothing, as when
+                                                # the lab's read found no party or failed)
+
+    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0, perks=False,
+                  trade=False):
         FakeLab.world_map_calls += 1
         self.blackmarket.append(blackmarket)
         self.map_calls.append((stop_at, perks))
+        self.trade_calls.append((stop_at, trade))
         if self.map_crash is not None:
             raise self.map_crash
         if stop_at == "spawn" and self.spawn_error is not None:
@@ -260,6 +266,8 @@ class FakeLab:
         stubs = self.stubs(seed) if callable(self.stubs) else self.stubs.get(seed, {})
         if stop_at == "spawn":          # the real lab's run through the start puts the party's square in the map
             summary = dict(summary, start=self.start(seed))
+            if trade and self.trade_data is not None:
+                summary["trade"] = self.trade_data
         found = {"map": summary, "seconds": 0.0, "log": [], "stub_uses": stubs}
         if stop_at == "spawn":          # the start run: the recruits too (Deserters)
             bros = self._bros(seed)
@@ -1039,6 +1047,53 @@ def test_a_start_that_cannot_be_made_leaves_the_map_without_one(monkeypatch):
     assert match["seed"] == "0000000009" and "start" not in match["map"] and match["stable"]
     assert not [e for e in events if e[0] in ("error", "fatal")]
     assert lab.map_calls[-2:] == [("spawn", False), ("reseed", False)]
+
+
+# ---------------------------------------------------------------- the towns' trade data (trade routes)
+@pytest.mark.core
+def test_confirming_map_has_trade(monkeypatch):
+    """The confirming map of a match (the one the player opens) carries the towns' trade data; a checked seed's too."""
+    lab = FakeLab()
+    [match] = matches_of(run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10))
+    assert match["map"]["trade"] == FakeLab.trade_data
+    assert lab.trade_calls[-1] == ("spawn", True)
+    lab = FakeLab()
+    [match] = matches_of(run_worker(monkeypatch, lab, criteria={"map": {"ports": 1}}, seeds=["0000000004"]))
+    assert match["map"]["trade"] == FakeLab.trade_data and lab.trade_calls == [("spawn", True)]
+
+
+@pytest.mark.core
+def test_deserters_shown_map_has_trade(monkeypatch):
+    lab = DesertersLab()
+    [match] = matches_of(run_worker(monkeypatch, lab, {"stars_by_slot": {"1": "hp1"}, "map": {"ports": 1}},
+                                    seeds=["0000000003"], origin=DESERTERS))
+    assert match["map"]["trade"] == FakeLab.trade_data
+    lab = DesertersLab()
+    matches = matches_of(run_worker(monkeypatch, lab, {"stars_by_slot": {"1": "hp1"}, "map": {"ports": 1}}, limit=10,
+                                    origin=DESERTERS))
+    assert matches and all(m["map"]["trade"] == FakeLab.trade_data for m in matches)
+    sift = [call for call, (_stop, perks) in zip(lab.trade_calls, lab.map_calls) if not perks]
+    assert sift and all(not trade for _stop, trade in sift), "the sift runs read no trade data"
+
+
+@pytest.mark.dirty
+def test_world_map_without_start_has_no_trade(monkeypatch):
+    """The fallback map without a start (the spawn run failed) has no trade data: no routes, no error."""
+    lab = FakeLab()
+    lab.spawn_error = "map of seed '9': the index 'x' does not exist"
+    [match] = matches_of(run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10))
+    assert "trade" not in match["map"] and "start" not in match["map"] and match["stable"]
+    lab = FakeLab()
+    lab.trade_data = None                    # the lab read nothing (no party, or the read failed)
+    [match] = matches_of(run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10))
+    assert "trade" not in match["map"] and match["map"]["start"] == [12, 40]
+
+
+@pytest.mark.core
+def test_sift_maps_have_no_trade(monkeypatch):
+    lab = FakeLab()
+    run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10)
+    assert lab.trade_calls == [("reseed", False)] * 10 + [("spawn", True)]
 
 
 def small_cli_map(**extra):

@@ -599,17 +599,22 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
 
         def map_run(seed, perks=False):
             """The map run of a seed: the lab's result with "map". Deserters: run on through the start, so the result
-            also has "roster" (with the perk trees when `perks`) and the map has the start tile."""
-            kwargs = {"stop_at": "spawn", "perks": perks} if deserters else {}
+            also has "roster" (with the perk trees when `perks`) and the map has the start tile; the runs with the perk
+            trees (a match's confirming run, a checked seed's) are the maps a player opens: they get the towns' trade
+            data too (map["trade"], for the trade routes; the sift runs do not: no extra time)."""
+            kwargs = {"stop_at": "spawn", "perks": perks, "trade": perks} if deserters else {}
             return map_code(lambda: checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET, **kwargs))
 
         def world_map(seed):
             """The confirming map of a result, with the company's start tile (map["start"], for the picture: the map
             run goes on through the origin's start, mapgen.py "The start"). The start is not a condition: when that run
             fails (an origin whose start uses an engine function the lab does not model), the map alone is made,
-            without a start (a map that fails itself fails here again, as before)."""
+            without a start (a map that fails itself fails here again, as before). A player can open this map: it has
+            the towns' trade data (map["trade"], for the trade routes) when the lab could read it; the map without a
+            start has none."""
             try:
-                return checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET, stop_at="spawn")["map"]
+                return checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET, stop_at="spawn",
+                                         trade=True)["map"]
             except Exception:       # (a picture only: whatever went wrong, the map without a start is the result)
                 return map_run(seed)["map"]
 
