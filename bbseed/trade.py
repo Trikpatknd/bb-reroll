@@ -19,7 +19,10 @@ The "trade" entry of a map summary (read_trade fills it after a stop_at="spawn" 
      "company": {"barter": f, "assets_buy": f, "assets_sell": f, "brothers": i},
      "consts": {"BaseBuyPrice", "BuyPriceNotProducedHere", "BuyPriceNotLocalCulture", "BaseSellPrice",
                 "SellPriceNotProducedHere", "SellPriceNotLocalCulture"},     ::Const.World.Assets
-     "speed": {"base": f, "global": f, "road": f, "terrain": [f, ...]}}      the player's speed and the terrain table
+     "speed": {"base": f, "global": f, "road": f, "terrain": [f, ...], "mods": [f, ...], "wheel": f, "assets": [f, ...]}}
+              the player party's BaseMovementSpeed (after the origin's onInit), MovementSettings GlobalMult / RoadMult,
+              Const.World.TerrainTypeSpeedMult, the sum of the brothers' background terrain modifiers and the Wheel
+              Maintenance multiplier (Legends only: 0 / 1.0 elsewhere), Assets.m.TerrainTypeSpeedMult
 
 Prices (trading_good_item.getBuyPrice / getSellPrice, a town's getBuy/SellPriceMult as measured in the game):
     buy  = ceil(value x P x market mult x buy mult x (made here ? BaseBuyPrice : BuyPriceNotProducedHere)
@@ -30,7 +33,9 @@ Prices (trading_good_item.getBuyPrice / getSellPrice, a town's getBuy/SellPriceM
 Relations at the start act as neutral (measured), town situations are not modelled (a fresh map has none).
 
 Travel (not measured in the game, so the GUI says "about"): seconds per tile = 170 / (base x global x m),
-m = the terrain's speed mult, on a road max(m x road mult, 1.0); a step between neighbours costs the mean of the two
+m = (the terrain's speed mult + the brothers' modifiers for it) x wheel, on a road max(m x road mult, 1.0), times the
+Assets' mult for the terrain (party.nut onUpdate; a terrain of speed mult 0 is never entered; rivers and the night are
+not modelled); a step between neighbours costs the mean of the two
 tiles; a day is 105 s; a trip of more than a day takes 10 % longer (the game's own getDaysRequiredToTravel rule).
 """
 import math
@@ -105,6 +110,9 @@ def tile_seconds(summary):
     table = speed["terrain"]
     base = speed["base"] * speed["global"]
     road_mult = speed["road"]
+    assets = speed.get("assets") or ()             # the Assets' own multiplier per terrain, after the road rule
+    mods = speed.get("mods") or ()                 # the brothers' terrain modifiers (Legends)
+    wheel = speed.get("wheel", 1.0)
     roads = summary.get("roads") or "." * len(summary["terrain"])
     from bbseed.mapgen import TERRAIN_CHARS
     index = {ch: i for i, ch in enumerate(TERRAIN_CHARS)}
@@ -115,8 +123,13 @@ def tile_seconds(summary):
         if m <= 0:
             out.append(None)
             continue
+        m = (m + (mods[i] if i < len(mods) else 0.0)) * wheel
+        if m <= 0:
+            out.append(None)
+            continue
         if road != ".":
             m = max(m * road_mult, 1.0)
+        m *= assets[i] if i < len(assets) else 1.0
         out.append(TILE_PIXELS / (base * m))
     return out
 
@@ -149,6 +162,7 @@ SHIP_MAX_TILES = 25         # a ship leg only between two ports at most this far
 SHIP_MIN_WALK_DAYS = 0.75   # ... whose walk would take at least this long ("short passages that save a lot of walking")
 MAX_SHIP_LEGS = 2           # a loop sails at most this often, and never on every leg
 TOP = 3
+CHECK_EVERY = 200           # the route finder checks whether its picks are final after every this many loops found
 
 
 def _walks(summary, cost, start, limit):
@@ -328,9 +342,10 @@ def find_routes(summary, top=TOP, _prune=True):
         best = best_way(combo, gain)
         if best is not None and best[0] < 0:
             found.append((best, gain))
-            if _prune:
+            if _prune and len(found) % CHECK_EVERY == 0:
                 # a set not tried yet earns at most its profit / RESTOCK_DAYS per day: when every pick made so far beats
-                # that, no later set can come before any of them, and the picks are final
+                # that, no later set can come before any of them, and the picks are final (checked now and then: the
+                # check costs more than trying a set)
                 bound = candidates[pos + 1][0] / RESTOCK_DAYS if pos + 1 < len(candidates) else 0.0
                 found.sort()
                 chosen = _pick(found, top)
@@ -352,14 +367,137 @@ def find_routes(summary, top=TOP, _prune=True):
                 here = prev[here]
                 path.append(here)
             paths.append(path[::-1])
-        route_deals = []
+        merged = {}                     # two shop entries of one good in one town are one deal with both counts
         for a in order:
             for count, gains, s in deals[a]:
                 each, b = max((gains[b], -b) for b in order if b != a)      # the first such town on a tie
                 if each > 0:
-                    route_deals.append({"good": goods[s]["name"], "buy_in": market[a], "sell_in": market[-b],
-                                        "each": each, "count": count})
-        route_deals.sort(key=lambda d: -d["each"] * d["count"])
+                    key = (s, a, -b)
+                    if key in merged:
+                        merged[key]["count"] += count
+                    else:
+                        merged[key] = {"good": goods[s]["name"], "buy_in": market[a], "sell_in": market[-b],
+                                       "each": each, "count": count}
+        route_deals = sorted(merged.values(), key=lambda d: -d["each"] * d["count"])
         out.append({"towns": [market[i] for i in order], "ships": list(ships), "paths": paths, "lap_days": lap,
                     "fares": fares, "per_lap": gain, "per_day": -neg_day, "deals": route_deals})
     return out
+
+
+# ------------------------------------------------------------------------------------------------- the lab
+# Read on the state a stop_at="spawn" run leaves (Lab.world_map(..., trade=True) calls read_trade before it clears the
+# roster). The origin's onInit() is run first: startNewCampaign calls it right where the lab stops, and it is where the
+# Trading Caravan / Beast Slayers set the Assets' buy and sell multipliers (and Legends' Rangers their speed).
+# Legends' calculateBarterMult works only while World.State.m.AppropriateTimeToRecalc == 1: it is set for the call.
+_QUERY = """
+local origin = ::World.Assets.getOrigin();
+origin.onInit();
+local towns = [];
+local goods = {};
+foreach (s in ::World.EntityManager.getSettlements())
+{
+    local market = null;
+    foreach (b in s.m.Buildings) if (b != null && b.m.ID == "building.marketplace") market = b;
+    local shop = [];
+    if (market != null)
+    {
+        foreach (e in s.onUpdateShopList("building.marketplace", []))
+        {
+            if (e.S.find("trade/") != 0) continue;
+            shop.push([e.S, e.R, e.P]);
+            if (!(e.S in goods))
+            {
+                local it = ::new("scripts/items/" + e.S);
+                goods[e.S] <- { value = it.m.Value, culture = it.m.Culture, makers = clone it.m.ProducingBuildings,
+                                name = it.getName() };
+            }
+        }
+    }
+    local active = [];
+    foreach (a in s.m.AttachedLocations) if (a.isActive()) active.push(a.m.ID);
+    towns.push({ shop = shop, price_mult = s.getPriceMult(), market_mult = market == null ? null : market.getPriceMult(),
+                 culture = s.getCulture(), active = active, port = s.hasBuilding("building.port") });
+}
+local party = ::World.State.getPlayer();
+local roster = ::World.getPlayerRoster().getAll();
+local legends = "calculateBarterMult" in party;
+local barter = 0.0;
+if (legends)
+{
+    local state = ::World.State;
+    local before = state.m.AppropriateTimeToRecalc;
+    state.m.AppropriateTimeToRecalc = 1;
+    try { party.calculateBarterMult(); } catch (e) { state.m.AppropriateTimeToRecalc = before; throw e; }
+    state.m.AppropriateTimeToRecalc = before;
+    barter = party.getBarterMult();
+}
+// what the player's party moves with besides the terrain table (party.nut onUpdate): Legends adds each brother's
+// background terrain modifiers to it and 5 % per Wheel Maintenance perk; the Assets' own per-terrain multipliers
+// come after the road rule
+local terrain = [];
+foreach (v in ::Const.World.TerrainTypeSpeedMult) terrain.push(v);
+local mods = [];
+foreach (v in terrain) mods.push(0.0);
+local wheels = 0;
+if (legends)
+{
+    foreach (bro in roster)
+    {
+        local bg = bro.getBackground().getModifiers();
+        if ("Terrain" in bg && bg.Terrain != null)
+            for (local i = 0; i < mods.len() && i < bg.Terrain.len(); ++i) mods[i] += bg.Terrain[i];
+        if (bro.getSkills().hasPerk(::Legends.Perk.LegendWheelMaintenance)) ++wheels;
+    }
+}
+local assets = [];
+foreach (v in ::World.Assets.m.TerrainTypeSpeedMult) assets.push(v);
+local A = ::Const.World.Assets;
+return {
+    towns = towns, goods = goods,
+    company = { barter = barter, brothers = roster.len(),
+                assets_buy = ::World.Assets.getBuyPriceMult() * ::World.Assets.m.BuyPriceTradeMult,
+                assets_sell = ::World.Assets.getSellPriceMult() * ::World.Assets.m.SellPriceTradeMult },
+    consts = { BaseBuyPrice = A.BaseBuyPrice, BuyPriceNotProducedHere = A.BuyPriceNotProducedHere,
+               BuyPriceNotLocalCulture = A.BuyPriceNotLocalCulture, BaseSellPrice = A.BaseSellPrice,
+               SellPriceNotProducedHere = A.SellPriceNotProducedHere, SellPriceNotLocalCulture = A.SellPriceNotLocalCulture },
+    speed = { party = party.m.BaseMovementSpeed, global = ::Const.World.MovementSettings.GlobalMult,
+              road = ::Const.World.MovementSettings.RoadMult, terrain = terrain, mods = mods,
+              wheel = 1.0 + 0.05 * wheels, assets = assets }
+};
+"""
+
+
+def _plain(v):
+    from bbseed.sq.runtime import SqTable, tostring
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, SqTable):
+        return {_plain(k): _plain(x) for k, x in v.d.items()}
+    if isinstance(v, dict):
+        return {_plain(k): _plain(x) for k, x in v.items()}
+    if hasattr(v, "__iter__"):
+        return [_plain(x) for x in v]
+    return tostring(v)
+
+
+def read_trade(lab):
+    """The "trade" entry (see the module text) of the campaign start a stop_at="spawn" run left in `lab`, before its
+    roster is cleared. None when the run spawned no party (no company to trade with). A script error raises SqError."""
+    eng = lab.eng
+    if eng.vm.compile("return ::World.State.getPlayer() == null;", "trade_no_party").invoke(eng.root, ()):
+        return None
+    try:
+        data = _plain(eng.vm.compile(_QUERY, "trade_query").invoke(eng.root, ()))
+    except Exception:
+        del eng.vm.stack[:]
+        raise
+    for row in data["towns"]:
+        row["shop"] = [[s, int(r), float(p)] for s, r, p in row["shop"]]
+        row["port"] = bool(row["port"])
+    for good in data["goods"].values():
+        good["value"] = int(good["value"])
+    data["speed"]["base"] = data["speed"].pop("party")      # ("base" is a Squirrel keyword)
+    company = data["company"]
+    company["barter"] = float(company["barter"])
+    company["brothers"] = int(company["brothers"])
+    return data

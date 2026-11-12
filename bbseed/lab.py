@@ -491,7 +491,8 @@ class Lab:
                 bro["single_perks"] = sorted({tostring(n) for n in single})
 
     # ------------------------------------------------------------------ maps
-    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0, perks=False):
+    def world_map(self, seed, origin="trader_scenario", stop_at="reseed", layout=None, blackmarket=0, perks=False,
+                  trade=False):
         """The game's own campaign start (world_state.startNewCampaign, every mod hook included) on a
         fresh world state, stopped where the map is wanted (see mapgen.py): stop_at="accepted" right after
         the generator logs "World accepted.", "reseed" at the second Math.seedRandomString(seed).
@@ -509,6 +510,9 @@ class Lab:
         Deserters only) and "roster": the recruits as roster() lists them (the origin's own onSpawnPlayer ran, so no
         _POST_SPAWN step is added). A start loop past mapgen.SPAWN_LOOP_CAP iterations raises LabError.
         perks=True (stop_at="spawn" only): the recruits also have their perk trees, as roster_with_perks() gives them.
+        trade=True (stop_at="spawn" only): the map summary also gets "trade" (trade.read_trade: the towns' shops and
+        prices, the starting company, the speed table), read after the roster, before it is cleared; a read that fails
+        leaves the key out and puts its error text in out["trade_error"] (the map itself stands).
         A "spawn" run also puts the party's square in the map summary: out["map"]["start"] = [x, y] (None when no
         party was spawned); the other stops leave the key out (mapdraw draws no start marker without it).
 
@@ -542,6 +546,8 @@ class Lab:
                     out["roster"] = self._read_roster()
                     if perks:
                         self._add_perks(out["roster"], self._perks.invoke(self.eng.root, ()))
+                    if trade:
+                        self._add_trade(out)
             finally:
                 if stop_at == "spawn":
                     self._clear_roster()
@@ -555,6 +561,17 @@ class Lab:
         except mapgen.MapError as e:
             raise LabError("map of seed %r: %s (at %s)" % (
                 seed, e, " > ".join(self.eng.vm.last_trace[-6:]))) from e
+
+    def _add_trade(self, out):
+        from . import trade
+        try:
+            data = trade.read_trade(self)
+        except Exception as e:          # no routes for this map rather than no map
+            del self.eng.vm.stack[:]
+            out["trade_error"] = "%s: %s" % (type(e).__name__, tostring(e.value) if isinstance(e, SqError) else e)
+            return
+        if data is not None:
+            out["map"]["trade"] = data
 
     def _read_roster(self):
         """The player roster as roster() reports it (with "rolls" when watch_rolls() is on)."""

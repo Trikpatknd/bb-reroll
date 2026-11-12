@@ -58,7 +58,8 @@ def _xdist_group(item):
         return "mapgen_vanilla"
     if names & {"legends_lab", "vanilla_lab"}:
         return "labs"
-    return {"test_gui_search_start": "gui", "test_offline_map": "offline_map"}.get(item.module.__name__)
+    return {"test_gui_search_start": "gui", "test_offline_map": "offline_map",
+            "test_offline_trade": "offline_trade"}.get(item.module.__name__)
 
 
 @pytest.hookimpl(tryfirst=True)       # before pytest-xdist adds the group names to the node ids

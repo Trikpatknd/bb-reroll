@@ -85,6 +85,16 @@ def test_tile_seconds_slow_terrain_on_a_road_is_at_least_open_land():
     assert out[1] == pytest.approx(170 / 78.75)              # mountains 0.25 x 1.5 -> 1.0
 
 
+@pytest.mark.edge
+def test_tile_seconds_brothers_and_assets():
+    speed = dict(SPEED, mods=[0.0, 0.5, 0.0, 0.0, 0.01] + [0.0] * 16, wheel=1.1, assets=[1.0, 1.0, 2.0])
+    summary = {"size": [3, 1], "terrain": "LHO", "roads": "1..", "trade": {"speed": speed}}
+    out = trade.tile_seconds(summary)
+    assert out[0] == pytest.approx(170 / (78.75 * 1.1 * 1.5 * 2.0))     # wheel, road, then the Assets' mult
+    assert out[1] == pytest.approx(170 / (78.75 * 0.65 * 1.1))         # hills 0.64 + a brother's 0.01
+    assert out[2] is None                                              # a modifier never opens the ocean
+
+
 @pytest.mark.core
 def test_ship_fare():
     a = {"x": 0, "y": 0}
@@ -276,3 +286,26 @@ def test_island_only_by_ship():
     far = _map(w, h, [dict(places[0], x=8), dict(places[1], x=8), dict(places[2], x=54)], terrain=terrain,
                brothers=2)
     assert all(2 not in r["towns"] for r in trade.find_routes(far))
+
+
+# ------------------------------------------------------------------------------------------ Task 3: a real lab map
+@pytest.mark.core
+def test_real_map_7430000000():
+    """The lab's map of 7430000000 (Trading Caravan, the in-game batch's Map Options, black-market counter 0) with its
+    trade entry (tests/data, written by Lab.world_map(..., stop_at="spawn", trade=True)): the three loops, checked once
+    by hand against the research prototype (same towns; its laps were longer: it added 10 % to the whole lap)."""
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parent / "data" / "trade_map_7430000000.json"
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    routes = trade.find_routes(summary)
+    assert [_names(summary, r) for r in routes] == [
+        ["Seedock", "Thurn", "Rothenfeste", "Quadim", "Malaluk"],
+        ["Schiffbauen", "Fischschlachten", "Asad", "Hohenbruch", "Krauchthal"],
+        ["Sandehaven", "Finsterstadt", "Gunnsted", "Horn", "Finsterwalde"]]
+    assert [r["per_day"] for r in routes] == pytest.approx([851.3, 345.5, 225.0], abs=0.5)
+    assert [r["lap_days"] for r in routes] == pytest.approx([3.083, 3.943, 4.174], abs=0.01)
+    assert all(r["fares"] == 0 for r in routes)
+    top = routes[0]["deals"][0]
+    assert (top["good"], top["each"], top["count"]) == ("Silk", 137, 4.0)        # two shop entries, one deal
+    assert routes == trade.find_routes(summary, _prune=False)
