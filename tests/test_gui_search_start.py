@@ -2996,6 +2996,39 @@ def test_the_box_draws_no_routes_on_an_unverified_setup_or_an_old_map(map_app):
     assert app.errors == []
 
 
+@pytest.mark.edge
+def test_a_copy_while_the_window_finds_the_routes_waits_for_it(map_app, monkeypatch):
+    """A copy or save of the picture while the map window's thread still finds the routes: it waits for that thread
+    (the window gets the routes too) rather than search a second time on the Tk thread."""
+    import threading
+    import time
+    import gui
+    app = map_app
+    calls = []
+    real = gui._find_routes
+
+    def slow(summary):
+        calls.append(threading.current_thread() is threading.main_thread())
+        time.sleep(0.5)
+        return real(summary)
+    monkeypatch.setattr(gui, "_find_routes", slow)
+    window, entry = routes_window(app, LEGENDS_VERIFIED)
+    app.trade_routes_var.set(True)
+    app._on_trade_routes_toggle()                           # the window's thread starts
+    deadline = time.time() + 2.0
+    while not calls and time.time() < deadline:
+        time.sleep(0.01)
+    assert "trade_routes" not in entry and calls == [False]
+    picture = app._map_picture(entry)
+    assert calls == [False], "one search, in the thread"
+    assert len(entry["trade_routes"]) == 3 and window.routes_drawn == 3 and picture.height > 0
+    assert id(entry) not in app._routes_jobs
+    app.trade_routes_var.set(False)
+    app._on_trade_routes_toggle()
+    window.destroy()
+    app._map_windows.clear()
+
+
 @pytest.mark.core
 def test_the_trade_routes_box_is_saved(map_app, tmp_path, monkeypatch):
     import gui

@@ -1078,11 +1078,13 @@ def test_deserters_shown_map_has_trade(monkeypatch):
 
 @pytest.mark.dirty
 def test_world_map_without_start_has_no_trade(monkeypatch):
-    """The fallback map without a start (the spawn run failed) has no trade data: no routes, no error."""
+    """The fallback map without a start (the spawn run failed) has no trade data: no routes, no error; the map says
+    why (trade_error: checking the seed again gives the same map)."""
     lab = FakeLab()
     lab.spawn_error = "map of seed '9': the index 'x' does not exist"
     [match] = matches_of(run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10))
     assert "trade" not in match["map"] and "start" not in match["map"] and match["stable"]
+    assert "the index 'x' does not exist" in match["map"]["trade_error"]
     lab = FakeLab()
     lab.trade_data = None                    # the lab read nothing (no party, or the read failed)
     [match] = matches_of(run_worker(monkeypatch, lab, criteria={"map": {"ports": 9}}, limit=10))

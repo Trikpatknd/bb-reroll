@@ -512,7 +512,8 @@ class Lab:
         perks=True (stop_at="spawn" only): the recruits also have their perk trees, as roster_with_perks() gives them.
         trade=True (stop_at="spawn" only): the map summary also gets "trade" (trade.read_trade: the towns' shops and
         prices, the starting company, the speed table), read after the roster, before it is cleared; a read that fails
-        leaves the key out and puts its error text in out["trade_error"] (the map itself stands).
+        leaves the key out and puts its error text in out["trade_error"] and out["map"]["trade_error"] (the map itself
+        stands; mapdraw.route_legend then says the data could not be read).
         A "spawn" run also puts the party's square in the map summary: out["map"]["start"] = [x, y] (None when no
         party was spawned); the other stops leave the key out (mapdraw draws no start marker without it).
 
@@ -569,6 +570,7 @@ class Lab:
         except Exception as e:          # no routes for this map rather than no map
             del self.eng.vm.stack[:]
             out["trade_error"] = "%s: %s" % (type(e).__name__, tostring(e.value) if isinstance(e, SqError) else e)
+            out["map"]["trade_error"] = out["trade_error"]
             return
         if data is not None:
             out["map"]["trade"] = data

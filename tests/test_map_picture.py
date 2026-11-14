@@ -263,3 +263,38 @@ def test_render_with_routes_on_an_unverified_setup_draws_none():
     width, height = mapdraw.picture_size(summary, 2)
     assert image.crop((0, 0, width, height)).tobytes() == plain.crop((0, 0, width, height)).tobytes()
     assert image.height > plain.height              # the line that says why
+
+
+@pytest.mark.core
+def test_routes_leave_the_seed_lines_as_they_were():
+    """The legend has its own layout: the map line and the seed line under the map keep the font and the place they
+    have without routes (a long legend line used to shrink the font of every line in the strip)."""
+    summary, route = route_map()
+    deals = [dict(route["deals"][0], good="A very long name of a trade good number %d" % n) for n in range(4)]
+    long_route = dict(route, deals=deals)
+    plain = map_picture.render(summary, verified=True, footer="Seed 1. Trader.")
+    image = map_picture.render(summary, verified=True, footer="Seed 1. Trader.", routes=[long_route])
+    width, height = mapdraw.picture_size(summary, 2)
+    seed_lines = (0, height, width, plain.height - map_picture.FOOTER_PAD * 2)     # (the legend starts below them)
+    assert image.crop(seed_lines).tobytes() == plain.crop(seed_lines).tobytes()
+
+
+@pytest.mark.edge
+def test_wrapped_legend_lines_keep_their_indent():
+    """On a narrow map a long line wraps: every part of a deal line stays indented under its route, and the parts of a
+    head line after the first are indented too; the swatch goes only on a head line's first part."""
+    from PIL import ImageFont
+    font = ImageFont.load_default(size=22)
+    head = "#1: about 494 crowns per day. Lap 3.3 days, about 1,482 crowns a lap. Alpha > Beta > sail to Gamma > Alpha"
+    deal = "    A very long name of a trade good: buy in Alpha, sell in Gamma, +189 each x 2"
+    rows = map_picture._legend_rows([head, deal, mapdraw.ROUTE_NOTE], 300, font)
+    head_rows = [r for r in rows if r[0] in head]
+    deal_rows = [r for r in rows if r[0] in deal]
+    assert len(head_rows) > 1 and len(deal_rows) > 1
+    assert head_rows[0][1] == 0 and head_rows[0][2] == 1
+    assert all(x > 0 and number is None for _text, x, number in head_rows[1:])
+    assert all(x > 0 and number is None for _text, x, number in deal_rows)
+    assert min(x for _t, x, _n in deal_rows) >= max(x for _t, x, _n in head_rows[1:]) > 0
+    measure = __import__("PIL.ImageDraw", fromlist=["Draw"]).Draw(Image.new("RGB", (1, 1)))
+    assert all(measure.textlength(text, font=font) + x <= 300 for text, x, _n in rows)
+    assert " ".join(t for t, _x, _n in rows if t in mapdraw.ROUTE_NOTE) == mapdraw.ROUTE_NOTE

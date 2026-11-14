@@ -309,3 +309,20 @@ def test_real_map_7430000000():
     top = routes[0]["deals"][0]
     assert (top["good"], top["each"], top["count"]) == ("Silk", 137, 4.0)        # two shop entries, one deal
     assert routes == trade.find_routes(summary, _prune=False)
+
+
+@pytest.mark.dirty
+def test_a_failed_read_is_kept_in_the_map(monkeypatch):
+    """Lab._add_trade: a read that fails leaves the map without "trade" and puts the reason in the map too
+    (map["trade_error"]: the legend then says the data could not be read, not "check the seed again")."""
+    from types import SimpleNamespace
+    from bbseed.lab import Lab
+
+    def broken(_lab):
+        raise ValueError("no marketplace list")
+    monkeypatch.setattr(trade, "read_trade", broken)
+    fake = SimpleNamespace(eng=SimpleNamespace(vm=SimpleNamespace(stack=[1, 2])))
+    out = {"map": {"towns": []}}
+    Lab._add_trade(fake, out)
+    assert "trade" not in out["map"] and fake.eng.vm.stack == []
+    assert out["trade_error"] == out["map"]["trade_error"] == "ValueError: no marketplace list"

@@ -683,11 +683,49 @@ def test_route_lines_follow_paths():
     assert line["dashes"] == [(centre(s, 6, 4, 2), centre(s, 20, 4, 2))]         # the ship leg: town to town
     cx, cy, text = line["tag"]
     points = [centre(s, x, y, 2) for x, y in [(2, 4), (6, 4), (20, 4)]]
-    assert (cx, cy) == pytest.approx((sum(p[0] for p in points) / 3, sum(p[1] for p in points) / 3))
+    middle = (sum(p[0] for p in points) / 3, sum(p[1] for p in points) / 3)
+    # the middle of the loop's towns is on town B's row, too near B: the tag moves down one tag height
+    assert (cx, cy) == pytest.approx((middle[0], middle[1] + mapdraw.ROUTE_TAG_SPACE[1] * 2))
     assert text == "#1  494/day"
-    second = mapdraw.route_lines(s, [a_route(), a_route(per_day=99.6)], verified=True)[1]
+    first, second = mapdraw.route_lines(s, [a_route(), a_route(per_day=99.6)], verified=True)
     assert second["colour"] == mapdraw.ROUTE_COLOURS[1] and second["tag"][2] == "#2  100/day"
-    assert second["tag"][1] == pytest.approx(cy / 2 + mapdraw.ROUTE_TAG_SPACE[1]), "a tag on another one moves down"
+    assert not _tags_overlap(first["tag"], second["tag"], 1), "a tag never covers another one"
+
+
+def _tags_overlap(a, b, scale):
+    return (abs(a[0] - b[0]) < mapdraw.ROUTE_TAG_SPACE[0] * scale
+            and abs(a[1] - b[1]) < mapdraw.ROUTE_TAG_SPACE[1] * scale)
+
+
+def _tag_covers(tag, mark, scale):
+    cx, cy, r = mark[0], mark[1], mark[2]
+    return (abs(tag[0] - cx) < mapdraw.ROUTE_TAG_SPACE[0] * scale / 2 + r
+            and abs(tag[1] - cy) < mapdraw.ROUTE_TAG_SPACE[1] * scale / 2 + r)
+
+
+@pytest.mark.edge
+def test_route_tags_keep_off_the_towns_and_the_start():
+    """A tag at the middle of its loop's towns would cover town B (and its hover text): it moves to the nearest free
+    place; three tags of one loop cover neither a town, the star nor each other, at either scale."""
+    s = dict(route_summary(), start=[13, 6])
+    for scale in (1, 2):
+        lines = mapdraw.route_lines(s, [a_route(), a_route(), a_route()], verified=True, scale=scale)
+        tags = [line["tag"] for line in lines]
+        marks = mapdraw.town_marks(s, scale, True) + [mapdraw.start_mark(s, True, scale)]
+        for tag in tags:
+            assert not any(_tag_covers(tag, mark, scale) for mark in marks), (scale, tag)
+        for i, a in enumerate(tags):
+            assert not any(_tags_overlap(a, b, scale) for b in tags[i + 1:]), (scale, tags)
+
+
+@pytest.mark.edge
+def test_route_tag_without_room_still_avoids_other_tags():
+    """A map too crowded for a free place: the tag still never covers another tag (it goes below them, as before)."""
+    towns = [town(x, y, name="T%d_%d" % (x, y)) for x in range(0, 12, 2) for y in range(0, 6, 1)]
+    s = tiny_summary("L" * (12 * 6), towns, size=(12, 6))
+    route = a_route(towns=[0, 1, 2], paths=[[(0, 0), (0, 1)], [], [(0, 2), (0, 0)]])
+    tags = [line["tag"] for line in mapdraw.route_lines(s, [route, route], verified=True)]
+    assert not _tags_overlap(tags[0], tags[1], 1)
 
 
 @pytest.mark.dirty
@@ -715,6 +753,10 @@ def test_route_legend_texts():
     assert mapdraw.ROUTE_NOTE.startswith("Crowns per day before wages, at the start:")
     # a map kept from before the trade data: no routes, and it says why
     assert mapdraw.route_legend(route_summary(), [], verified=True) == [mapdraw.NO_TRADE_DATA]
+    # a map whose trade data could not be read (the start failed, or the read): checking it again does not help
+    failed = dict(route_summary(), trade_error="SqError: the index 'x' does not exist")
+    assert mapdraw.route_legend(failed, [], verified=True) == [mapdraw.NO_TRADE_READ]
+    assert "Check the seed again" not in mapdraw.NO_TRADE_READ
 
 
 @pytest.mark.edge

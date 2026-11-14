@@ -84,6 +84,7 @@ from bbseed import msu_settings
 
 ROUTES_PANEL_WIDTH = 380        # the map window's trade routes legend, beside the map (pixels)
 ROUTES_POLL_MS = 100            # how often the window looks for routes a thread has found
+ROUTES_WAIT_S = 30              # the most a picture waits for a route thread that runs already, then searches itself
 
 
 def _find_routes(summary):
@@ -536,10 +537,10 @@ class _MapWindow(ctk.CTkToplevel):
             plate = canvas.create_rectangle(x0 - 5, y0 - 2, x1 + 5, y1 + 2, fill=route["colour"],
                                             outline=mapdraw.ROUTE_TAG_OUTLINE, tags="routetag")
             canvas.tag_raise(label, plate)
-        self._route_texts(legend, len(lines))
+        self._route_texts(legend)
         self.routes_drawn, self.routes_legend = len(lines), legend
 
-    def _route_texts(self, legend, count=0):
+    def _route_texts(self, legend):
         for child in self._routes_panel.winfo_children():
             child.destroy()
         ctk.CTkLabel(self._routes_panel, text=map_view.TRADE_ROUTES_LABEL, font=(FONT, 12, "bold"),
@@ -2836,6 +2837,14 @@ class App(ctk.CTk):
                 pass
 
     def _routes_now(self, entry: dict):
+        """The entry's routes now (a copy or a save of the picture): when a thread is finding them already (the open map
+        window asked), wait for it rather than search a second time; else find them here."""
+        while "trade_routes" not in entry and id(entry) in self._routes_jobs:
+            try:
+                key, routes = self._routes_done.get(timeout=ROUTES_WAIT_S)
+            except queue.Empty:
+                break
+            self._deliver_routes(key, routes)
         if "trade_routes" not in entry:
             entry["trade_routes"] = _find_routes(entry["map"])
         return entry["trade_routes"]
@@ -2863,20 +2872,24 @@ class App(ctk.CTk):
                 key, routes = self._routes_done.get_nowait()
             except queue.Empty:
                 break
-            job = self._routes_jobs.pop(key, None)
-            if job is None:
-                continue
-            entry, callbacks = job
-            entry["trade_routes"] = routes
-            for callback in callbacks:
-                try:
-                    callback(routes)
-                except Exception:
-                    pass
+            self._deliver_routes(key, routes)
         if self._routes_jobs:
             self.after(ROUTES_POLL_MS, self._poll_routes)
         else:
             self._routes_polling = False
+
+    def _deliver_routes(self, key, routes):
+        """A route thread's result: kept on its entry, and handed to every window that asked for it."""
+        job = self._routes_jobs.pop(key, None)
+        if job is None:
+            return
+        entry, callbacks = job
+        entry["trade_routes"] = routes
+        for callback in callbacks:
+            try:
+                callback(routes)
+            except Exception:
+                pass
 
     def _map_picture_result(self, message, window):
         self.status_var.set(message)

@@ -611,12 +611,14 @@ def _worker(index, workers, profile, mod_settings, origin, criteria, start, limi
             fails (an origin whose start uses an engine function the lab does not model), the map alone is made,
             without a start (a map that fails itself fails here again, as before). A player can open this map: it has
             the towns' trade data (map["trade"], for the trade routes) when the lab could read it; the map without a
-            start has none."""
+            start has none, and says so (map["trade_error"]: a new check of the seed gives the same)."""
             try:
                 return checked_world_map(lab, seed, origin, blackmarket=SEARCH_BLACKMARKET, stop_at="spawn",
                                          trade=True)["map"]
-            except Exception:       # (a picture only: whatever went wrong, the map without a start is the result)
-                return map_run(seed)["map"]
+            except Exception as e:  # (a picture only: whatever went wrong, the map without a start is the result)
+                summary = map_run(seed)["map"]
+                summary["trade_error"] = "the start of the campaign could not be run: %s: %s" % (type(e).__name__, e)
+                return summary
 
         def checked_run(seed):
             """The one map run of a checked seed, complete at once: the map with its start; Deserters: the perk trees too."""

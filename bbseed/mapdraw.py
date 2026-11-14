@@ -338,7 +338,10 @@ ROUTE_NOTE = ("Crowns per day before wages, at the start: your starting company'
 NO_ROUTES = "No profitable trade loop on this map."
 ROUTES_UNVERIFIED = "Trade routes need a checked game setup."
 NO_TRADE_DATA = "This map has no trade data. Check the seed again to see its trade routes."
-ROUTE_TEXTS = {"note": ROUTE_NOTE, "none": NO_ROUTES, "unverified": ROUTES_UNVERIFIED, "no_data": NO_TRADE_DATA}
+NO_TRADE_READ = "BB Reroll could not read the trade data of this map. It cannot show trade routes for it."
+ROUTE_TEXTS = {"note": ROUTE_NOTE, "none": NO_ROUTES, "unverified": ROUTES_UNVERIFIED, "no_data": NO_TRADE_DATA,
+               "no_read": NO_TRADE_READ}
+ROUTE_TAG_TRIES = 12        # tag heights a tag may move up or down to find a place free of towns and other tags
 ROUTE_DEALS_SHOWN = 4       # deal lines per route in the legend
 
 
@@ -347,14 +350,47 @@ def _tile_centre(x, y, h):
     return x * CELL_W + CELL_W / 2, _top(y, h) + _lower(x) + CELL_H / 2
 
 
+def _tag_place(cx, cy, tags, marks, size, scale):
+    """Where a route's tag goes: (cx, cy) when it covers no town circle, no start star and no tag placed before;
+    else the nearest free place inside the picture, on a grid of half tag widths by whole tag heights, up to
+    ROUTE_TAG_TRIES steps each way (on a tie: down before up, left before right). With no free place: below the tags
+    it would cover (it may cover a town then)."""
+    space_x, space_y = ROUTE_TAG_SPACE[0] * scale, ROUTE_TAG_SPACE[1] * scale
+    half_x, half_y = space_x / 2, space_y / 2
+    width, height = size
+
+    def free(x, y):
+        if x - half_x < 0 or x + half_x > width or y - half_y < 0 or y + half_y > height:
+            return False
+        if any(abs(x - t[0]) < space_x and abs(y - t[1]) < space_y for t in tags):
+            return False
+        return not any(abs(x - mx) < half_x + r and abs(y - my) < half_y + r for mx, my, r in marks)
+
+    steps = range(-ROUTE_TAG_TRIES, ROUTE_TAG_TRIES + 1)
+    offsets = sorted(((j * half_x, i * space_y) for i in steps for j in steps),
+                     key=lambda d: (d[0] * d[0] + d[1] * d[1], d[1] < 0, d[0] > 0))
+    for dx, dy in offsets:
+        if free(cx + dx, cy + dy):
+            return cx + dx, cy + dy
+    while any(abs(cx - t[0]) < space_x and abs(cy - t[1]) < space_y for t in tags):
+        cy += space_y            # a tag on another one moves down below it
+    return cx, cy
+
+
 def route_lines(summary, routes, verified=False, scale=1):
     """What to draw for each route (find_routes' order: the best first): {"colour", "polylines": [[(x, y), ...] per
     walked leg, along its tiles' centres], "dashes": [((x0, y0), (x1, y1)) per ship leg, town to town], "tag": (cx, cy,
-    "#n  X/day") at the middle of the loop's towns}. [] when `verified` is false."""
+    "#n  X/day") at the middle of the loop's towns, or the nearest place there that covers no town, the start star or
+    another tag (_tag_place)}. [] when `verified` is false."""
     if not verified:
         return []
     _w, h, _ = _checked(summary)
     towns = summary["towns"]
+    marks = [(cx, cy, r) for cx, cy, r, *_rest in town_marks(summary, scale, verified)]
+    start = start_mark(summary, verified, scale)
+    if start is not None:
+        marks.append(start[:3])
+    size = picture_size(summary, scale)
     out = []
     for n, route in enumerate(routes):
         order = route["towns"]
@@ -371,9 +407,7 @@ def route_lines(summary, routes, verified=False, scale=1):
         centres = [_tile_centre(towns[i]["x"], towns[i]["y"], h) for i in order]
         cx = sum(p[0] for p in centres) / k * scale
         cy = sum(p[1] for p in centres) / k * scale
-        while any(abs(cx - t[0]) < ROUTE_TAG_SPACE[0] * scale and abs(cy - t[1]) < ROUTE_TAG_SPACE[1] * scale
-                  for t in (r["tag"] for r in out)):
-            cy += ROUTE_TAG_SPACE[1] * scale        # a tag on another one moves down below it
+        cx, cy = _tag_place(cx, cy, [r["tag"] for r in out], marks, size, scale)
         out.append({"colour": ROUTE_COLOURS[n % len(ROUTE_COLOURS)], "polylines": polylines, "dashes": dashes,
                     "tag": (cx, cy, "#%d  %s/day" % (n + 1, "{:,}".format(round(route["per_day"]))))})
     return out
@@ -388,11 +422,13 @@ def route_legend(summary, routes, verified=False):
     """The legend lines: per route a head line ("#1: about 494 crowns per day. Lap 3.3 days, about 1,482 crowns a lap.
     A > B > sail to C > A") and up to ROUTE_DEALS_SHOWN deal lines (indented: "Silk: buy in A, sell in B, +189 each
     x 2"), then ROUTE_NOTE. Without routes the line that says why: ROUTES_UNVERIFIED off a verified setup,
-    NO_TRADE_DATA for a map without trade data (kept from before, or one without its start), else NO_ROUTES."""
+    NO_TRADE_READ for a map whose trade data could not be read (summary["trade_error"]: the start or the read failed,
+    so a new check gives the same), NO_TRADE_DATA for another map without trade data (kept from before, or a sift map:
+    checking the seed builds it with its trade data), else NO_ROUTES."""
     if not verified:
         return [ROUTES_UNVERIFIED]
     if summary.get("trade") is None:
-        return [NO_TRADE_DATA]
+        return [NO_TRADE_READ] if summary.get("trade_error") else [NO_TRADE_DATA]
     if not routes:
         return [NO_ROUTES]
     towns = summary["towns"]

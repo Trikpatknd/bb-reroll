@@ -72,13 +72,18 @@ def render(summary, *, verified, north_band=None, footer="", scale=2, routes=Non
     drawn and their legend (mapdraw.route_legend) added to the strip, [] = the line that says there are none.
     ValueError for a damaged summary (mapdraw._checked's rule)."""
     width, height = mapdraw.picture_size(summary, scale)
-    font, size, lines, strip = None, 0, [], 0
+    font, size, rows, strip = None, 0, [], 0
     legend = [] if routes is None else mapdraw.route_legend(summary, routes, verified)
     if footer or legend:
         pad = FOOTER_PAD * scale
         lines = [map_line(summary, DEFAULT_NORTH_BAND if north_band is None else north_band), footer] if footer else []
-        font, size, lines = _footer_layout(lines + legend, width - 2 * pad, scale)
-        strip = len(lines) * round(size * 1.3) + 2 * pad
+        if lines:           # the seed lines as without routes; the legend wraps in their font, under them
+            font, size, lines = _footer_layout(lines, width - 2 * pad, scale)
+        else:
+            size = FOOTER_FONT * scale
+            font = ImageFont.load_default(size=size)
+        rows = [(line, 0, None) for line in lines] + _legend_rows(legend, width - 2 * pad, font)
+        strip = len(rows) * round(size * 1.3) + 2 * pad
     image = Image.new("RGB", (width, height + strip), BACKGROUND)
     draw = ImageDraw.Draw(image)
     for x0, y0, x1, y1, colour in mapdraw.cells(summary, scale):
@@ -103,16 +108,36 @@ def render(summary, *, verified, north_band=None, footer="", scale=2, routes=Non
         draw.polygon(mapdraw.star_points(cx, cy, r), fill=fill, outline=mapdraw.START_OUTLINE, width=max(1, round(scale)))
     _draw_route_tags(draw, route_lines, scale)
     y = height + FOOTER_PAD * scale
-    for line in lines:
-        head = _route_number(line)
+    for text, x, head in rows:
         if head is not None:            # a route's head line: a swatch of its colour in the margin
             box = max(2, round(size * 0.35))
             mid = y + round(size * 0.6)
             draw.rectangle((FOOTER_PAD * scale // 2 - box // 2, mid - box, FOOTER_PAD * scale // 2 + box // 2, mid),
                            fill=mapdraw.ROUTE_COLOURS[(head - 1) % len(mapdraw.ROUTE_COLOURS)])
-        draw.text((FOOTER_PAD * scale, y), line, fill=FOOTER_TEXT, font=font)
+        draw.text((FOOTER_PAD * scale + x, y), text, fill=FOOTER_TEXT, font=font)
         y += round(size * 1.3)
     return image
+
+
+def _legend_rows(lines, width, font):
+    """(text, x, route number or None) per row of the legend (mapdraw.route_legend's lines) in `font`, word-wrapped to
+    `width`. A deal line (it starts with spaces) is indented, and so is every part of a line after its first, one step
+    deeper: a wrapped deal stays under its route. The route number (for the swatch) is on a head line's first row."""
+    measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    step = round(measure.textlength("    ", font=font))
+    rows = []
+    for line in lines:
+        first = step if line.startswith(" ") else 0
+        x, current, number = first, "", _route_number(line)
+        for word in line.split():
+            joined = (current + " " + word).strip()
+            if current and measure.textlength(joined, font=font) > width - x:
+                rows.append((current, x, number))
+                x, current, number = first + step, word, None
+            else:
+                current = joined
+        rows.append((current, x, number))
+    return rows
 
 
 def _route_number(line):
