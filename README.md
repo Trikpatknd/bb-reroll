@@ -1,5 +1,8 @@
 # BB Reroll
 
+> [!NOTE]
+> **Antivirus warnings.** Some antivirus programs, Microsoft Defender among them, can flag `bb_reroll_gui.exe` as a threat. These are false positives. The exe is a PyInstaller build, and machine-learning scanners often flag such builds. The full source code is in this repository. The exe connects to the internet only for the update check: one request to GitHub, at most once a day. You can turn it off. Each release gives the SHA-256 of its files. To avoid the exe, run BB Reroll from source or build it yourself (see **Install**).
+
 Seed finder for **Battle Brothers** — vanilla or with the **Legends** mod. It searches campaign seeds for a starting roster that matches your criteria (talent stars per brother, banned and required traits) **without running the game**, and shows the full roster of every seed it finds. With Legends, or with the base game and all its DLCs, it can also search by the **world map**: the number of ports and towns.
 
 The seeds are ordinary campaign seeds. Anyone with the same game version, mods and recruit-related Mod Options gets the same brothers by typing the seed into the New Campaign screen — no mod of ours needed on either side. For the map, the Map Options must be the same too.
